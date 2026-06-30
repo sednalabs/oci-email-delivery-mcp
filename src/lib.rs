@@ -262,7 +262,7 @@ pub mod tests_support {
                     key: "accepted".to_string(),
                     oci_name: "EmailsAccepted".to_string(),
                     status: "ok".to_string(),
-                    query: "EmailsAccepted[1h].count()".to_string(),
+                    query: "EmailsAccepted[1h].sum()".to_string(),
                     total: 10.0,
                     point_count: 1,
                     series_count: 1,

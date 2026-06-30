@@ -1,0 +1,73 @@
+name: code-coverage
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-coverage::${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-coverage:
+    name: Rust Cobertura coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      code-quality: write
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        # dtolnay/rust-toolchain stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537
+        with:
+          toolchain: stable
+
+      - name: Cache cargo artifacts
+        # swatinem/rust-cache v2
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Install coverage tool
+        # taiki-e/install-action v2
+        uses: taiki-e/install-action@b8cecb83565409bcc297b2df6e77f030b2a468d5
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p coverage
+          cargo llvm-cov --all-targets --all-features \
+            --cobertura --output-path coverage/oci-email-delivery-mcp.xml
+
+      - name: Upload coverage to GitHub Code Quality
+        # actions/upload-code-coverage v1
+        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3
+        with:
+          file: coverage/oci-email-delivery-mcp.xml
+          language: Rust
+          label: code-coverage/oci-email-delivery-mcp
+
+      - name: Upload Cobertura report
+        # actions/upload-artifact v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rust-cobertura-coverage
+          path: coverage/*.xml
+          if-no-files-found: error

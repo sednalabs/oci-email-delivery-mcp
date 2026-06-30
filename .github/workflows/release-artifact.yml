@@ -1,0 +1,56 @@
+name: Release Artifact
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: Build Linux release artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        # dtolnay/rust-toolchain stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537
+        with:
+          toolchain: stable
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/oci-email-delivery-mcp dist/oci-email-delivery-mcp-linux-x86_64
+          (
+            cd dist
+            sha256sum oci-email-delivery-mcp-linux-x86_64 > oci-email-delivery-mcp-linux-x86_64.sha256
+            tar -czf oci-email-delivery-mcp-linux-x86_64.tar.gz \
+              oci-email-delivery-mcp-linux-x86_64 \
+              oci-email-delivery-mcp-linux-x86_64.sha256
+          )
+
+      - name: Upload release artifact
+        # actions/upload-artifact v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oci-email-delivery-mcp-linux-x86_64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/oci-email-delivery-mcp-linux-x86_64.tar.gz
+            dist/oci-email-delivery-mcp-linux-x86_64.sha256

@@ -214,6 +214,13 @@ impl OciEmailBackend for LiveOciEmailBackend {
         if let Some(domain) = request.resource_domain.as_deref() {
             validate_domain(domain, "resource_domain")?;
         }
+        if let Some(resource_id) = request.resource_id.as_deref() {
+            safe_query_value(resource_id).map_err(|_| {
+                OciEmailError::InvalidInput(
+                    "resource_id contains unsupported query syntax".to_string(),
+                )
+            })?;
+        }
 
         let compartment_id = self.compartment_id(request.compartment_id.as_deref())?;
         let interval = request.interval.clone().unwrap_or_else(|| "1h".to_string());
@@ -234,12 +241,18 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 request.resource_domain.as_deref(),
                 request.resource_id.as_deref(),
             );
+            let output_query = metric_query_for_output(
+                oci_name,
+                &interval,
+                request.resource_domain.as_deref(),
+                request.resource_id.as_deref(),
+            );
             if !definition_set.contains(oci_name) {
                 metrics.push(MetricResult {
                     key: (*key).to_string(),
                     oci_name: (*oci_name).to_string(),
                     status: "unavailable".to_string(),
-                    query,
+                    query: output_query,
                     total: 0.0,
                     point_count: 0,
                     series_count: 0,
@@ -281,7 +294,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 key: (*key).to_string(),
                 oci_name: (*oci_name).to_string(),
                 status: "ok".to_string(),
-                query,
+                query: output_query,
                 total,
                 point_count,
                 series_count,
@@ -690,6 +703,21 @@ fn metric_query(
     }
 }
 
+fn metric_query_for_output(
+    metric: &str,
+    interval: &str,
+    resource_domain: Option<&str>,
+    resource_id: Option<&str>,
+) -> String {
+    let redacted_resource_id = resource_id.map(crate::redact::redact_ocid);
+    metric_query(
+        metric,
+        interval,
+        resource_domain,
+        redacted_resource_id.as_deref(),
+    )
+}
+
 fn metric_total(value: &Value) -> (f64, usize, usize) {
     let mut total = 0.0;
     let mut points = 0;
@@ -797,10 +825,9 @@ fn suppression_summary(value: &Value) -> SuppressionSummary {
 }
 
 fn email_event_summary(value: &Value) -> EmailEventSummary {
-    let data = value.get("data").unwrap_or(value);
-    let log_type = string_field(value, "type")
-        .or_else(|| nested_string(value, &["logContent", "type"]))
-        .map(ToString::to_string);
+    let record = event_record(value);
+    let data = record.get("data").unwrap_or(record);
+    let log_type = string_field(record, "type").map(ToString::to_string);
     let email = nested_string(data, &["recipient"])
         .or_else(|| nested_string(data, &["recipientAddress"]))
         .or_else(|| nested_string(data, &["emailAddress"]));
@@ -809,14 +836,15 @@ fn email_event_summary(value: &Value) -> EmailEventSummary {
         .or_else(|| nested_string(value, &["messageId"]));
     EmailEventSummary {
         datetime: string_field(value, "datetime")
-            .or_else(|| string_field(value, "time"))
+            .or_else(|| string_field(record, "datetime"))
+            .or_else(|| string_field(record, "time"))
             .map(ToString::to_string),
         log_type,
-        action: nested_string(data, &["action"]).map(ToString::to_string),
-        source_domain: string_field(value, "source")
+        action: string_field(data, "action").map(ToString::to_string),
+        source_domain: string_field(record, "source")
             .filter(|value| is_host_token(value))
             .map(|value| value.to_ascii_lowercase()),
-        receiving_domain: nested_string(data, &["receivingDomain"])
+        receiving_domain: string_field(data, "receivingDomain")
             .filter(|value| is_host_token(value))
             .map(|value| value.to_ascii_lowercase()),
         recipient_domain: email.and_then(email_domain),
@@ -827,6 +855,14 @@ fn email_event_summary(value: &Value) -> EmailEventSummary {
         smtp_status: nested_string(data, &["smtpStatus"]).map(redact_sensitive_text),
         raw_payload_returned: false,
     }
+}
+
+fn event_record(value: &Value) -> &Value {
+    value
+        .get("data")
+        .and_then(|data| data.get("logContent"))
+        .or_else(|| value.get("logContent"))
+        .unwrap_or(value)
 }
 
 fn build_search_query(
@@ -994,6 +1030,20 @@ mod tests {
     }
 
     #[test]
+    fn metric_query_for_output_redacts_resource_id_filter() {
+        let query = metric_query_for_output(
+            "EmailsAccepted",
+            "1h",
+            Some("example.com"),
+            Some("ocid1.emaildomain.oc1.ap-melbourne-1.example"),
+        );
+
+        assert!(query.contains("resourceDomain = \"example.com\""));
+        assert!(query.contains("resourceId = \"ocid1.emaildomain:"));
+        assert!(!query.contains("ocid1.emaildomain.oc1"));
+    }
+
+    #[test]
     fn rejects_unsafe_log_query_value() {
         assert!(safe_query_value("abc| count").is_err());
         assert!(safe_query_value("abc@example.com").is_ok());
@@ -1003,5 +1053,42 @@ mod tests {
     fn caps_limits() {
         assert_eq!(cap_limit(200, 100), 100);
         assert_eq!(cap_limit(0, 100), 1);
+    }
+
+    #[test]
+    fn parses_logging_search_wrapped_email_events_without_raw_payload() {
+        let value = serde_json::json!({
+            "datetime": "2026-06-30T00:10:00.000Z",
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "source": "example.com",
+                    "time": "2026-06-30T00:10:00.000Z",
+                    "data": {
+                        "action": "unsubscribe",
+                        "messageId": "message@example.com",
+                        "recipient": "person@example.net",
+                        "recipientIp": "203.0.113.4",
+                        "receivingDomain": "example.net",
+                        "userAgent": "Example Mail Client"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value);
+        let payload = serde_json::to_string(&summary).expect("serialize summary");
+
+        assert_eq!(summary.action.as_deref(), Some("unsubscribe"));
+        assert_eq!(summary.source_domain.as_deref(), Some("example.com"));
+        assert_eq!(summary.receiving_domain.as_deref(), Some("example.net"));
+        assert_eq!(summary.recipient_domain.as_deref(), Some("example.net"));
+        assert!(summary.recipient_hash.is_some());
+        assert!(summary.message_id_hash.is_some());
+        assert!(!summary.raw_payload_returned);
+        assert!(!payload.contains("person@example.net"));
+        assert!(!payload.contains("message@example.com"));
+        assert!(!payload.contains("203.0.113.4"));
+        assert!(!payload.contains("Example Mail Client"));
     }
 }

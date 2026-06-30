@@ -33,8 +33,10 @@ pub fn redact_ocid(value: &str) -> String {
 
 pub fn redact_sensitive_text(value: &str) -> String {
     let mut output = redact_urls(value);
+    output = redact_private_paths(&output);
     output = redact_email_addresses(&output);
     output = redact_ocids(&output);
+    output = redact_ip_addresses(&output);
     for marker in [
         "password",
         "passwd",
@@ -78,6 +80,10 @@ fn redact_urls(input: &str) -> String {
         .join(" ")
 }
 
+fn redact_private_paths(input: &str) -> String {
+    redact_tokens(input, is_private_path_token, "[redacted-path]")
+}
+
 fn redact_email_addresses(input: &str) -> String {
     redact_tokens(input, is_email_token, "[redacted-email]")
 }
@@ -88,6 +94,10 @@ fn redact_ocids(input: &str) -> String {
         |value| value.starts_with("ocid1."),
         "[redacted-ocid]",
     )
+}
+
+fn redact_ip_addresses(input: &str) -> String {
+    redact_tokens(input, is_ip_token, "[redacted-ip]")
 }
 
 fn redact_tokens(input: &str, predicate: fn(&str) -> bool, replacement: &str) -> String {
@@ -123,7 +133,7 @@ fn flush_token(
 }
 
 fn is_token_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '@' | '.' | '_' | '-' | '+' | ':' | '/')
+    ch.is_ascii_alphanumeric() || matches!(ch, '@' | '.' | '_' | '-' | '+' | ':' | '/' | '\\' | '~')
 }
 
 fn is_email_token(value: &str) -> bool {
@@ -133,14 +143,52 @@ fn is_email_token(value: &str) -> bool {
     !local.is_empty() && is_host_token(domain)
 }
 
+fn is_ip_token(value: &str) -> bool {
+    let bracket_trimmed = value.trim_matches(|ch| matches!(ch, '[' | ']'));
+    if bracket_trimmed.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    if value.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    if let Some((host, cidr)) = value.split_once('/') {
+        return is_ascii_digits(cidr) && host.parse::<std::net::IpAddr>().is_ok();
+    }
+    if let Some((host, port)) = value.rsplit_once(':') {
+        if is_ascii_digits(port) && host.contains('.') {
+            return host.parse::<std::net::IpAddr>().is_ok();
+        }
+    }
+    if let Some((host, port)) = value
+        .strip_prefix('[')
+        .and_then(|value| value.split_once("]:"))
+    {
+        return is_ascii_digits(port) && host.parse::<std::net::IpAddr>().is_ok();
+    }
+    false
+}
+
+fn is_private_path_token(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with("~/")
+        || value.starts_with("~\\")
+        || value
+            .get(1..3)
+            .is_some_and(|prefix| prefix == ":\\" || prefix == ":/")
+}
+
+fn is_ascii_digits(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
+}
+
 pub fn is_host_token(value: &str) -> bool {
     let without_port = value
         .rsplit_once(':')
         .and_then(|(host, port)| port.chars().all(|ch| ch.is_ascii_digit()).then_some(host))
         .unwrap_or(value);
 
-    if without_port.parse::<std::net::IpAddr>().is_ok() {
-        return true;
+    if is_ip_token(without_port) {
+        return false;
     }
 
     let candidate = without_port
@@ -188,9 +236,26 @@ mod tests {
 
     #[test]
     fn redacts_sensitive_text_tokens() {
-        let output = redact_sensitive_text("token abc user@example.com ocid1.tenancy.oc1..example");
+        let output =
+            redact_sensitive_text("token abc user@example.com ocid1.tenancy.oc1..example 203.0.113.4 203.0.113.5:25 [2001:db8::1]:25 198.51.100.0/24 /home/me/.oci/config C:\\Users\\me\\.oci\\key.pem");
         assert!(!output.contains("user@example.com"));
         assert!(!output.contains("ocid1.tenancy"));
+        assert!(!output.contains("203.0.113.4"));
+        assert!(!output.contains("203.0.113.5"));
+        assert!(!output.contains("2001:db8::1"));
+        assert!(!output.contains("198.51.100.0"));
+        assert!(!output.contains("/home/me"));
+        assert!(!output.contains("C:\\Users"));
         assert!(output.contains("[redacted]"));
+        assert!(output.contains("[redacted-ip]"));
+        assert!(output.contains("[redacted-path]"));
+    }
+
+    #[test]
+    fn ip_literals_are_not_valid_host_tokens() {
+        assert!(!is_host_token("203.0.113.4"));
+        assert!(!is_host_token("203.0.113.4:25"));
+        assert!(!is_host_token("[2001:db8::1]:25"));
+        assert!(is_host_token("mail.example.com"));
     }
 }
