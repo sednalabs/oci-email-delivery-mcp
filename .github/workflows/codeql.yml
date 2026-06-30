@@ -36,7 +36,7 @@ jobs:
             build_mode: none
             config_file: ./.codeql-runtime/codeql-actions.yml
           - language: rust
-            build_mode: none
+            build_mode: manual
             config_file: ./.github/codeql/codeql-rust.yml
 
     steps:
@@ -92,6 +92,13 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build_mode }}
           config-file: ${{ matrix.config_file }}
+
+      - name: Build Rust for CodeQL
+        if: ${{ matrix.language == 'rust' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --all-features
 
       - name: Perform CodeQL analysis
         # github/codeql-action v4
