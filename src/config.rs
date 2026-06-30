@@ -102,9 +102,7 @@ fn parse_threshold_value(name: &str, value: &str) -> Result<f64, OciEmailError> 
 }
 
 fn threshold_config_error(name: &str, suffix: &str) -> OciEmailError {
-    let mut message = String::from(name);
-    message.push_str(suffix);
-    OciEmailError::Config(message)
+    OciEmailError::Config([name, suffix].concat())
 }
 
 fn validate_threshold_order(

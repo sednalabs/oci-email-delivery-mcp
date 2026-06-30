@@ -402,9 +402,7 @@ fn validate_time(value: &str, label: &str) -> Result<String, OciEmailError> {
 }
 
 fn labelled_invalid_input_error(label: &str, suffix: &str) -> OciEmailError {
-    let mut message = String::from(label);
-    message.push_str(suffix);
-    OciEmailError::InvalidInput(message)
+    OciEmailError::InvalidInput([label, suffix].concat())
 }
 
 fn cap_limit(value: u32, hard_limit: u32) -> u32 {
