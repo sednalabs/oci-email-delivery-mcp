@@ -1,0 +1,21 @@
+[package]
+name = "oci-email-delivery-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only MCP tools for OCI Email Delivery monitoring and no-send readiness checks"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+hex = "0.4.3"
+mcp-toolkit = { version = "0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "aa0fbced690f80f0d04396b99f18c5fce833a73c", features = ["server-stdio"] }
+mcp-toolkit-core = { version = "0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "aa0fbced690f80f0d04396b99f18c5fce833a73c" }
+rmcp = { version = "=1.8.0", default-features = false, features = ["macros", "schemars", "server", "transport-io"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.10.9"
+thiserror = "2.0.17"
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+mcp-toolkit-testing = { version = "0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "aa0fbced690f80f0d04396b99f18c5fce833a73c" }

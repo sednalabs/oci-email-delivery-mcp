@@ -1,0 +1,19 @@
+# OCI Email Delivery MCP Capability Matrix
+
+| workflow | tool | class | inputs | data source | proof | redaction | negative tests | docs | status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| First-run readiness | `oci_email_status` | read | optional compartment override | OCI CLI profile, Email Delivery sender/domain/suppression list commands | profile can call read-only OCI APIs; sender/domain counts; suppression query outcome | profile name only, OCID hash, no raw sender local parts in public docs | missing compartment, missing profile, empty suppression stdout | README, live-proof matrix | implemented |
+| Pilot aggregate monitoring | `oci_email_metrics` | read | `start_time`, `end_time`, optional `interval`, optional sender/domain filters | OCI Monitoring `oci_emaildelivery` namespace | fixed metric definitions discovered and summarized for the window | no raw OCIDs; query filters summarized | unavailable metric, empty stdout, invalid interval, capped missing evidence | README, live-proof matrix | implemented |
+| Event ingestion visibility | `oci_email_events` | read | UTC window, optional whitelisted action/message/header/domain filters, limit | OCI Logging Search Email Delivery logs | bounded event summaries from OutboundAccepted/OutboundRelayed logs | recipient hash/domain only; message id hash; raw payload omitted | invalid action, unsafe query token, capped result limit | README, live-proof matrix | implemented |
+| Seed/proof traceability | `oci_email_trace_message` | read | UTC window plus message id or correlation header | OCI Logging Search Email Delivery logs | related events grouped by redacted message/correlation key | message/header values hashed; raw payload omitted | missing trace criteria, unsafe header name/value | README, live-proof matrix | implemented |
+| Suppression reconciliation input | `oci_email_suppressions` | sensitive-read summary | optional window, limit | OCI Email Delivery suppression list | count/sample of suppression rows for clean-audience reconciliation | recipient domain plus hash only | empty stdout, capped result limit, unsafe limit | README, live-proof matrix | implemented |
+
+Deferred rows:
+
+| workflow | deferred tool/action | reason |
+| --- | --- | --- |
+| Send proof | `submit-email` or SMTP send | w6998 is no-send monitoring readiness first; sends require separate approval and ledger design. |
+| Log enablement | Email Domain log apply | mutates OCI configuration and requires preview/apply proof. |
+| Suppression mutation | add/remove suppression | can alter audience eligibility and needs explicit approval plus reconciliation proof. |
+| Connector Hub export | service connector apply | infrastructure mutation; polling SearchLogs is the first proof path. |
+| Downstream campaign import/export/apply | contact import/export/apply | belongs outside this read-only OCI adapter. |

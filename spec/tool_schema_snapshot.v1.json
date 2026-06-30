@@ -1,0 +1,224 @@
+{
+  "schema": "mcp_tool_schema_snapshot",
+  "tools": [
+    {
+      "description": "Search OCI Email Delivery logs with redacted event summaries.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "header_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "header_value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receiving_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_time",
+          "end_time"
+        ],
+        "type": "object"
+      },
+      "name": "oci_email_events"
+    },
+    {
+      "description": "Query fixed OCI Email Delivery Monitoring metrics for a UTC window.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "interval": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_time",
+          "end_time"
+        ],
+        "type": "object"
+      },
+      "name": "oci_email_metrics"
+    },
+    {
+      "description": "Check OCI Email Delivery profile readiness and sender/domain visibility.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "oci_email_status"
+    },
+    {
+      "description": "Summarize OCI Email Delivery suppressions without raw recipients.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "time_created_greater_than_or_equal_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_created_less_than": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "oci_email_suppressions"
+    },
+    {
+      "description": "Trace one message id or correlation header through OCI Email Delivery logs.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "header_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "header_value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_time",
+          "end_time"
+        ],
+        "type": "object"
+      },
+      "name": "oci_email_trace_message"
+    }
+  ],
+  "version": 1
+}

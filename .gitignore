@@ -1,0 +1,11 @@
+/target/
+/.env
+/.env.*
+*.pem
+*.key
+*.p12
+*.log
+*.sqlite
+*.sqlite3
+oci-config
+oci_api_key*
