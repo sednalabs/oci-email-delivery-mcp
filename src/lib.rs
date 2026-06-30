@@ -52,7 +52,8 @@ pub use response::{
     EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, LedgerRowSummary,
     LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals, MetricRates,
     MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
-    OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier, StatusRequest,
+    OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
+    SendReadinessComponents, SendReadinessReport, SendReadinessRequest, StatusRequest,
     StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest, ToolCallOutcome,
     TraceCriteria, TraceMessageReport, TraceMessageRequest, WatchWindowComponents,
     WatchWindowReport, WatchWindowRequest,
@@ -109,6 +110,11 @@ impl OciEmailMcpServer {
                     "oci_email_watch_window",
                     "Build one read-only send-window monitoring receipt from status, metrics, logs, trace, and suppressions.",
                     ["oci", "email", "watch", "receipt"],
+                ),
+                read_capability(
+                    "oci_email_send_readiness",
+                    "Build one read-only send-window readiness receipt from monitoring evidence plus local send-ledger proof.",
+                    ["oci", "email", "readiness", "ledger"],
                 ),
             ])?,
         })
@@ -191,6 +197,16 @@ impl OciEmailMcpServer {
     ) -> String {
         response::tool_json(self.backend.watch_window(&request))
     }
+
+    #[tool(
+        description = "Build one read-only OCI Email Delivery send-readiness receipt from monitoring and local send-ledger proof."
+    )]
+    fn oci_email_send_readiness(
+        &self,
+        Parameters(request): Parameters<SendReadinessRequest>,
+    ) -> String {
+        response::tool_json(self.backend.send_readiness(&request))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -222,6 +238,7 @@ mod tests {
                 "oci_email_events",
                 "oci_email_ledger_window",
                 "oci_email_metrics",
+                "oci_email_send_readiness",
                 "oci_email_status",
                 "oci_email_suppressions",
                 "oci_email_trace_message",
@@ -339,16 +356,25 @@ pub mod tests_support {
 
         fn trace_message(
             &self,
-            _request: &TraceMessageRequest,
+            request: &TraceMessageRequest,
         ) -> Result<TraceMessageReport, OciEmailError> {
+            let mut events = fixture_events();
+            events.filters.header_name = request.header_name.clone();
+            events.filters.header_value_hash = request
+                .header_value
+                .as_deref()
+                .map(|_| "fixture".to_string());
             Ok(TraceMessageReport {
                 status: "ok".to_string(),
                 criteria: TraceCriteria {
                     message_id_hash: Some("fixture".to_string()),
-                    header_name: None,
-                    header_value_hash: None,
+                    header_name: request.header_name.clone(),
+                    header_value_hash: request
+                        .header_value
+                        .as_deref()
+                        .map(|_| "fixture".to_string()),
                 },
-                events: fixture_events(),
+                events,
             })
         }
 

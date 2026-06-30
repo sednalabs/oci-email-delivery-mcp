@@ -1,8 +1,8 @@
 use oci_email_delivery_mcp::{
     tests_support::FixtureBackend, EventsReport, EventsRequest, LedgerWindowRequest, MetricsReport,
-    MetricsRequest, OciEmailBackend, OciEmailError, OciEmailStatusReport, StatusRequest,
-    SuppressionsReport, SuppressionsRequest, TraceMessageReport, TraceMessageRequest,
-    WatchWindowRequest,
+    MetricsRequest, OciEmailBackend, OciEmailError, OciEmailStatusReport, SendReadinessRequest,
+    StatusRequest, SuppressionsReport, SuppressionsRequest, TraceMessageReport,
+    TraceMessageRequest, WatchWindowRequest,
 };
 
 #[test]
@@ -193,6 +193,172 @@ fn watch_window_contract_composes_receipt_without_authorizing_send() {
     assert!(!payload.contains("message@example.com"));
     assert!(!payload.contains("person@example.net"));
     assert!(!payload.contains("person@example.com"));
+}
+
+#[test]
+fn send_readiness_contract_requires_monitoring_and_ledger_without_authorizing_send() {
+    let backend = FixtureBackend;
+    let report = backend
+        .send_readiness(&SendReadinessRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: None,
+            resource_id: None,
+            sender_domain: None,
+            campaign_id: "campaign-token-123".to_string(),
+            batch_id: "batch-token-456".to_string(),
+            expected_ledger_rows: 1,
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture send readiness: {err}"));
+    let payload = serde_json::to_string(&report)
+        .unwrap_or_else(|err| panic!("serialize send readiness: {err}"));
+
+    assert_eq!(report.status, "degraded");
+    assert_eq!(report.decision, "hold_or_seed_only_with_operator_review");
+    assert!(!report.send_authorized);
+    assert_eq!(report.sender_domain, Some("example.com".to_string()));
+    assert_eq!(report.expected_ledger_rows, 1);
+    assert_eq!(report.components.watch_window.status, "degraded");
+    assert_eq!(report.components.ledger.status, "ok");
+    assert_eq!(
+        report
+            .components
+            .ledger
+            .report
+            .as_ref()
+            .map(|ledger| ledger.totals.matched_rows),
+        Some(1)
+    );
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "metric_unavailable_hard_bounced"));
+    assert!(!report.raw_payload_returned);
+    assert!(!payload.contains("message-token-789"));
+    let fixture_recipient = ["person", "example.net"].join("@");
+    assert!(!payload.contains(&fixture_recipient));
+    assert!(!payload.contains("campaign-token-123"));
+    assert!(!payload.contains("batch-token-456"));
+}
+
+#[test]
+fn send_readiness_blocks_ambiguous_or_mismatched_ledger_counts() {
+    let backend = FixtureBackend;
+    let report = backend
+        .send_readiness(&SendReadinessRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: "campaign-token-123".to_string(),
+            batch_id: "batch-token-456".to_string(),
+            expected_ledger_rows: 2,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture send readiness: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.send_authorized);
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "ledger_expected_rows_mismatch"));
+}
+
+#[test]
+fn send_readiness_skips_ledger_read_when_required_identifiers_are_missing() {
+    let backend = FixtureBackend;
+    let report = backend
+        .send_readiness(&SendReadinessRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: "  ".to_string(),
+            batch_id: "".to_string(),
+            expected_ledger_rows: 0,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture send readiness: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert_eq!(report.components.ledger.status, "blocked");
+    assert!(report.components.ledger.report.is_none());
+    assert!(report.components.ledger.error.is_some());
+    for code in [
+        "campaign_id_missing",
+        "batch_id_missing",
+        "expected_ledger_rows_zero",
+        "ledger_requirements_missing",
+    ] {
+        assert!(
+            report.findings.iter().any(|finding| finding.code == code),
+            "missing finding {code}"
+        );
+    }
+}
+
+#[test]
+fn send_readiness_redacts_returned_trace_header_names() {
+    let backend = FixtureBackend;
+    let report = backend
+        .send_readiness(&SendReadinessRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: "campaign-token-123".to_string(),
+            batch_id: "batch-token-456".to_string(),
+            expected_ledger_rows: 1,
+            message_id: None,
+            header_name: Some("X-Trace-Example".to_string()),
+            header_value: Some("trace-token-example".to_string()),
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture send readiness: {err}"));
+    let payload = serde_json::to_string(&report)
+        .unwrap_or_else(|err| panic!("serialize send readiness: {err}"));
+
+    assert_eq!(
+        report
+            .components
+            .watch_window
+            .report
+            .as_ref()
+            .and_then(|watch| watch.components.trace.as_ref())
+            .and_then(|trace| trace.report.as_ref())
+            .and_then(|trace| trace.criteria.header_name.as_deref()),
+        Some("[redacted]")
+    );
+    assert!(!payload.contains("X-Trace-Example"));
+    assert!(!payload.contains("trace-token-example"));
 }
 
 #[test]

@@ -35,9 +35,11 @@ core value.
 - A workflow-dispatch release artifact lane exists for a Linux x86_64 binary
   tarball plus SHA-256 sidecar. Operational installs must use that hosted
   artifact after checksum verification, not a local EC2 build.
-- The adapter includes a composed `oci_email_watch_window` receipt so operators
-  can inspect one UTC window without manually reconciling five separate tool
-  outputs. It remains read-only and always returns `send_authorized=false`.
+- The adapter includes composed `oci_email_watch_window` and
+  `oci_email_send_readiness` receipts so operators can inspect one UTC window
+  and, when a seed/cohort has expected ledger rows, tie monitoring evidence to
+  local ledger proof. Both remain read-only and always return
+  `send_authorized=false`.
 
 ## Publication Gates
 
@@ -52,11 +54,11 @@ core value.
   before the `code-coverage` workflow can upload Cobertura coverage
   successfully.
 - Before production monitoring use, the current hard-bounce blocker and
-  degraded log-event proof must be resolved, and a host-local ledger path must
-  be configured if seed/cohort sends need ledger reconciliation. Operator
-  acceptance of the current gap can only mean remaining paused or seed-only.
-  This is an operational-readiness blocker, not a public-release source-code
-  blocker.
+  degraded log-event proof must be resolved, a host-local ledger path must be
+  configured, and `oci_email_send_readiness` must match the expected ledger row
+  count for the seed/cohort window. Operator acceptance of the current gap can
+  only mean remaining paused or seed-only. This is an operational-readiness
+  blocker, not a public-release source-code blocker.
 
 ## Useful Hosted Gates
 

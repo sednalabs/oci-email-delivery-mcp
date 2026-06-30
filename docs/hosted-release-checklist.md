@@ -53,7 +53,7 @@ promotion gate after the reviewed commit is selected.
 8. Verify the configured alias initializes and lists exactly:
    `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`,
    `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`,
-   and `oci_email_watch_window`.
+   `oci_email_watch_window`, and `oci_email_send_readiness`.
 
 Do not call the adapter released until the hosted artifact checksum and
 configured alias startup proof are both recorded.

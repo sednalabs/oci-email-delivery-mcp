@@ -162,6 +162,102 @@
       "name": "oci_email_metrics"
     },
     {
+      "description": "Build one read-only OCI Email Delivery send-readiness receipt from monitoring and local send-ledger proof.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "batch_id": {
+            "type": "string"
+          },
+          "campaign_id": {
+            "type": "string"
+          },
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "expected_ledger_rows": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "header_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "header_value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "interval": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sender_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_time",
+          "end_time",
+          "campaign_id",
+          "batch_id",
+          "expected_ledger_rows"
+        ],
+        "type": "object"
+      },
+      "name": "oci_email_send_readiness"
+    },
+    {
       "description": "Check OCI Email Delivery profile readiness and sender/domain visibility.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

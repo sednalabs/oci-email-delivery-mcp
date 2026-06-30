@@ -76,6 +76,25 @@ pub struct WatchWindowRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct SendReadinessRequest {
+    pub start_time: String,
+    pub end_time: String,
+    pub interval: Option<String>,
+    pub resource_domain: Option<String>,
+    pub source_domain: Option<String>,
+    pub resource_id: Option<String>,
+    pub sender_domain: Option<String>,
+    pub campaign_id: String,
+    pub batch_id: String,
+    pub expected_ledger_rows: u64,
+    pub message_id: Option<String>,
+    pub header_name: Option<String>,
+    pub header_value: Option<String>,
+    pub limit: Option<u32>,
+    pub compartment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct LedgerWindowRequest {
     pub start_time: String,
     pub end_time: String,
@@ -360,6 +379,33 @@ pub struct WatchWindowReport {
     pub source_domain: Option<String>,
     pub trace_requested: bool,
     pub components: WatchWindowComponents,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SendReadinessComponents {
+    pub watch_window: ToolCallOutcome<WatchWindowReport>,
+    pub ledger: ToolCallOutcome<LedgerWindowReport>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SendReadinessReport {
+    pub status: String,
+    pub decision: String,
+    pub send_authorized: bool,
+    pub start_time: String,
+    pub end_time: String,
+    pub interval: String,
+    pub resource_domain: Option<String>,
+    pub source_domain: Option<String>,
+    pub sender_domain: Option<String>,
+    pub campaign_hash: Option<String>,
+    pub batch_hash: Option<String>,
+    pub expected_ledger_rows: u64,
+    pub trace_requested: bool,
+    pub components: SendReadinessComponents,
     pub findings: Vec<ReadinessFinding>,
     pub evidence: Vec<Evidence>,
     pub raw_payload_returned: bool,

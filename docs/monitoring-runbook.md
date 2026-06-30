@@ -19,6 +19,9 @@ green.
 - `oci_email_ledger_window` is configured with the private local send-ledger
   JSONL path before any seed/proof send. It returns only hashes, domains, and
   aggregate counts.
+- `oci_email_send_readiness` is the preferred send-window receipt once a
+  seed/cohort send has an expected ledger row count. It combines monitoring and
+  local ledger proof and still returns `send_authorized=false`.
 - Every send lane is queried with the approved sender/source/resource domain
   for that lane. Do not mix separate publication or brand lanes in one
   unfiltered compartment-wide read.
@@ -37,6 +40,8 @@ Pause the pilot or keep it paused when any of these are true:
 - suppression readback is blocked;
 - local send-ledger readback is blocked, capped, or missing message/correlation
   keys for rows that should be traceable;
+- `oci_email_send_readiness` returns `ledger_expected_rows_mismatch`,
+  `expected_ledger_rows_zero`, `campaign_id_missing`, or `batch_id_missing`;
 - provider warning, authentication failure, blocklist evidence, or
   reputation-style deferral appears;
 - event ingestion fails or cannot be reconciled to the local send ledger.
@@ -48,8 +53,40 @@ Pause the pilot or keep it paused when any of these are true:
 Run these read-only tool calls for the planned UTC window or the immediately
 preceding smoke window.
 
-`oci_email_watch_window` is the preferred first receipt because it composes the
-same read-only checks into one stop/go view:
+`oci_email_send_readiness` is the preferred first receipt once the planned
+seed/cohort has a known expected local ledger row count. It composes the same
+read-only monitoring checks as `oci_email_watch_window` and adds the configured
+private send-ledger proof:
+
+```json
+{
+  "start_time": "YYYY-MM-DDTHH:00:00Z",
+  "end_time": "YYYY-MM-DDTHH:00:00Z",
+  "interval": "1h",
+  "resource_domain": "update.example.com",
+  "source_domain": "update.example.com",
+  "sender_domain": "update.example.com",
+  "campaign_id": "campaign-token",
+  "batch_id": "batch-token",
+  "expected_ledger_rows": 1,
+  "message_id": null,
+  "header_name": null,
+  "header_value": null,
+  "limit": 50
+}
+```
+
+Expected: `send_authorized=false`; watch-window component status, metrics,
+events, optional trace, suppressions, and ledger component are present.
+`decision` is `remain_paused`, `hold_or_seed_only_with_operator_review`, or
+`monitoring_and_ledger_ready_no_send_authorization`. The final state never
+authorizes a send by itself. A missing or blank campaign/batch identifier,
+zero expected rows, a row-count mismatch, missing ledger trace keys, missing
+recipient keys, capped ledger rows, or invalid ledger rows keeps the lane
+paused.
+
+`oci_email_watch_window` remains useful before a specific send batch exists or
+for diagnosis when ledger proof is not expected yet:
 
 ```json
 {
@@ -65,11 +102,7 @@ same read-only checks into one stop/go view:
 }
 ```
 
-Expected: `send_authorized=false`; component status, metrics, events, optional
-trace, and suppressions are present; `decision` is `remain_paused`,
-`hold_or_seed_only_with_operator_review`, or
-`monitoring_window_clean_no_send_authorization`. The final state never
-authorizes a send by itself. A watch receipt without a metrics resource
+Expected: `send_authorized=false`; a watch receipt without a metrics resource
 domain/resource id or without an event source domain is `blocked` because a
 compartment-wide receipt is not lane readiness proof.
 
@@ -135,15 +168,16 @@ covered by log proof. Missing stop-gate metrics are not treated as zero.
 Use short UTC windows, usually 5 to 15 minutes, and keep each observation
 bounded. Compare every window against the previous one.
 
-Start each observation with `oci_email_watch_window` using the same lane/domain
-filters. If the receipt is `blocked`, keep the lane paused. If it is
+Start each observation with `oci_email_send_readiness` using the same
+lane/domain and expected ledger-row filters once the send path has created
+ledger rows. If the receipt is `blocked`, keep the lane paused. If it is
 `degraded`, continue only as seed-only or hold for operator review, depending
 on the approved sender policy.
 
 For a real seed/cohort send, run `oci_email_ledger_window` for the same UTC
-window and lane before interpreting provider events. OCI events without a local
-ledger row, or local ledger rows without a provider event after the expected
-delay, are reconciliation gaps.
+window and lane when diagnosing a failed readiness receipt. OCI events without
+a local ledger row, or local ledger rows without a provider event after the
+expected delay, are reconciliation gaps.
 
 `oci_email_metrics`:
 
