@@ -33,11 +33,11 @@ jobs:
       matrix:
         include:
           - language: actions
-            build-mode: none
-            config-file: ./.codeql-runtime/codeql-actions.yml
+            build_mode: none
+            config_file: ./.codeql-runtime/codeql-actions.yml
           - language: rust
-            build-mode: none
-            config-file: ./.github/codeql/codeql-rust.yml
+            build_mode: none
+            config_file: ./.github/codeql/codeql-rust.yml
 
     steps:
       - name: Checkout repository
@@ -69,13 +69,10 @@ jobs:
             trusted_pack="./.codeql-runtime/trusted-base/.github/codeql/actions-workflow-security"
             mkdir -p "${trusted_root}"
 
-            if git fetch --no-tags --depth=1 origin '${{ github.event.pull_request.base.sha }}' &&
-              git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-workflow-security |
-                tar -x -C "${trusted_root}"; then
-              pack_path="${trusted_pack}"
-            else
-              echo "::warning title=CodeQL Actions query pack bootstrap::Trusted base query pack was unavailable; using the checked-out pack for this run."
-            fi
+            git fetch --no-tags --depth=1 origin '${{ github.event.pull_request.base.sha }}'
+            git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-workflow-security |
+              tar -x -C "${trusted_root}"
+            pack_path="${trusted_pack}"
           fi
 
           {
@@ -93,8 +90,8 @@ jobs:
         uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-          config-file: ${{ matrix.config-file }}
+          build-mode: ${{ matrix.build_mode }}
+          config-file: ${{ matrix.config_file }}
 
       - name: Perform CodeQL analysis
         # github/codeql-action v4

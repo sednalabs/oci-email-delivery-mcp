@@ -53,17 +53,42 @@ pub fn redact_sensitive_text(value: &str) -> String {
 }
 
 fn redact_marker(input: &str, marker: &str) -> String {
-    input
-        .split_whitespace()
-        .map(|part| {
-            if part.to_ascii_lowercase().contains(marker) {
-                "[redacted]".to_string()
-            } else {
-                part.to_string()
+    let mut redact_following = 0usize;
+    let mut output = Vec::new();
+    for part in input.split_whitespace() {
+        if redact_following > 0 {
+            output.push("[redacted]".to_string());
+            if !is_separator_token(part) {
+                redact_following -= 1;
             }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+            continue;
+        }
+
+        let lowered = part.to_ascii_lowercase();
+        if lowered.contains(marker) {
+            output.push("[redacted]".to_string());
+            redact_following = marker_following_value_count(part, marker);
+        } else {
+            output.push(part.to_string());
+        }
+    }
+    output.join(" ")
+}
+
+fn marker_following_value_count(part: &str, marker: &str) -> usize {
+    let has_inline_value = (part.contains('=') && !part.ends_with('='))
+        || (part.contains(':') && !part.ends_with(':'));
+    if has_inline_value {
+        0
+    } else if marker == "authorization" {
+        2
+    } else {
+        1
+    }
+}
+
+fn is_separator_token(part: &str) -> bool {
+    matches!(part, "=" | ":")
 }
 
 fn redact_urls(input: &str) -> String {
@@ -238,6 +263,7 @@ mod tests {
     fn redacts_sensitive_text_tokens() {
         let output =
             redact_sensitive_text("token abc user@example.com ocid1.tenancy.oc1..example 203.0.113.4 203.0.113.5:25 [2001:db8::1]:25 198.51.100.0/24 /home/me/.oci/config C:\\Users\\me\\.oci\\key.pem");
+        assert!(!output.contains("abc"));
         assert!(!output.contains("user@example.com"));
         assert!(!output.contains("ocid1.tenancy"));
         assert!(!output.contains("203.0.113.4"));
@@ -249,6 +275,19 @@ mod tests {
         assert!(output.contains("[redacted]"));
         assert!(output.contains("[redacted-ip]"));
         assert!(output.contains("[redacted-path]"));
+    }
+
+    #[test]
+    fn redacts_secret_values_after_markers() {
+        let output = redact_sensitive_text(
+            "private_key: VERYSECRET authorization: Bearer TOKENVALUE password=INLINESECRET token = SPACEDSECRET authorization : Bearer OTHERSECRET",
+        );
+        assert!(!output.contains("VERYSECRET"));
+        assert!(!output.contains("Bearer"));
+        assert!(!output.contains("TOKENVALUE"));
+        assert!(!output.contains("INLINESECRET"));
+        assert!(!output.contains("SPACEDSECRET"));
+        assert!(!output.contains("OTHERSECRET"));
     }
 
     #[test]

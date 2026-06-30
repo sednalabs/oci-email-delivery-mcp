@@ -47,9 +47,9 @@ Tool-call proof:
   suppression query reads succeeded without a send-capable command.
 - `oci_email_metrics`: callable for a bounded UTC window. OCI exposed accepted,
   relayed, hard-bounced, and suppressed metric definitions. The hard-bounce
-  stop gate is currently blocking pilot readiness; soft-bounce and complaint
-  definitions were not visible, so they return warnings rather than false
-  zeroes.
+  stop gate is currently blocking pilot readiness; soft-bounce, complaint, and
+  blocklist definitions were not visible, so they return warnings rather than
+  false zeroes.
 - `oci_email_events`: callable against OCI Logging Search for the same UTC
   window. The query returned zero events and status `degraded`, explicitly not
   proof that logging is enabled.
@@ -65,10 +65,11 @@ public-release candidate repository.
 
 ## Evidence Gaps Before Production Monitoring Readiness
 
-- The hard-bounce stop gate must be understood and cleared or explicitly
-  accepted by the operator before pilot expansion.
-- Soft-bounce and complaint metrics must become visible or be proven through
-  logs before pilot expansion.
+- The hard-bounce stop gate must be understood and cleared before pilot
+  expansion. Operator acceptance of the current gap can only mean remaining
+  paused or seed-only.
+- Soft-bounce, complaint, and blocklist metrics must become visible or be
+  proven through logs before pilot expansion.
 - Email Delivery logs must show real OutboundAccepted/OutboundRelayed events
   for a seed/proof send before the trace path is considered operational.
 - Hosted validation and reviewer signoff are still pending.

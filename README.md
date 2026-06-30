@@ -49,8 +49,8 @@ binary.
 
 ```bash
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
 ```
 
 For a live no-send smoke, run the binary through an MCP client or use the stdio
@@ -66,3 +66,15 @@ contract tests with an OCI profile configured. The live smoke must not use
   placement proof.
 - Missing metrics or log rows are reported as missing evidence, not as proof
   that bounce, complaint, open, or click counts are safe.
+
+## Release And Operations
+
+- Capability matrix: `docs/capability-matrix.md`
+- Monitoring runbook: `docs/monitoring-runbook.md`
+- Live proof matrix: `docs/live-proof-matrix.md`
+- Hosted release checklist: `docs/hosted-release-checklist.md`
+- Public release readiness: `docs/public-release-readiness.md`
+
+Operational installs should use hosted release artifacts with checksum
+verification. Restart MCP clients after replacing the binary or changing the
+configured environment.

@@ -167,6 +167,7 @@ pub struct MetricTotals {
     pub soft_bounced: f64,
     pub suppressed: f64,
     pub complaints: f64,
+    pub blocklisted: f64,
     pub list_unsubscribed: f64,
     pub opened: f64,
     pub clicked: f64,
@@ -178,6 +179,7 @@ pub struct MetricRates {
     pub hard_bounce_rate: Option<f64>,
     pub soft_bounce_rate: Option<f64>,
     pub complaint_rate: Option<f64>,
+    pub blocklist_rate: Option<f64>,
     pub unsubscribe_rate: Option<f64>,
 }
 

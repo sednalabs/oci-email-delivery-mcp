@@ -19,8 +19,9 @@ core value.
   local paths before it returns through MCP.
 - Operator-specific live telemetry is kept out of the repository; public docs
   describe proof categories and blocker state only.
-- GitHub Actions workflows use read-only permissions, SHA-pinned action
-  references, and explicit `ubuntu-24.04` hosted runners.
+- GitHub Actions workflows use read-only top-level permissions, narrow
+  job-scoped upload permissions where reporting requires them, SHA-pinned
+  action references, and explicit `ubuntu-24.04` hosted runners.
 - GitHub hosted quality coverage includes Rust baseline, CodeQL Advanced for
   Rust and Actions, a repository custom Actions CodeQL policy pack plus compile
   gate, GitHub Code Quality coverage upload, DevSkim SARIF upload, OSV
@@ -31,18 +32,19 @@ core value.
 
 ## Publication Blockers
 
-- License choice needs explicit owner approval before public push. The current
-  Cargo metadata follows the toolkit template's Apache-2.0 convention, but no
-  public repository should be launched until that is confirmed.
-- Target public repository name and owner are not yet selected.
+- License file and Cargo metadata are Apache-2.0. Final owner approval is still
+  required before public launch.
+- Suggested public target `sednalabs/oci-email-delivery-mcp` was not present
+  during local readback; final owner/name approval is still required before
+  creating the repository.
 - The `mcp-toolkit-rs` dependency is pinned to landed upstream `main` commit
   `211c5687645b08e1beb81ad78891dd3214746fea`.
 - Final hosted validation must run on the commit that will be published.
 - GitHub security settings must be verified after the repository exists.
 - Before production monitoring use, the current hard-bounce blocker and
-  degraded log-event proof must be resolved or explicitly accepted by the
-  operator. This is an operational-readiness blocker, not a public-release
-  source-code blocker.
+  degraded log-event proof must be resolved. Operator acceptance of the current
+  gap can only mean remaining paused or seed-only. This is an
+  operational-readiness blocker, not a public-release source-code blocker.
 
 ## Useful Hosted Gates
 

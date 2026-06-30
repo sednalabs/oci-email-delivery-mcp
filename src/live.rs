@@ -23,6 +23,7 @@ const STANDARD_METRICS: &[(&str, &str)] = &[
     ("soft_bounced", "EmailsSoftBounced"),
     ("suppressed", "EmailsSuppressed"),
     ("complaints", "EmailComplaints"),
+    ("blocklisted", "EmailsBlocklist"),
     ("list_unsubscribed", "EmailsListUnsubscribed"),
     ("opened", "EmailsOpened"),
     ("clicked", "EmailsClicked"),
@@ -258,10 +259,13 @@ impl OciEmailBackend for LiveOciEmailBackend {
                     series_count: 0,
                     note: Some("Metric definition is not currently visible in OCI.".to_string()),
                 });
-                if matches!(
-                    *key,
-                    "hard_bounced" | "soft_bounced" | "suppressed" | "complaints"
-                ) {
+                if *key == "accepted" {
+                    findings.push(finding(
+                        "blocker",
+                        "metric_unavailable_accepted",
+                        "Accepted-email metric is not currently visible; delivery rates and stop gates cannot be interpreted.",
+                    ));
+                } else if is_stop_gate_metric_key(key) {
                     findings.push(finding(
                         "warning",
                         &format!("metric_unavailable_{key}"),
@@ -290,6 +294,21 @@ impl OciEmailBackend for LiveOciEmailBackend {
             let (total, point_count, series_count) = metric_total(&value);
             assign_metric_total(&mut totals, key, total);
             available_keys.insert((*key).to_string());
+            if value.is_null() || point_count == 0 {
+                if *key == "accepted" {
+                    findings.push(finding(
+                        "blocker",
+                        "metric_no_datapoints_accepted",
+                        "Accepted-email metric returned no usable datapoints; delivery rates and stop gates cannot be interpreted for this window.",
+                    ));
+                } else if is_stop_gate_metric_key(key) {
+                    findings.push(finding(
+                        "warning",
+                        &format!("metric_no_datapoints_{key}"),
+                        "A stop-gate metric returned no usable datapoints; do not treat this as proof of zero events.",
+                    ));
+                }
+            }
             metrics.push(MetricResult {
                 key: (*key).to_string(),
                 oci_name: (*oci_name).to_string(),
@@ -457,11 +476,19 @@ impl OciEmailBackend for LiveOciEmailBackend {
             .map(suppression_summary)
             .collect::<Vec<_>>();
         let mut findings = Vec::new();
+        let rows_capped = rows_may_be_capped(suppressions.len(), limit);
         if value.is_null() {
             findings.push(finding(
                 "warning",
                 "empty_suppression_stdout",
                 "OCI CLI returned empty stdout for suppression list; treat as no sample, not as a full absence proof.",
+            ));
+        }
+        if rows_capped {
+            findings.push(finding(
+                "warning",
+                "suppression_results_capped",
+                "Suppression list returned the requested limit; narrow the time window or raise the limit before treating the result set as complete.",
             ));
         }
         Ok(SuppressionsReport {
@@ -477,7 +504,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
             evidence: vec![Evidence::new(
                 "oci_cli",
                 "email suppression list",
-                request.limit.unwrap_or(DEFAULT_SUPPRESSION_LIMIT) > HARD_SUPPRESSION_LIMIT,
+                rows_capped,
             )],
         })
     }
@@ -532,11 +559,19 @@ impl LiveOciEmailBackend {
             .map(email_event_summary)
             .collect::<Vec<_>>();
         let mut findings = Vec::new();
+        let rows_capped = rows_may_be_capped(events.len(), limit);
         if events.is_empty() {
             findings.push(finding(
                 "warning",
                 "no_log_events_returned",
                 "No Email Delivery log events matched this window/filter; this does not prove logging is enabled.",
+            ));
+        }
+        if rows_capped {
+            findings.push(finding(
+                "warning",
+                "event_results_capped",
+                "Log search returned the requested limit; narrow the time window or filters before treating the event set as complete.",
             ));
         }
         Ok(EventsReport {
@@ -562,7 +597,7 @@ impl LiveOciEmailBackend {
             evidence: vec![Evidence::new(
                 "oci_cli",
                 "logging-search search-logs",
-                request.limit.unwrap_or(DEFAULT_EVENT_LIMIT) > HARD_EVENT_LIMIT,
+                rows_capped,
             )],
         })
     }
@@ -744,6 +779,7 @@ fn assign_metric_total(totals: &mut MetricTotals, key: &str, total: f64) {
         "soft_bounced" => totals.soft_bounced = total,
         "suppressed" => totals.suppressed = total,
         "complaints" => totals.complaints = total,
+        "blocklisted" => totals.blocklisted = total,
         "list_unsubscribed" => totals.list_unsubscribed = total,
         "opened" => totals.opened = total,
         "clicked" => totals.clicked = total,
@@ -776,10 +812,17 @@ fn metric_rates(totals: &MetricTotals, available_keys: &BTreeSet<String>) -> Met
         ),
         complaint_rate: ratio_if_known(
             totals.complaints,
-            totals.relayed,
+            totals.accepted,
             available_keys,
             "complaints",
-            "relayed",
+            "accepted",
+        ),
+        blocklist_rate: ratio_if_known(
+            totals.blocklisted,
+            totals.accepted,
+            available_keys,
+            "blocklisted",
+            "accepted",
         ),
         unsubscribe_rate: ratio_if_known(
             totals.list_unsubscribed,
@@ -789,6 +832,13 @@ fn metric_rates(totals: &MetricTotals, available_keys: &BTreeSet<String>) -> Met
             "relayed",
         ),
     }
+}
+
+fn is_stop_gate_metric_key(key: &str) -> bool {
+    matches!(
+        key,
+        "hard_bounced" | "soft_bounced" | "suppressed" | "complaints" | "blocklisted"
+    )
 }
 
 fn ratio_if_known(
@@ -1017,6 +1067,10 @@ fn cap_limit(value: u32, hard_limit: u32) -> u32 {
     value.clamp(1, hard_limit)
 }
 
+fn rows_may_be_capped(returned: usize, limit: u32) -> bool {
+    returned >= limit as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,6 +1107,14 @@ mod tests {
     fn caps_limits() {
         assert_eq!(cap_limit(200, 100), 100);
         assert_eq!(cap_limit(0, 100), 1);
+    }
+
+    #[test]
+    fn exact_limit_return_means_rows_may_be_capped() {
+        assert!(rows_may_be_capped(20, 20));
+        assert!(rows_may_be_capped(100, 100));
+        assert!(!rows_may_be_capped(19, 20));
+        assert!(!rows_may_be_capped(0, 20));
     }
 
     #[test]
