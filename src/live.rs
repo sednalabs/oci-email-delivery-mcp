@@ -965,6 +965,8 @@ fn compose_send_readiness<B: OciEmailBackend + ?Sized>(
         .or_else(|| watch_report.resource_domain.clone());
     let campaign_id = non_empty_string(&request.campaign_id);
     let batch_id = non_empty_string(&request.batch_id);
+    let campaign_hash = campaign_id.as_deref().map(short_hash);
+    let batch_hash = batch_id.as_deref().map(short_hash);
 
     if campaign_id.is_none() {
         findings.push(finding(
@@ -1004,8 +1006,8 @@ fn compose_send_readiness<B: OciEmailBackend + ?Sized>(
             start_time: request.start_time.clone(),
             end_time: request.end_time.clone(),
             sender_domain: Some(sender_domain_value),
-            campaign_id: campaign_id.clone(),
-            batch_id: batch_id.clone(),
+            campaign_id,
+            batch_id,
             limit: request.limit,
         }) {
             Ok(report) => {
@@ -1042,8 +1044,6 @@ fn compose_send_readiness<B: OciEmailBackend + ?Sized>(
     let resource_domain = watch_report.resource_domain.clone();
     let source_domain = watch_report.source_domain.clone();
     let trace_requested = watch_report.trace_requested;
-    let campaign_hash = campaign_id.as_deref().map(short_hash);
-    let batch_hash = batch_id.as_deref().map(short_hash);
 
     SendReadinessReport {
         status,
@@ -1120,12 +1120,17 @@ fn redact_watch_trace_header_names_for_readiness(report: &mut WatchWindowReport)
     let Some(trace_report) = trace.report.as_mut() else {
         return;
     };
-    if trace_report.criteria.header_name.is_some() {
-        trace_report.criteria.header_name = Some("[redacted]".to_string());
-    }
-    if trace_report.events.filters.header_name.is_some() {
-        trace_report.events.filters.header_name = Some("[redacted]".to_string());
-    }
+    trace_report.criteria.header_name = trace_report
+        .criteria
+        .header_name
+        .take()
+        .map(|_| "[redacted]".to_string());
+    trace_report.events.filters.header_name = trace_report
+        .events
+        .filters
+        .header_name
+        .take()
+        .map(|_| "[redacted]".to_string());
 }
 
 fn send_readiness_status(
