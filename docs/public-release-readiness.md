@@ -1,7 +1,7 @@
 # Public Release Readiness
 
-Status: local release candidate; public repository creation and hosted
-validation are the next gates.
+Status: public repository published at `sednalabs/oci-email-delivery-mcp`;
+hosted validation and Code Quality enablement are the current gates.
 
 ## Classification
 
@@ -29,7 +29,9 @@ core value.
 - GitHub hosted quality coverage includes Rust baseline, CodeQL Advanced for
   Rust and Actions, a repository custom Actions CodeQL policy pack plus compile
   gate, GitHub Code Quality coverage upload, DevSkim SARIF upload, OSV
-  scanning, and Dependabot update configuration.
+  scanning, and Dependabot update configuration. The coverage upload is
+  intentionally fail-closed until GitHub Code Quality is enabled for the
+  repository or organization.
 - A workflow-dispatch release artifact lane exists for a Linux x86_64 binary
   tarball plus SHA-256 sidecar. Operational installs must use that hosted
   artifact after checksum verification, not a local EC2 build.
@@ -45,7 +47,10 @@ core value.
 - The `mcp-toolkit-rs` dependency is pinned to landed upstream `main` commit
   `211c5687645b08e1beb81ad78891dd3214746fea`.
 - Final hosted validation must run on the commit that is published.
-- GitHub security settings must be verified after the repository exists.
+- GitHub security settings must be verified on the published repository.
+- GitHub Code Quality must be enabled in repository or organization settings
+  before the `code-coverage` workflow can upload Cobertura coverage
+  successfully.
 - Before production monitoring use, the current hard-bounce blocker and
   degraded log-event proof must be resolved, and a host-local ledger path must
   be configured if seed/cohort sends need ledger reconciliation. Operator
@@ -63,7 +68,9 @@ core value.
 - `codeql-query-tests`: compiles the custom Actions query pack so branch
   protection can require query-pack health independently of analysis.
 - `code-coverage`: uploads Cobertura coverage to GitHub Code Quality and keeps
-  the XML report as a hosted artifact.
+  the XML report as a hosted artifact. A failure with "Code quality is not
+  enabled for this repository" means the repository setting is still blocking
+  the otherwise generated coverage report.
 - `DevSkim` and `OSV-Scanner`: upload SARIF/dependency vulnerability evidence
   to GitHub code scanning.
 - `release-artifact`: `cargo build --release --locked`, packaged Linux x86_64
