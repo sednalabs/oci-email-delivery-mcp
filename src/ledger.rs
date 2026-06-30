@@ -389,7 +389,8 @@ fn validate_domain(value: &str, label: &str) -> Result<(), OciEmailError> {
         Ok(())
     } else {
         Err(OciEmailError::InvalidInput(format!(
-            "{label} must be a valid domain token"
+            "{} must be a valid domain token",
+            label
         )))
     }
 }
@@ -397,7 +398,8 @@ fn validate_domain(value: &str, label: &str) -> Result<(), OciEmailError> {
 fn validate_time(value: &str, label: &str) -> Result<String, OciEmailError> {
     utc_timestamp_key(value).ok_or_else(|| {
         OciEmailError::InvalidInput(format!(
-            "{label} must be an RFC3339 UTC timestamp ending in Z"
+            "{} must be an RFC3339 UTC timestamp ending in Z",
+            label
         ))
     })
 }
@@ -502,11 +504,13 @@ fn finding(severity: &str, code: &str, message: &str) -> ReadinessFinding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{env, fs, path::PathBuf, process};
+    use std::{fs, path::PathBuf};
 
     #[test]
     fn ledger_window_redacts_rows_and_hashes_private_ids() {
-        let path = test_ledger_path("redacts");
+        let path = PathBuf::from("target/oci-email-ledger-tests/redacts.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
         fs::write(
             &path,
             concat!(
@@ -550,12 +554,14 @@ mod tests {
         assert!(!payload.contains("batch-private"));
         assert!(!payload.contains("Private Subject"));
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn ledger_window_degrades_on_invalid_rows_and_missing_trace_keys() {
-        let path = test_ledger_path("degraded");
+        let path = PathBuf::from("target/oci-email-ledger-tests/degraded.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
         fs::write(
             &path,
             concat!(
@@ -591,17 +597,19 @@ mod tests {
             .iter()
             .any(|finding| finding.code == "ledger_missing_trace_keys"));
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn ledger_window_preserves_prehashed_rows_for_event_correlation() {
-        let path = test_ledger_path("prehashed");
+        let path = PathBuf::from("target/oci-email-ledger-tests/prehashed.jsonl");
         let campaign_hash = short_hash("campaign-private");
         let batch_hash = short_hash("batch-private");
         let recipient_hash = short_hash("person@example.net");
         let message_hash = short_hash("message@example.com");
         let correlation_hash = short_hash("corr-private");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
         fs::write(
             &path,
             format!(
@@ -640,7 +648,7 @@ mod tests {
         assert_eq!(report.rows[0].message_id_hash, Some(message_hash));
         assert_eq!(report.rows[0].correlation_id_hash, Some(correlation_hash));
 
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -707,14 +715,6 @@ mod tests {
         .expect_err("ledger path should be required");
 
         assert_eq!(error.code(), "configuration_error");
-    }
-
-    fn test_ledger_path(label: &str) -> PathBuf {
-        env::temp_dir().join(format!(
-            "oci-email-ledger-{label}-{}-{}.jsonl",
-            process::id(),
-            short_hash(label)
-        ))
     }
 
     fn config_with_ledger(path: PathBuf) -> OciEmailConfig {

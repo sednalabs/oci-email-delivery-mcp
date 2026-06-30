@@ -24,6 +24,7 @@ jobs:
     permissions:
       contents: read
       code-quality: write
+      pull-requests: read
     steps:
       - name: Checkout repository
         # actions/checkout v4

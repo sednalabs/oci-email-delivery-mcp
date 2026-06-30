@@ -30,6 +30,11 @@ commit:
 The custom Actions CodeQL query pack must compile in `codeql-query-tests`
 before its CodeQL analysis results are treated as meaningful.
 
+The `code-coverage` workflow is expected to fail closed with "Code quality is
+not enabled for this repository" until GitHub Code Quality is enabled in the
+repository or organization settings. Do not set `fail-on-error: false` to hide
+that blocker.
+
 `release-artifact` is not a normal pull-request branch-protection check because
 it runs only on `workflow_dispatch` and `v*` tags. Treat it as the artifact
 promotion gate after the reviewed commit is selected.
@@ -58,6 +63,8 @@ configured alias startup proof are both recorded.
 After public repository creation, verify:
 
 - code scanning is enabled and accepting CodeQL, DevSkim, and OSV SARIF;
+- GitHub Code Quality is enabled and accepting the `code-coverage` Cobertura
+  upload;
 - Dependabot security updates are enabled;
 - secret scanning and push protection are enabled where available;
 - default branch protection requires the pull-request hosted validation gates
