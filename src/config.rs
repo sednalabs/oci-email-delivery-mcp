@@ -88,17 +88,21 @@ fn env_f64(name: &str, default: f64) -> Result<f64, OciEmailError> {
 fn parse_threshold_value(name: &str, value: &str) -> Result<f64, OciEmailError> {
     value
         .parse::<f64>()
-        .map_err(|_| OciEmailError::Config(format!("{} must be a number", name)))
+        .map_err(|_| threshold_config_error(name, " must be a number"))
         .and_then(|parsed| {
             if parsed.is_finite() && parsed >= 0.0 {
                 Ok(parsed)
             } else {
-                Err(OciEmailError::Config(format!(
-                    "{} must be a finite non-negative number",
-                    name
-                )))
+                Err(threshold_config_error(
+                    name,
+                    " must be a finite non-negative number",
+                ))
             }
         })
+}
+
+fn threshold_config_error(name: &str, suffix: &str) -> OciEmailError {
+    OciEmailError::Config([name, suffix].concat())
 }
 
 fn validate_threshold_order(
