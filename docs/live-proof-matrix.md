@@ -7,7 +7,7 @@ pilot monitoring.
 | --- | --- | --- |
 | Server shape | Standalone curated stdio intent server built with `mcp-toolkit-rs`. | implemented locally |
 | Toolkit template | `templates/curated-stdio-intent-server`. | implemented locally |
-| Intent tools | `oci_email_status`, `oci_email_metrics`, `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`. | implemented locally |
+| Intent tools | `oci_email_status`, `oci_email_metrics`, `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`, `oci_email_watch_window`. | implemented locally |
 | Toolkit contract tests | Schema snapshot and real stdio `tools/list` smoke. | implemented locally |
 | Domain output contract tests | Fixture-backed output, redaction, missing-auth, invalid-filter, and missing-metric tests. | implemented locally |
 | Live no-send proof | OCI profile read-only status, metric discovery/summarize, log search, and suppression query without `submit-email` or mutation commands. | passed as no-send/blocked on 2026-06-30; see `docs/no-send-live-proof-2026-06-30.md` |

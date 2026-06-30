@@ -1,6 +1,7 @@
 use oci_email_delivery_mcp::{
-    tests_support::FixtureBackend, EventsRequest, MetricsRequest, OciEmailBackend,
-    SuppressionsRequest, TraceMessageRequest,
+    tests_support::FixtureBackend, EventsReport, EventsRequest, MetricsReport, MetricsRequest,
+    OciEmailBackend, OciEmailError, OciEmailStatusReport, StatusRequest, SuppressionsReport,
+    SuppressionsRequest, TraceMessageReport, TraceMessageRequest, WatchWindowRequest,
 };
 
 #[test]
@@ -77,6 +78,7 @@ fn trace_requires_a_redacted_criteria_shape() {
             message_id: Some("message@example.com".to_string()),
             header_name: None,
             header_value: None,
+            source_domain: Some("example.com".to_string()),
             limit: Some(20),
             compartment_id: None,
         })
@@ -109,4 +111,153 @@ fn suppressions_contract_uses_hash_and_domain_only() {
         Some("fixture".to_string())
     );
     assert!(!payload.contains("person@example.com"));
+}
+
+#[test]
+fn watch_window_contract_composes_receipt_without_authorizing_send() {
+    let backend = FixtureBackend;
+    let report = backend
+        .watch_window(&WatchWindowRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: None,
+            resource_id: None,
+            message_id: Some("message@example.com".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture watch window: {err}"));
+    let payload =
+        serde_json::to_string(&report).unwrap_or_else(|err| panic!("serialize watch: {err}"));
+
+    assert_eq!(report.status, "degraded");
+    assert_eq!(report.decision, "hold_or_seed_only_with_operator_review");
+    assert!(!report.send_authorized);
+    assert_eq!(report.resource_domain, Some("example.com".to_string()));
+    assert_eq!(report.source_domain, Some("example.com".to_string()));
+    assert!(report.trace_requested);
+    assert_eq!(report.components.metrics.status, "degraded");
+    assert_eq!(report.components.events.status, "ok");
+    assert_eq!(report.components.suppressions.status, "ok");
+    assert!(report.components.trace.is_some());
+    assert_eq!(
+        report
+            .components
+            .trace
+            .as_ref()
+            .and_then(|trace| trace.report.as_ref())
+            .and_then(|trace| trace.events.filters.source_domain.as_deref()),
+        Some("example.com")
+    );
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "metric_unavailable_hard_bounced"));
+    assert!(!report.raw_payload_returned);
+    assert!(!payload.contains("message@example.com"));
+    assert!(!payload.contains("person@example.net"));
+    assert!(!payload.contains("person@example.com"));
+}
+
+#[test]
+fn watch_window_reports_component_failures_without_aborting_receipt() {
+    let backend = MetricsFailureBackend;
+    let report = backend
+        .watch_window(&WatchWindowRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture watch window: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.send_authorized);
+    assert_eq!(report.components.status.status, "degraded");
+    assert_eq!(report.components.metrics.status, "blocked");
+    assert!(report.components.metrics.error.is_some());
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "metrics_read_blocked"));
+}
+
+#[test]
+fn watch_window_blocks_unscoped_lane_receipts() {
+    let backend = FixtureBackend;
+    let report = backend
+        .watch_window(&WatchWindowRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: None,
+            source_domain: None,
+            resource_id: None,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture watch window: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.send_authorized);
+    assert_eq!(report.components.metrics.status, "blocked");
+    assert!(report.components.metrics.report.is_none());
+    assert_eq!(report.components.events.status, "blocked");
+    assert!(report.components.events.report.is_none());
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "metrics_scope_missing"));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "events_scope_missing"));
+}
+
+struct MetricsFailureBackend;
+
+impl OciEmailBackend for MetricsFailureBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, _request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        Err(OciEmailError::InvalidInput(
+            "synthetic metrics failure".to_string(),
+        ))
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        FixtureBackend.trace_message(request)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
 }

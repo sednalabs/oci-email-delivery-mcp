@@ -4,15 +4,16 @@ Read-only stdio MCP server for OCI Email Delivery monitoring. The first
 operator goal is to let agents query OCI programmatically before production
 or cohort sends go live.
 
-The server exposes five curated intent tools:
+The server exposes six curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
 | `oci_email_status` | Check CLI/profile readiness, approved senders, email domains, and suppression-query visibility. |
 | `oci_email_metrics` | Query fixed `oci_emaildelivery` Monitoring metrics for an explicit UTC window. |
 | `oci_email_events` | Search Email Delivery logs with whitelisted filters and redacted event summaries. |
-| `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs. |
+| `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
 | `oci_email_suppressions` | Summarize OCI suppressions without returning raw recipient addresses. |
+| `oci_email_watch_window` | Build one read-only monitoring receipt from status, metrics, logs, optional trace, and suppressions. |
 
 No tools send email, mutate OCI resources, enable logs, change DNS, import
 contacts, or alter suppressions.
@@ -66,6 +67,8 @@ contract tests with an OCI profile configured. The live smoke must not use
   placement proof.
 - Missing metrics or log rows are reported as missing evidence, not as proof
   that bounce, complaint, open, or click counts are safe.
+- `oci_email_watch_window` blocks unscoped lane receipts when neither a metrics
+  resource domain/resource id nor an event source domain is available.
 
 ## Release And Operations
 

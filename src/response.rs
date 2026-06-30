@@ -45,6 +45,7 @@ pub struct TraceMessageRequest {
     pub message_id: Option<String>,
     pub header_name: Option<String>,
     pub header_value: Option<String>,
+    pub source_domain: Option<String>,
     pub limit: Option<u32>,
     pub compartment_id: Option<String>,
 }
@@ -53,6 +54,21 @@ pub struct TraceMessageRequest {
 pub struct SuppressionsRequest {
     pub time_created_greater_than_or_equal_to: Option<String>,
     pub time_created_less_than: Option<String>,
+    pub limit: Option<u32>,
+    pub compartment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct WatchWindowRequest {
+    pub start_time: String,
+    pub end_time: String,
+    pub interval: Option<String>,
+    pub resource_domain: Option<String>,
+    pub source_domain: Option<String>,
+    pub resource_id: Option<String>,
+    pub message_id: Option<String>,
+    pub header_name: Option<String>,
+    pub header_value: Option<String>,
     pub limit: Option<u32>,
     pub compartment_id: Option<String>,
 }
@@ -283,6 +299,57 @@ pub struct SuppressionSummary {
     pub recipient_redacted: Option<String>,
     pub recipient_domain: Option<String>,
     pub recipient_hash: Option<String>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ToolCallOutcome<T> {
+    pub status: String,
+    pub report: Option<T>,
+    pub error: Option<ToolErrorReport>,
+}
+
+impl<T> ToolCallOutcome<T> {
+    pub fn ok(status: impl Into<String>, report: T) -> Self {
+        Self {
+            status: status.into(),
+            report: Some(report),
+            error: None,
+        }
+    }
+
+    pub fn blocked(error: OciEmailError) -> Self {
+        Self {
+            status: "blocked".to_string(),
+            report: None,
+            error: Some(ToolErrorReport::from(error)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WatchWindowComponents {
+    pub status: ToolCallOutcome<OciEmailStatusReport>,
+    pub metrics: ToolCallOutcome<MetricsReport>,
+    pub events: ToolCallOutcome<EventsReport>,
+    pub trace: Option<ToolCallOutcome<TraceMessageReport>>,
+    pub suppressions: ToolCallOutcome<SuppressionsReport>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WatchWindowReport {
+    pub status: String,
+    pub decision: String,
+    pub send_authorized: bool,
+    pub start_time: String,
+    pub end_time: String,
+    pub interval: String,
+    pub resource_domain: Option<String>,
+    pub source_domain: Option<String>,
+    pub trace_requested: bool,
+    pub components: WatchWindowComponents,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
     pub raw_payload_returned: bool,
 }
 

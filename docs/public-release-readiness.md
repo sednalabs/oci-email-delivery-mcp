@@ -29,6 +29,9 @@ core value.
 - A workflow-dispatch release artifact lane exists for a Linux x86_64 binary
   tarball plus SHA-256 sidecar. Operational installs must use that hosted
   artifact after checksum verification, not a local EC2 build.
+- The adapter includes a composed `oci_email_watch_window` receipt so operators
+  can inspect one UTC window without manually reconciling five separate tool
+  outputs. It remains read-only and always returns `send_authorized=false`.
 
 ## Publication Blockers
 

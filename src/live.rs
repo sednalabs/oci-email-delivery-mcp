@@ -5,10 +5,11 @@ use crate::{
     response::{
         EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, MetricRates,
         MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
-        OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier, StopThresholds,
-        SuppressionSummary, SuppressionsReport, SuppressionsRequest, TraceCriteria,
-        TraceMessageReport, TraceMessageRequest, DEFAULT_EVENT_LIMIT, DEFAULT_SUPPRESSION_LIMIT,
-        HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
+        OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier, StatusRequest,
+        StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest,
+        ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
+        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
+        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -44,6 +45,13 @@ pub trait OciEmailBackend: Send + Sync {
         &self,
         request: &SuppressionsRequest,
     ) -> Result<SuppressionsReport, OciEmailError>;
+
+    fn watch_window(
+        &self,
+        request: &WatchWindowRequest,
+    ) -> Result<WatchWindowReport, OciEmailError> {
+        Ok(compose_watch_window(self, request))
+    }
 }
 
 pub type EventsSafeStatusRequest = crate::response::StatusRequest;
@@ -421,7 +429,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
             header_name: request.header_name.clone(),
             header_value: request.header_value.clone(),
             receiving_domain: None,
-            source_domain: None,
+            source_domain: request.source_domain.clone(),
             limit: request.limit,
             compartment_id: request.compartment_id.clone(),
         };
@@ -716,6 +724,263 @@ fn finding(severity: &str, code: &str, message: &str) -> ReadinessFinding {
         code: code.to_string(),
         message: message.to_string(),
     }
+}
+
+fn compose_watch_window<B: OciEmailBackend + ?Sized>(
+    backend: &B,
+    request: &WatchWindowRequest,
+) -> WatchWindowReport {
+    let interval = request.interval.clone().unwrap_or_else(|| "1h".to_string());
+    let requested_resource_domain = non_empty_request_value(&request.resource_domain);
+    let requested_source_domain = non_empty_request_value(&request.source_domain);
+    let resource_id = non_empty_request_value(&request.resource_id);
+    let resource_domain = requested_resource_domain
+        .clone()
+        .or_else(|| requested_source_domain.clone());
+    let source_domain = requested_source_domain
+        .clone()
+        .or_else(|| requested_resource_domain.clone());
+    let mut findings = Vec::new();
+    let mut evidence = Vec::new();
+    let metrics_scope_missing = resource_domain.is_none() && resource_id.is_none();
+    let events_scope_missing = source_domain.is_none();
+    if metrics_scope_missing {
+        findings.push(finding(
+            "blocker",
+            "metrics_scope_missing",
+            "Watch-window metrics are not scoped to a resource domain or resource id; do not use a compartment-wide metric receipt for lane readiness.",
+        ));
+    }
+    if events_scope_missing {
+        findings.push(finding(
+            "blocker",
+            "events_scope_missing",
+            "Watch-window log reads are not scoped to a source domain; do not use a compartment-wide event receipt for lane readiness.",
+        ));
+    }
+
+    let status = match backend.status(&StatusRequest {
+        compartment_id: request.compartment_id.clone(),
+    }) {
+        Ok(report) => {
+            findings.extend(report.findings.clone());
+            evidence.extend(report.evidence.clone());
+            ToolCallOutcome::ok(report.status.clone(), report)
+        }
+        Err(error) => component_blocked(
+            &mut findings,
+            "status_read_blocked",
+            "OCI Email Delivery status read failed; profile, sender, domain, and suppression visibility are not proven.",
+            error,
+        ),
+    };
+
+    let metrics = if metrics_scope_missing {
+        ToolCallOutcome::blocked(OciEmailError::InvalidInput(
+            "watch_window requires resource_domain or resource_id before reading metrics"
+                .to_string(),
+        ))
+    } else {
+        match backend.metrics(&MetricsRequest {
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            interval: Some(interval.clone()),
+            resource_domain: resource_domain.clone(),
+            resource_id: resource_id.clone(),
+            compartment_id: request.compartment_id.clone(),
+        }) {
+            Ok(report) => {
+                findings.extend(report.findings.clone());
+                evidence.extend(report.evidence.clone());
+                ToolCallOutcome::ok(report.status.clone(), report)
+            }
+            Err(error) => component_blocked(
+                &mut findings,
+                "metrics_read_blocked",
+                "OCI Monitoring metrics read failed; stop-gate counters are not proven for this window.",
+                error,
+            ),
+        }
+    };
+
+    let events = if events_scope_missing {
+        ToolCallOutcome::blocked(OciEmailError::InvalidInput(
+            "watch_window requires source_domain before reading log events".to_string(),
+        ))
+    } else {
+        match backend.events(&EventsRequest {
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            action: None,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            receiving_domain: None,
+            source_domain: source_domain.clone(),
+            limit: request.limit,
+            compartment_id: request.compartment_id.clone(),
+        }) {
+            Ok(report) => {
+                findings.extend(report.findings.clone());
+                evidence.extend(report.evidence.clone());
+                ToolCallOutcome::ok(report.status.clone(), report)
+            }
+            Err(error) => component_blocked(
+                &mut findings,
+                "events_read_blocked",
+                "OCI Email Delivery log event read failed; event ingestion is not proven for this window.",
+                error,
+            ),
+        }
+    };
+
+    let trace_requested = trace_requested(request);
+    let trace = trace_requested.then(|| {
+        if events_scope_missing {
+            return ToolCallOutcome::blocked(OciEmailError::InvalidInput(
+                "watch_window requires source_domain before tracing a message".to_string(),
+            ));
+        }
+        match backend.trace_message(&TraceMessageRequest {
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            message_id: request.message_id.clone(),
+            header_name: request.header_name.clone(),
+            header_value: request.header_value.clone(),
+            source_domain: source_domain.clone(),
+            limit: request.limit,
+            compartment_id: request.compartment_id.clone(),
+        }) {
+            Ok(report) => {
+                findings.extend(report.events.findings.clone());
+                evidence.extend(report.events.evidence.clone());
+                ToolCallOutcome::ok(report.status.clone(), report)
+            }
+            Err(error) => component_blocked(
+                &mut findings,
+                "trace_read_blocked",
+                "Seed/proof trace read failed; message-level correlation is not proven for this window.",
+                error,
+            ),
+        }
+    });
+
+    let suppressions = match backend.suppressions(&SuppressionsRequest {
+        time_created_greater_than_or_equal_to: Some(request.start_time.clone()),
+        time_created_less_than: Some(request.end_time.clone()),
+        limit: request.limit,
+        compartment_id: request.compartment_id.clone(),
+    }) {
+        Ok(report) => {
+            findings.extend(report.findings.clone());
+            evidence.extend(report.evidence.clone());
+            ToolCallOutcome::ok(report.status.clone(), report)
+        }
+        Err(error) => component_blocked(
+            &mut findings,
+            "suppressions_read_blocked",
+            "OCI suppression read failed; clean-audience reconciliation is not proven for this window.",
+            error,
+        ),
+    };
+
+    let components = WatchWindowComponents {
+        status,
+        metrics,
+        events,
+        trace,
+        suppressions,
+    };
+    let status = watch_status(&components, &findings);
+    let decision = match status.as_str() {
+        "blocked" => "remain_paused".to_string(),
+        "degraded" => "hold_or_seed_only_with_operator_review".to_string(),
+        _ => "monitoring_window_clean_no_send_authorization".to_string(),
+    };
+
+    WatchWindowReport {
+        status,
+        decision,
+        send_authorized: false,
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        interval,
+        resource_domain,
+        source_domain,
+        trace_requested,
+        components,
+        findings,
+        evidence,
+        raw_payload_returned: false,
+    }
+}
+
+fn non_empty_request_value(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn component_blocked<T>(
+    findings: &mut Vec<ReadinessFinding>,
+    code: &str,
+    message: &str,
+    error: OciEmailError,
+) -> ToolCallOutcome<T> {
+    findings.push(finding("blocker", code, message));
+    ToolCallOutcome::blocked(error)
+}
+
+fn trace_requested(request: &WatchWindowRequest) -> bool {
+    !request.message_id.as_deref().unwrap_or_default().is_empty()
+        || !request
+            .header_name
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty()
+        || !request
+            .header_value
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty()
+}
+
+fn watch_status(components: &WatchWindowComponents, findings: &[ReadinessFinding]) -> String {
+    if findings.iter().any(|item| item.severity == "blocker")
+        || component_blocked_status(&components.status)
+        || component_blocked_status(&components.metrics)
+        || component_blocked_status(&components.events)
+        || components
+            .trace
+            .as_ref()
+            .is_some_and(component_blocked_status)
+        || component_blocked_status(&components.suppressions)
+    {
+        return "blocked".to_string();
+    }
+    if !findings.is_empty()
+        || component_degraded_status(&components.status)
+        || component_degraded_status(&components.metrics)
+        || component_degraded_status(&components.events)
+        || components
+            .trace
+            .as_ref()
+            .is_some_and(component_degraded_status)
+        || component_degraded_status(&components.suppressions)
+    {
+        return "degraded".to_string();
+    }
+    "ok".to_string()
+}
+
+fn component_blocked_status<T>(component: &ToolCallOutcome<T>) -> bool {
+    component.status == "blocked"
+}
+
+fn component_degraded_status<T>(component: &ToolCallOutcome<T>) -> bool {
+    !matches!(component.status.as_str(), "ok" | "ready")
 }
 
 fn metric_query(

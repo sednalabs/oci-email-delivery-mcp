@@ -207,6 +207,12 @@
               "null"
             ]
           },
+          "source_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "start_time": {
             "type": "string"
           }
@@ -218,6 +224,82 @@
         "type": "object"
       },
       "name": "oci_email_trace_message"
+    },
+    {
+      "description": "Build one read-only OCI Email Delivery monitoring receipt for an explicit UTC window.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "header_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "header_value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "interval": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_time",
+          "end_time"
+        ],
+        "type": "object"
+      },
+      "name": "oci_email_watch_window"
     }
   ],
   "version": 1

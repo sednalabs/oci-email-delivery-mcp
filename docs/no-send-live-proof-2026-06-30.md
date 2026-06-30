@@ -22,7 +22,7 @@ The public release scan returned `HIGH=0 MEDIUM=0 LOW=0`.
 
 Covered:
 
-- schema snapshot contract for all five tools;
+- schema snapshot contract for all six tools;
 - stdio `tools/list` smoke;
 - fixture-backed domain output contracts;
 - redaction contracts for recipient, message-id, OCID, IP address,
@@ -36,8 +36,9 @@ Transport: stdio.
 Catalog proof:
 
 - required tools matched: `oci_email_status`, `oci_email_metrics`,
-  `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`;
-- expected tool count matched: 5;
+  `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`,
+  `oci_email_watch_window`;
+- expected tool count matched: 6;
 - schema compatibility passed;
 
 Tool-call proof:
@@ -58,7 +59,11 @@ Tool-call proof:
 - `oci_email_trace_message`: callable with a synthetic correlation header. It
   returned a hashed criterion and zero events, with no raw header value in
   output.
-- Transcript scan across all five tool calls found no raw email-shaped values.
+- `oci_email_watch_window`: callable for the same bounded UTC window. It
+  returned `blocked` with `decision=remain_paused`, `send_authorized=false`,
+  status read `ready`, metrics `blocked`, events `degraded`, suppressions
+  `ok`, no capped rows, and no raw provider payload.
+- Transcript scan across all six tool calls found no raw email-shaped values.
 
 Operator-specific counts and live readback details are retained outside this
 public-release candidate repository.

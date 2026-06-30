@@ -46,7 +46,8 @@ promotion gate after the reviewed commit is selected.
 7. Restart the MCP client process after changing the binary or environment.
 8. Verify the configured alias initializes and lists exactly:
    `oci_email_status`, `oci_email_metrics`, `oci_email_events`,
-   `oci_email_trace_message`, and `oci_email_suppressions`.
+   `oci_email_trace_message`, `oci_email_suppressions`, and
+   `oci_email_watch_window`.
 
 Do not call the adapter released until the hosted artifact checksum and
 configured alias startup proof are both recorded.

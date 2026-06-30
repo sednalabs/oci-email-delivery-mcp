@@ -51,8 +51,9 @@ pub use response::{
     EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, MetricRates,
     MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
     OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier, StatusRequest,
-    StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest, TraceCriteria,
-    TraceMessageReport, TraceMessageRequest,
+    StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest, ToolCallOutcome,
+    TraceCriteria, TraceMessageReport, TraceMessageRequest, WatchWindowComponents,
+    WatchWindowReport, WatchWindowRequest,
 };
 
 #[derive(Clone)]
@@ -96,6 +97,11 @@ impl OciEmailMcpServer {
                     "oci_email_suppressions",
                     "Summarize OCI Email Delivery suppressions without raw recipients.",
                     ["oci", "email", "suppressions", "audience"],
+                ),
+                read_capability(
+                    "oci_email_watch_window",
+                    "Build one read-only send-window monitoring receipt from status, metrics, logs, trace, and suppressions.",
+                    ["oci", "email", "watch", "receipt"],
                 ),
             ])?,
         })
@@ -158,6 +164,16 @@ impl OciEmailMcpServer {
     ) -> String {
         response::tool_json(self.backend.suppressions(&request))
     }
+
+    #[tool(
+        description = "Build one read-only OCI Email Delivery monitoring receipt for an explicit UTC window."
+    )]
+    fn oci_email_watch_window(
+        &self,
+        Parameters(request): Parameters<WatchWindowRequest>,
+    ) -> String {
+        response::tool_json(self.backend.watch_window(&request))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -190,7 +206,8 @@ mod tests {
                 "oci_email_metrics",
                 "oci_email_status",
                 "oci_email_suppressions",
-                "oci_email_trace_message"
+                "oci_email_trace_message",
+                "oci_email_watch_window"
             ]
         );
 

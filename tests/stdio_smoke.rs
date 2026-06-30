@@ -11,6 +11,7 @@ fn stdio_initializes_and_lists_tools() {
             "oci_email_status",
             "oci_email_suppressions",
             "oci_email_trace_message",
+            "oci_email_watch_window",
         ],
     );
 }
@@ -28,7 +29,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list array");
-    assert_eq!(tools.len(), 5);
+    assert_eq!(tools.len(), 6);
 
     for tool in tools {
         let name = tool["name"].as_str().expect("tool name");
@@ -51,4 +52,17 @@ fn stdio_tools_list_includes_input_schemas() {
         .as_object()
         .expect("metrics properties")
         .contains_key("resource_domain"));
+
+    let watch = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_watch_window")
+        .expect("watch-window tool");
+    assert_eq!(
+        watch["inputSchema"]["required"],
+        json!(["start_time", "end_time"])
+    );
+    assert!(watch["inputSchema"]["properties"]
+        .as_object()
+        .expect("watch properties")
+        .contains_key("source_domain"));
 }

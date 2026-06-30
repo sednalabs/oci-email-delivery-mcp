@@ -43,6 +43,31 @@ Pause the pilot or keep it paused when any of these are true:
 Run these read-only tool calls for the planned UTC window or the immediately
 preceding smoke window.
 
+`oci_email_watch_window` is the preferred first receipt because it composes the
+same read-only checks into one stop/go view:
+
+```json
+{
+  "start_time": "YYYY-MM-DDTHH:00:00Z",
+  "end_time": "YYYY-MM-DDTHH:00:00Z",
+  "interval": "1h",
+  "resource_domain": "update.example.com",
+  "source_domain": "update.example.com",
+  "message_id": null,
+  "header_name": null,
+  "header_value": null,
+  "limit": 50
+}
+```
+
+Expected: `send_authorized=false`; component status, metrics, events, optional
+trace, and suppressions are present; `decision` is `remain_paused`,
+`hold_or_seed_only_with_operator_review`, or
+`monitoring_window_clean_no_send_authorization`. The final state never
+authorizes a send by itself. A watch receipt without a metrics resource
+domain/resource id or without an event source domain is `blocked` because a
+compartment-wide receipt is not lane readiness proof.
+
 `oci_email_status`:
 
 ```json
@@ -84,6 +109,11 @@ covered by log proof. Missing stop-gate metrics are not treated as zero.
 
 Use short UTC windows, usually 5 to 15 minutes, and keep each observation
 bounded. Compare every window against the previous one.
+
+Start each observation with `oci_email_watch_window` using the same lane/domain
+filters. If the receipt is `blocked`, keep the lane paused. If it is
+`degraded`, continue only as seed-only or hold for operator review, depending
+on the approved sender policy.
 
 `oci_email_metrics`:
 
@@ -140,6 +170,7 @@ non-PII value generated for the seed/proof send.
   "message_id": "provider-message-id",
   "header_name": null,
   "header_value": null,
+  "source_domain": "update.example.com",
   "limit": 20
 }
 ```
