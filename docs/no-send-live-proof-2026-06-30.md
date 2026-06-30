@@ -22,7 +22,7 @@ The public release scan returned `HIGH=0 MEDIUM=0 LOW=0`.
 
 Covered:
 
-- schema snapshot contract for all six tools;
+- schema snapshot contract for all seven tools;
 - stdio `tools/list` smoke;
 - fixture-backed domain output contracts;
 - redaction contracts for recipient, message-id, OCID, IP address,
@@ -36,9 +36,9 @@ Transport: stdio.
 Catalog proof:
 
 - required tools matched: `oci_email_status`, `oci_email_metrics`,
-  `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`,
-  `oci_email_watch_window`;
-- expected tool count matched: 6;
+  `oci_email_ledger_window`, `oci_email_events`, `oci_email_trace_message`,
+  `oci_email_suppressions`, `oci_email_watch_window`;
+- expected tool count matched: 7;
 - schema compatibility passed;
 
 Tool-call proof:
@@ -51,6 +51,10 @@ Tool-call proof:
   stop gate is currently blocking pilot readiness; soft-bounce, complaint, and
   blocklist definitions were not visible, so they return warnings rather than
   false zeroes.
+- `oci_email_ledger_window`: callable with a synthetic private JSONL ledger
+  configured through `OCI_MCP_LEDGER_PATH`. It returned one matched row, no
+  capped rows, `raw_payload_returned=false`, and no raw recipient, message id,
+  campaign id, or batch id in the MCP output.
 - `oci_email_events`: callable against OCI Logging Search for the same UTC
   window. The query returned zero events and status `degraded`, explicitly not
   proof that logging is enabled.
@@ -63,7 +67,7 @@ Tool-call proof:
   returned `blocked` with `decision=remain_paused`, `send_authorized=false`,
   status read `ready`, metrics `blocked`, events `degraded`, suppressions
   `ok`, no capped rows, and no raw provider payload.
-- Transcript scan across all six tool calls found no raw email-shaped values.
+- Transcript scan across all seven tool calls found no raw email-shaped values.
 
 Operator-specific counts and live readback details are retained outside this
 public-release candidate repository.
@@ -77,4 +81,6 @@ public-release candidate repository.
   proven through logs before pilot expansion.
 - Email Delivery logs must show real OutboundAccepted/OutboundRelayed events
   for a seed/proof send before the trace path is considered operational.
+- The production host must configure the real private send-ledger JSONL path
+  before ledger/event reconciliation can be treated as operational.
 - Hosted validation and reviewer signoff are still pending.

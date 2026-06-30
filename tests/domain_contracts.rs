@@ -1,7 +1,8 @@
 use oci_email_delivery_mcp::{
-    tests_support::FixtureBackend, EventsReport, EventsRequest, MetricsReport, MetricsRequest,
-    OciEmailBackend, OciEmailError, OciEmailStatusReport, StatusRequest, SuppressionsReport,
-    SuppressionsRequest, TraceMessageReport, TraceMessageRequest, WatchWindowRequest,
+    tests_support::FixtureBackend, EventsReport, EventsRequest, LedgerWindowRequest, MetricsReport,
+    MetricsRequest, OciEmailBackend, OciEmailError, OciEmailStatusReport, StatusRequest,
+    SuppressionsReport, SuppressionsRequest, TraceMessageReport, TraceMessageRequest,
+    WatchWindowRequest,
 };
 
 #[test]
@@ -111,6 +112,37 @@ fn suppressions_contract_uses_hash_and_domain_only() {
         Some("fixture".to_string())
     );
     assert!(!payload.contains("person@example.com"));
+}
+
+#[test]
+fn ledger_window_contract_uses_hashes_and_domains_only() {
+    let backend = FixtureBackend;
+    let report = backend
+        .ledger_window(&LedgerWindowRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: Some("campaign-private".to_string()),
+            batch_id: Some("batch-private".to_string()),
+            limit: Some(20),
+        })
+        .unwrap_or_else(|err| panic!("fixture ledger: {err}"));
+    let payload =
+        serde_json::to_string(&report).unwrap_or_else(|err| panic!("serialize ledger: {err}"));
+
+    assert_eq!(report.status, "ok");
+    assert_eq!(
+        report.rows[0].recipient_domain,
+        Some("example.net".to_string())
+    );
+    assert!(report.rows[0].recipient_address_hash.is_some());
+    assert!(report.rows[0].message_id_hash.is_some());
+    assert!(!report.raw_payload_returned);
+    assert!(!report.rows[0].raw_recipient_returned);
+    assert!(!payload.contains("person@example.net"));
+    assert!(!payload.contains("message@example.com"));
+    assert!(!payload.contains("campaign-private"));
+    assert!(!payload.contains("batch-private"));
 }
 
 #[test]

@@ -8,6 +8,8 @@ pub const DEFAULT_EVENT_LIMIT: u32 = 20;
 pub const HARD_EVENT_LIMIT: u32 = 100;
 pub const DEFAULT_SUPPRESSION_LIMIT: u32 = 20;
 pub const HARD_SUPPRESSION_LIMIT: u32 = 100;
+pub const DEFAULT_LEDGER_LIMIT: u32 = 100;
+pub const HARD_LEDGER_LIMIT: u32 = 1000;
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct StatusRequest {
@@ -71,6 +73,16 @@ pub struct WatchWindowRequest {
     pub header_value: Option<String>,
     pub limit: Option<u32>,
     pub compartment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct LedgerWindowRequest {
+    pub start_time: String,
+    pub end_time: String,
+    pub sender_domain: Option<String>,
+    pub campaign_id: Option<String>,
+    pub batch_id: Option<String>,
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -348,6 +360,58 @@ pub struct WatchWindowReport {
     pub source_domain: Option<String>,
     pub trace_requested: bool,
     pub components: WatchWindowComponents,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LedgerWindowFilters {
+    pub sender_domain: Option<String>,
+    pub campaign_hash: Option<String>,
+    pub batch_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LedgerRowSummary {
+    pub submitted_at: Option<String>,
+    pub provider_hash: Option<String>,
+    pub campaign_hash: Option<String>,
+    pub batch_hash: Option<String>,
+    pub sender_domain: Option<String>,
+    pub recipient_domain: Option<String>,
+    pub recipient_address_hash: Option<String>,
+    pub recipient_id_hash: Option<String>,
+    pub message_id_hash: Option<String>,
+    pub correlation_id_hash: Option<String>,
+    pub template_version_hash: Option<String>,
+    pub subject_hash: Option<String>,
+    pub raw_recipient_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LedgerWindowTotals {
+    pub scanned_rows: usize,
+    pub matched_rows: usize,
+    pub returned_rows: usize,
+    pub invalid_rows: usize,
+    pub rows_capped: bool,
+    pub missing_trace_key_count: usize,
+    pub missing_recipient_key_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LedgerWindowReport {
+    pub status: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub filters: LedgerWindowFilters,
+    pub limit: u32,
+    pub totals: LedgerWindowTotals,
+    pub sender_domains: Vec<String>,
+    pub campaigns: Vec<String>,
+    pub batches: Vec<String>,
+    pub rows: Vec<LedgerRowSummary>,
     pub findings: Vec<ReadinessFinding>,
     pub evidence: Vec<Evidence>,
     pub raw_payload_returned: bool,

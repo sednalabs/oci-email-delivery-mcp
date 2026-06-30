@@ -4,12 +4,13 @@ Read-only stdio MCP server for OCI Email Delivery monitoring. The first
 operator goal is to let agents query OCI programmatically before production
 or cohort sends go live.
 
-The server exposes six curated intent tools:
+The server exposes seven curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
 | `oci_email_status` | Check CLI/profile readiness, approved senders, email domains, and suppression-query visibility. |
 | `oci_email_metrics` | Query fixed `oci_emaildelivery` Monitoring metrics for an explicit UTC window. |
+| `oci_email_ledger_window` | Summarize configured local send-ledger rows for a UTC window without raw recipients. |
 | `oci_email_events` | Search Email Delivery logs with whitelisted filters and redacted event summaries. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
 | `oci_email_suppressions` | Summarize OCI suppressions without returning raw recipient addresses. |
@@ -38,6 +39,7 @@ export OCI_MCP_WARN_HARD_BOUNCE_PERCENT=0.5
 export OCI_MCP_PAUSE_HARD_BOUNCE_PERCENT=0.55
 export OCI_MCP_THROTTLE_HARD_BOUNCE_PERCENT=0.75
 export OCI_MCP_HARD_STOP_HARD_BOUNCE_PERCENT=1.0
+export OCI_MCP_LEDGER_PATH=/path/to/private/send-ledger.jsonl
 ```
 
 The hard-bounce threshold defaults above are operational guardrails only. Set
@@ -67,6 +69,8 @@ contract tests with an OCI profile configured. The live smoke must not use
   placement proof.
 - Missing metrics or log rows are reported as missing evidence, not as proof
   that bounce, complaint, open, or click counts are safe.
+- Local send-ledger reads are disabled unless `OCI_MCP_LEDGER_PATH` is set.
+  The ledger tool summarizes JSONL rows with hashes and domains only.
 - `oci_email_watch_window` blocks unscoped lane receipts when neither a metrics
   resource domain/resource id nor an event source domain is available.
 

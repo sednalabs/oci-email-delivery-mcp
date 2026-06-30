@@ -17,6 +17,9 @@ core value.
 - Examples use placeholder values.
 - Tool output redacts email-shaped values, OCIDs, IP addresses, and private
   local paths before it returns through MCP.
+- Local send-ledger support is default-deny unless `OCI_MCP_LEDGER_PATH` is
+  configured at runtime. The repository contains no ledger data, and the tool
+  returns hashes/domains/counts rather than raw recipients or campaign text.
 - Operator-specific live telemetry is kept out of the repository; public docs
   describe proof categories and blocker state only.
 - GitHub Actions workflows use read-only top-level permissions, narrow
@@ -45,9 +48,11 @@ core value.
 - Final hosted validation must run on the commit that will be published.
 - GitHub security settings must be verified after the repository exists.
 - Before production monitoring use, the current hard-bounce blocker and
-  degraded log-event proof must be resolved. Operator acceptance of the current
-  gap can only mean remaining paused or seed-only. This is an
-  operational-readiness blocker, not a public-release source-code blocker.
+  degraded log-event proof must be resolved, and a host-local ledger path must
+  be configured if seed/cohort sends need ledger reconciliation. Operator
+  acceptance of the current gap can only mean remaining paused or seed-only.
+  This is an operational-readiness blocker, not a public-release source-code
+  blocker.
 
 ## Useful Hosted Gates
 

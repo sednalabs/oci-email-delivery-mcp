@@ -72,6 +72,52 @@
       "name": "oci_email_events"
     },
     {
+      "description": "Summarize configured local OCI send-ledger rows for a UTC window without raw recipients.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "batch_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "campaign_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sender_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_time",
+          "end_time"
+        ],
+        "type": "object"
+      },
+      "name": "oci_email_ledger_window"
+    },
+    {
       "description": "Query fixed OCI Email Delivery Monitoring metrics for a UTC window.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -7,6 +7,7 @@ fn stdio_initializes_and_lists_tools() {
         env!("CARGO_BIN_EXE_oci-email-delivery-mcp"),
         &[
             "oci_email_events",
+            "oci_email_ledger_window",
             "oci_email_metrics",
             "oci_email_status",
             "oci_email_suppressions",
@@ -29,7 +30,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list array");
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
 
     for tool in tools {
         let name = tool["name"].as_str().expect("tool name");
@@ -52,6 +53,19 @@ fn stdio_tools_list_includes_input_schemas() {
         .as_object()
         .expect("metrics properties")
         .contains_key("resource_domain"));
+
+    let ledger = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_ledger_window")
+        .expect("ledger tool");
+    assert_eq!(
+        ledger["inputSchema"]["required"],
+        json!(["start_time", "end_time"])
+    );
+    assert!(ledger["inputSchema"]["properties"]
+        .as_object()
+        .expect("ledger properties")
+        .contains_key("sender_domain"));
 
     let watch = tools
         .iter()

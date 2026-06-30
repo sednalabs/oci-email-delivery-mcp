@@ -29,6 +29,7 @@
 
 mod config;
 mod error;
+mod ledger;
 mod live;
 mod redact;
 mod response;
@@ -48,7 +49,8 @@ use mcp_toolkit_core::{
     tool_inventory::{ToolCapability, ToolDiscoveryMetadata, ToolInventory, ToolInventoryError},
 };
 pub use response::{
-    EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, MetricRates,
+    EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, LedgerRowSummary,
+    LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals, MetricRates,
     MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
     OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier, StatusRequest,
     StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest, ToolCallOutcome,
@@ -82,6 +84,11 @@ impl OciEmailMcpServer {
                     "oci_email_metrics",
                     "Query fixed OCI Email Delivery Monitoring metrics for a UTC window.",
                     ["oci", "email", "metrics", "monitoring"],
+                ),
+                read_capability(
+                    "oci_email_ledger_window",
+                    "Summarize configured local send-ledger rows for a UTC window with redacted identifiers.",
+                    ["oci", "email", "ledger", "local"],
                 ),
                 read_capability(
                     "oci_email_events",
@@ -140,6 +147,16 @@ impl OciEmailMcpServer {
     #[tool(description = "Query fixed OCI Email Delivery Monitoring metrics for a UTC window.")]
     fn oci_email_metrics(&self, Parameters(request): Parameters<MetricsRequest>) -> String {
         response::tool_json(self.backend.metrics(&request))
+    }
+
+    #[tool(
+        description = "Summarize configured local OCI send-ledger rows for a UTC window without raw recipients."
+    )]
+    fn oci_email_ledger_window(
+        &self,
+        Parameters(request): Parameters<LedgerWindowRequest>,
+    ) -> String {
+        response::tool_json(self.backend.ledger_window(&request))
     }
 
     #[tool(description = "Search OCI Email Delivery logs with redacted event summaries.")]
@@ -203,6 +220,7 @@ mod tests {
             names,
             vec![
                 "oci_email_events",
+                "oci_email_ledger_window",
                 "oci_email_metrics",
                 "oci_email_status",
                 "oci_email_suppressions",
@@ -352,6 +370,53 @@ pub mod tests_support {
                 }],
                 findings: Vec::new(),
                 evidence: vec![Evidence::new("fixture", "suppressions", false)],
+            })
+        }
+
+        fn ledger_window(
+            &self,
+            _request: &LedgerWindowRequest,
+        ) -> Result<LedgerWindowReport, OciEmailError> {
+            Ok(LedgerWindowReport {
+                status: "ok".to_string(),
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                filters: LedgerWindowFilters {
+                    sender_domain: Some("example.com".to_string()),
+                    campaign_hash: Some("fixture".to_string()),
+                    batch_hash: Some("fixture".to_string()),
+                },
+                limit: 20,
+                totals: LedgerWindowTotals {
+                    scanned_rows: 1,
+                    matched_rows: 1,
+                    returned_rows: 1,
+                    invalid_rows: 0,
+                    rows_capped: false,
+                    missing_trace_key_count: 0,
+                    missing_recipient_key_count: 0,
+                },
+                sender_domains: vec!["example.com".to_string()],
+                campaigns: vec!["fixture".to_string()],
+                batches: vec!["fixture".to_string()],
+                rows: vec![LedgerRowSummary {
+                    submitted_at: Some("2026-06-30T00:10:00Z".to_string()),
+                    provider_hash: Some("fixture".to_string()),
+                    campaign_hash: Some("fixture".to_string()),
+                    batch_hash: Some("fixture".to_string()),
+                    sender_domain: Some("example.com".to_string()),
+                    recipient_domain: Some("example.net".to_string()),
+                    recipient_address_hash: Some("fixture".to_string()),
+                    recipient_id_hash: None,
+                    message_id_hash: Some("fixture".to_string()),
+                    correlation_id_hash: Some("fixture".to_string()),
+                    template_version_hash: Some("fixture".to_string()),
+                    subject_hash: Some("fixture".to_string()),
+                    raw_recipient_returned: false,
+                }],
+                findings: Vec::new(),
+                evidence: vec![Evidence::new("fixture", "ledger", false)],
+                raw_payload_returned: false,
             })
         }
     }

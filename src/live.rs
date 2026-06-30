@@ -3,13 +3,13 @@ use crate::{
     error::OciEmailError,
     redact::{email_domain, is_host_token, redact_email, redact_sensitive_text, short_hash},
     response::{
-        EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, MetricRates,
-        MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
-        OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier, StatusRequest,
-        StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest,
-        ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
-        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
-        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
+        EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, LedgerWindowReport,
+        LedgerWindowRequest, MetricRates, MetricResult, MetricTotals, MetricsFilters,
+        MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding,
+        RedactedIdentifier, StatusRequest, StopThresholds, SuppressionSummary, SuppressionsReport,
+        SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
+        TraceMessageRequest, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
+        DEFAULT_EVENT_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -51,6 +51,15 @@ pub trait OciEmailBackend: Send + Sync {
         request: &WatchWindowRequest,
     ) -> Result<WatchWindowReport, OciEmailError> {
         Ok(compose_watch_window(self, request))
+    }
+
+    fn ledger_window(
+        &self,
+        _request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "local send-ledger reads are not available for this backend".to_string(),
+        ))
     }
 }
 
@@ -515,6 +524,13 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 rows_capped,
             )],
         })
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        crate::ledger::ledger_window(&self.config, request)
     }
 }
 
