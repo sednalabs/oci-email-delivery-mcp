@@ -32,14 +32,14 @@ jobs:
     steps:
       - name: Checkout repository
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Run OSV scanner
         # google/osv-scanner-action v2.3.8
-        uses: google/osv-scanner-action/osv-scanner-action@8dc09193bb540e09b23da07ad7e30bd33bf87018
+        uses: google/osv-scanner-action/osv-scanner-action@fa4ff678dd5d0a4fa3d628e57af8162873e93cd6
         with:
           scan-args: |-
             --output=results.json
@@ -51,7 +51,7 @@ jobs:
 
       - name: Build OSV SARIF report
         # google/osv-scanner-action v2.3.8
-        uses: google/osv-scanner-action/osv-reporter-action@8dc09193bb540e09b23da07ad7e30bd33bf87018
+        uses: google/osv-scanner-action/osv-reporter-action@fa4ff678dd5d0a4fa3d628e57af8162873e93cd6
         with:
           scan-args: |-
             --output=results.sarif
