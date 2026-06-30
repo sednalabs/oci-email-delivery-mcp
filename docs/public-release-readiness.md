@@ -1,6 +1,7 @@
 # Public Release Readiness
 
-Status: draft, not yet published.
+Status: local release candidate; public repository creation and hosted
+validation are the next gates.
 
 ## Classification
 
@@ -36,16 +37,14 @@ core value.
   can inspect one UTC window without manually reconciling five separate tool
   outputs. It remains read-only and always returns `send_authorized=false`.
 
-## Publication Blockers
+## Publication Gates
 
-- License file and Cargo metadata are Apache-2.0. Final owner approval is still
-  required before public launch.
-- Suggested public target `sednalabs/oci-email-delivery-mcp` was not present
-  during local readback; final owner/name approval is still required before
-  creating the repository.
+- License file and Cargo metadata are Apache-2.0. This release does not change
+  license terms.
+- Public target: `sednalabs/oci-email-delivery-mcp`.
 - The `mcp-toolkit-rs` dependency is pinned to landed upstream `main` commit
   `211c5687645b08e1beb81ad78891dd3214746fea`.
-- Final hosted validation must run on the commit that will be published.
+- Final hosted validation must run on the commit that is published.
 - GitHub security settings must be verified after the repository exists.
 - Before production monitoring use, the current hard-bounce blocker and
   degraded log-event proof must be resolved, and a host-local ledger path must
