@@ -22,26 +22,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  scan-scheduled:
-    if: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@fa4ff678dd5d0a4fa3d628e57af8162873e93cd6
+  scan:
+    name: OSV dependency scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
-    with:
-      scan-args: |-
-        -r
-        --skip-git
-        ./
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 1
+          persist-credentials: false
 
-  scan-pr:
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@fa4ff678dd5d0a4fa3d628e57af8162873e93cd6
-    permissions:
-      contents: read
-      security-events: write
-    with:
-      scan-args: |-
-        -r
-        --skip-git
-        ./
+      - name: Run OSV scanner
+        # google/osv-scanner-action v2.3.8
+        uses: google/osv-scanner-action/osv-scanner-action@8dc09193bb540e09b23da07ad7e30bd33bf87018
+        with:
+          scan-args: |-
+            --output=results.json
+            --format=json
+            -r
+            --skip-git
+            ./
+        continue-on-error: true
+
+      - name: Build OSV SARIF report
+        # google/osv-scanner-action v2.3.8
+        uses: google/osv-scanner-action/osv-reporter-action@8dc09193bb540e09b23da07ad7e30bd33bf87018
+        with:
+          scan-args: |-
+            --output=results.sarif
+            --new=results.json
+            --gh-annotations=false
+            --fail-on-vuln=true
+
+      - name: Upload OSV SARIF artifact
+        # actions/upload-artifact v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ !cancelled() }}
+        with:
+          name: osv-scanner-sarif
+          path: results.sarif
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Upload OSV results to code scanning
+        # github/codeql-action v4
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
+        if: ${{ !cancelled() }}
+        with:
+          sarif_file: results.sarif
