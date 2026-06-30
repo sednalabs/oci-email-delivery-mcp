@@ -388,20 +388,23 @@ fn validate_domain(value: &str, label: &str) -> Result<(), OciEmailError> {
     if is_host_token(value) {
         Ok(())
     } else {
-        Err(OciEmailError::InvalidInput(format!(
-            "{} must be a valid domain token",
-            label
-        )))
+        Err(labelled_invalid_input_error(
+            label,
+            " must be a valid domain token",
+        ))
     }
 }
 
 fn validate_time(value: &str, label: &str) -> Result<String, OciEmailError> {
     utc_timestamp_key(value).ok_or_else(|| {
-        OciEmailError::InvalidInput(format!(
-            "{} must be an RFC3339 UTC timestamp ending in Z",
-            label
-        ))
+        labelled_invalid_input_error(label, " must be an RFC3339 UTC timestamp ending in Z")
     })
+}
+
+fn labelled_invalid_input_error(label: &str, suffix: &str) -> OciEmailError {
+    let mut message = String::from(label);
+    message.push_str(suffix);
+    OciEmailError::InvalidInput(message)
 }
 
 fn cap_limit(value: u32, hard_limit: u32) -> u32 {
