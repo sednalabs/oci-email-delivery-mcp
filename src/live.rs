@@ -6,10 +6,11 @@ use crate::{
         EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, LedgerWindowReport,
         LedgerWindowRequest, MetricRates, MetricResult, MetricTotals, MetricsFilters,
         MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding,
-        RedactedIdentifier, StatusRequest, StopThresholds, SuppressionSummary, SuppressionsReport,
-        SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
-        TraceMessageRequest, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
-        DEFAULT_EVENT_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
+        RedactedIdentifier, SendReadinessComponents, SendReadinessReport, SendReadinessRequest,
+        StatusRequest, StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest,
+        ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
+        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
+        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -51,6 +52,13 @@ pub trait OciEmailBackend: Send + Sync {
         request: &WatchWindowRequest,
     ) -> Result<WatchWindowReport, OciEmailError> {
         Ok(compose_watch_window(self, request))
+    }
+
+    fn send_readiness(
+        &self,
+        request: &SendReadinessRequest,
+    ) -> Result<SendReadinessReport, OciEmailError> {
+        Ok(compose_send_readiness(self, request))
     }
 
     fn ledger_window(
@@ -931,12 +939,226 @@ fn compose_watch_window<B: OciEmailBackend + ?Sized>(
     }
 }
 
+fn compose_send_readiness<B: OciEmailBackend + ?Sized>(
+    backend: &B,
+    request: &SendReadinessRequest,
+) -> SendReadinessReport {
+    let watch_request = WatchWindowRequest {
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        interval: request.interval.clone(),
+        resource_domain: request.resource_domain.clone(),
+        source_domain: request.source_domain.clone(),
+        resource_id: request.resource_id.clone(),
+        message_id: request.message_id.clone(),
+        header_name: request.header_name.clone(),
+        header_value: request.header_value.clone(),
+        limit: request.limit,
+        compartment_id: request.compartment_id.clone(),
+    };
+    let mut watch_report = compose_watch_window(backend, &watch_request);
+    redact_watch_trace_header_names_for_readiness(&mut watch_report);
+    let mut findings = watch_report.findings.clone();
+    let mut evidence = watch_report.evidence.clone();
+    let sender_domain = non_empty_request_value(&request.sender_domain)
+        .or_else(|| watch_report.source_domain.clone())
+        .or_else(|| watch_report.resource_domain.clone());
+    let campaign_id = non_empty_string(&request.campaign_id);
+    let batch_id = non_empty_string(&request.batch_id);
+
+    if campaign_id.is_none() {
+        findings.push(finding(
+            "blocker",
+            "campaign_id_missing",
+            "Send-readiness receipts require campaign_id so local ledger proof cannot pass on a sender-domain-only row count.",
+        ));
+    }
+    if batch_id.is_none() {
+        findings.push(finding(
+            "blocker",
+            "batch_id_missing",
+            "Send-readiness receipts require batch_id so local ledger proof cannot pass on a sender-domain-only row count.",
+        ));
+    }
+    if request.expected_ledger_rows == 0 {
+        findings.push(finding(
+            "blocker",
+            "expected_ledger_rows_zero",
+            "Send-readiness receipts require at least one expected local ledger row.",
+        ));
+    }
+
+    let ledger_requirements_ready =
+        campaign_id.is_some() && batch_id.is_some() && request.expected_ledger_rows > 0;
+    let ledger = if !ledger_requirements_ready {
+        component_blocked(
+            &mut findings,
+            "ledger_requirements_missing",
+            "Local send-ledger read skipped because campaign_id, batch_id, and expected_ledger_rows must all be present before a send-readiness receipt can read ledger rows.",
+            OciEmailError::InvalidInput(
+                "send_readiness requires campaign_id, batch_id, and expected_ledger_rows before reading the local send ledger".to_string(),
+            ),
+        )
+    } else if let Some(sender_domain_value) = sender_domain.clone() {
+        match backend.ledger_window(&LedgerWindowRequest {
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            sender_domain: Some(sender_domain_value),
+            campaign_id: campaign_id.clone(),
+            batch_id: batch_id.clone(),
+            limit: request.limit,
+        }) {
+            Ok(report) => {
+                findings.extend(report.findings.clone());
+                add_send_readiness_ledger_findings(&mut findings, &report, request);
+                evidence.extend(report.evidence.clone());
+                ToolCallOutcome::ok(report.status.clone(), report)
+            }
+            Err(error) => component_blocked(
+                &mut findings,
+                "ledger_read_blocked",
+                "Local send-ledger read failed; pre-submission ledger proof is not available for this window.",
+                error,
+            ),
+        }
+    } else {
+        component_blocked(
+            &mut findings,
+            "ledger_scope_missing",
+            "Send-readiness receipts require sender_domain, source_domain, or resource_domain before reading the local send ledger.",
+            OciEmailError::InvalidInput(
+                "send_readiness requires sender_domain, source_domain, or resource_domain before reading the local send ledger".to_string(),
+            ),
+        )
+    };
+
+    let status = send_readiness_status(&watch_report, &ledger, &findings);
+    let decision = match status.as_str() {
+        "blocked" => "remain_paused".to_string(),
+        "degraded" => "hold_or_seed_only_with_operator_review".to_string(),
+        _ => "monitoring_and_ledger_ready_no_send_authorization".to_string(),
+    };
+    let interval = watch_report.interval.clone();
+    let resource_domain = watch_report.resource_domain.clone();
+    let source_domain = watch_report.source_domain.clone();
+    let trace_requested = watch_report.trace_requested;
+    let campaign_hash = campaign_id.as_deref().map(short_hash);
+    let batch_hash = batch_id.as_deref().map(short_hash);
+
+    SendReadinessReport {
+        status,
+        decision,
+        send_authorized: false,
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        interval,
+        resource_domain,
+        source_domain,
+        sender_domain,
+        campaign_hash,
+        batch_hash,
+        expected_ledger_rows: request.expected_ledger_rows,
+        trace_requested,
+        components: SendReadinessComponents {
+            watch_window: ToolCallOutcome::ok(watch_report.status.clone(), watch_report),
+            ledger,
+        },
+        findings,
+        evidence,
+        raw_payload_returned: false,
+    }
+}
+
+fn add_send_readiness_ledger_findings(
+    findings: &mut Vec<ReadinessFinding>,
+    report: &LedgerWindowReport,
+    request: &SendReadinessRequest,
+) {
+    let expected = request.expected_ledger_rows;
+    let matched = report.totals.matched_rows as u64;
+    if expected > 0 && matched != expected {
+        findings.push(finding(
+            "blocker",
+            "ledger_expected_rows_mismatch",
+            "Local send-ledger matched row count does not equal expected_ledger_rows; do not treat this send window as traceable.",
+        ));
+    }
+    if report.totals.invalid_rows > 0 {
+        findings.push(finding(
+            "blocker",
+            "ledger_invalid_rows_block_readiness",
+            "Local send-ledger contains invalid rows in this window; narrow or repair the ledger before send readiness.",
+        ));
+    }
+    if report.totals.rows_capped {
+        findings.push(finding(
+            "blocker",
+            "ledger_rows_capped_block_readiness",
+            "Local send-ledger rows were capped; narrow the window before send readiness.",
+        ));
+    }
+    if report.totals.missing_trace_key_count > 0 {
+        findings.push(finding(
+            "blocker",
+            "ledger_missing_trace_keys_block_readiness",
+            "Local send-ledger rows are missing message or correlation identifiers needed for OCI traceability.",
+        ));
+    }
+    if report.totals.missing_recipient_key_count > 0 {
+        findings.push(finding(
+            "blocker",
+            "ledger_missing_recipient_keys_block_readiness",
+            "Local send-ledger rows are missing recipient hashes needed for clean-audience reconciliation.",
+        ));
+    }
+}
+
+fn redact_watch_trace_header_names_for_readiness(report: &mut WatchWindowReport) {
+    let Some(trace) = report.components.trace.as_mut() else {
+        return;
+    };
+    let Some(trace_report) = trace.report.as_mut() else {
+        return;
+    };
+    if trace_report.criteria.header_name.is_some() {
+        trace_report.criteria.header_name = Some("[redacted]".to_string());
+    }
+    if trace_report.events.filters.header_name.is_some() {
+        trace_report.events.filters.header_name = Some("[redacted]".to_string());
+    }
+}
+
+fn send_readiness_status(
+    watch_report: &WatchWindowReport,
+    ledger: &ToolCallOutcome<LedgerWindowReport>,
+    findings: &[ReadinessFinding],
+) -> String {
+    if findings.iter().any(|item| item.severity == "blocker")
+        || watch_report.status == "blocked"
+        || component_blocked_status(ledger)
+    {
+        return "blocked".to_string();
+    }
+    if !findings.is_empty()
+        || !matches!(watch_report.status.as_str(), "ok" | "ready")
+        || component_degraded_status(ledger)
+    {
+        return "degraded".to_string();
+    }
+    "ok".to_string()
+}
+
 fn non_empty_request_value(value: &Option<String>) -> Option<String> {
     value
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn component_blocked<T>(

@@ -7,11 +7,12 @@ pilot monitoring.
 | --- | --- | --- |
 | Server shape | Standalone curated stdio intent server built with `mcp-toolkit-rs`. | implemented locally |
 | Toolkit template | `templates/curated-stdio-intent-server`. | implemented locally |
-| Intent tools | `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`, `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`, `oci_email_watch_window`. | implemented locally |
+| Intent tools | `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`, `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`, `oci_email_watch_window`, `oci_email_send_readiness`. | implemented locally |
 | Toolkit contract tests | Schema snapshot and real stdio `tools/list` smoke. | implemented locally |
 | Domain output contract tests | Fixture-backed output, redaction, missing-auth, invalid-filter, and missing-metric tests. | implemented locally |
 | Live no-send proof | OCI profile read-only status, metric discovery/summarize, log search, and suppression query without `submit-email` or mutation commands. | passed as no-send/blocked on 2026-06-30; see `docs/no-send-live-proof-2026-06-30.md` |
 | Local send ledger proof | Configured private JSONL ledger can be summarized by UTC window with hashes/domains only and no raw recipients. | implemented with fixture tests; pending live configured ledger path |
+| Composed send readiness proof | `oci_email_send_readiness` combines watch-window proof with local ledger row-count, trace-key, and recipient-key gates while still returning `send_authorized=false`. | implemented with fixture tests; pending live seed/cohort ledger rows and log traceability |
 | GitHub Actions run | Hosted validation on reviewed commit, including Rust baseline, CodeQL, custom query tests, GitHub Code Quality coverage, DevSkim, OSV, and release-artifact where applicable. | public repo exists; Rust baseline, DevSkim, OSV, and custom query tests have run; Code Quality coverage upload still needs repository Code Quality enablement |
 | Reviewer signoff | Sidecar review for architecture/contract, safety/redaction, release readiness, and monitoring runbook coverage. | local sidecar loop clean on 2026-06-30; hosted release review remains pending |
 | Promotion source | Hosted artifact or tagged commit only; no local binary promotion. | release-artifact workflow present; pending hosted run and checksum install |

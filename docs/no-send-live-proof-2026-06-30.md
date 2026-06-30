@@ -72,6 +72,12 @@ Tool-call proof:
 Operator-specific counts and live readback details are retained outside this
 public-release candidate repository.
 
+Addendum: the later `oci_email_send_readiness` tool extends this proof set by
+combining the watch-window receipt with configured local send-ledger proof and
+expected row-count gates. Its fixture/schema proof is current, but live
+send-window proof remains pending until a real seed/cohort window has expected
+ledger rows and OCI log traceability.
+
 ## Evidence Gaps Before Production Monitoring Readiness
 
 - The hard-bounce stop gate must be understood and cleared before pilot

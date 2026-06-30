@@ -9,6 +9,7 @@ fn stdio_initializes_and_lists_tools() {
             "oci_email_events",
             "oci_email_ledger_window",
             "oci_email_metrics",
+            "oci_email_send_readiness",
             "oci_email_status",
             "oci_email_suppressions",
             "oci_email_trace_message",
@@ -30,7 +31,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list array");
-    assert_eq!(tools.len(), 7);
+    assert_eq!(tools.len(), 8);
 
     for tool in tools {
         let name = tool["name"].as_str().expect("tool name");
@@ -79,4 +80,25 @@ fn stdio_tools_list_includes_input_schemas() {
         .as_object()
         .expect("watch properties")
         .contains_key("source_domain"));
+
+    let send_readiness = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_send_readiness")
+        .expect("send-readiness tool");
+    assert_eq!(
+        send_readiness["inputSchema"]["required"],
+        json!([
+            "start_time",
+            "end_time",
+            "campaign_id",
+            "batch_id",
+            "expected_ledger_rows"
+        ])
+    );
+    let send_readiness_properties = send_readiness["inputSchema"]["properties"]
+        .as_object()
+        .expect("send-readiness properties");
+    assert!(send_readiness_properties.contains_key("expected_ledger_rows"));
+    assert!(send_readiness_properties.contains_key("campaign_id"));
+    assert!(send_readiness_properties.contains_key("batch_id"));
 }
