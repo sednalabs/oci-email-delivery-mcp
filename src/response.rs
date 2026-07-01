@@ -10,6 +10,8 @@ pub const DEFAULT_SUPPRESSION_LIMIT: u32 = 20;
 pub const HARD_SUPPRESSION_LIMIT: u32 = 100;
 pub const DEFAULT_LEDGER_LIMIT: u32 = 100;
 pub const HARD_LEDGER_LIMIT: u32 = 1000;
+pub const DEFAULT_LOGGING_STATUS_LIMIT: u32 = 20;
+pub const HARD_LOGGING_STATUS_LIMIT: u32 = 100;
 pub const DEFAULT_SNAPSHOT_PREFIX: &str = "oci-email-monitoring";
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -39,6 +41,13 @@ pub struct EventsRequest {
     pub source_domain: Option<String>,
     pub limit: Option<u32>,
     pub compartment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct LoggingStatusRequest {
+    pub compartment_id: Option<String>,
+    pub resource_id: Option<String>,
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -203,6 +212,46 @@ pub struct OciEmailStatusReport {
     pub suppression_query: QueryProbe,
     pub findings: Vec<ReadinessFinding>,
     pub evidence: Vec<Evidence>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LoggingStatusReport {
+    pub status: String,
+    pub send_authorized: bool,
+    pub compartment: RedactedIdentifier,
+    pub requested_resource_id: RedactedIdentifier,
+    pub limit: u32,
+    pub log_group_count: usize,
+    pub service_log_count: usize,
+    pub email_delivery_log_count: usize,
+    pub active_email_delivery_log_count: usize,
+    pub matching_requested_resource_log_count: usize,
+    pub log_groups: Vec<LogGroupSummary>,
+    pub email_delivery_logs: Vec<EmailDeliveryLogSummary>,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LogGroupSummary {
+    pub log_group_id: RedactedIdentifier,
+    pub display_name_hash: Option<String>,
+    pub lifecycle_state: Option<String>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct EmailDeliveryLogSummary {
+    pub log_id: RedactedIdentifier,
+    pub log_group_id: RedactedIdentifier,
+    pub display_name_hash: Option<String>,
+    pub lifecycle_state: Option<String>,
+    pub source_service: Option<String>,
+    pub source_resource: RedactedIdentifier,
+    pub source_category: Option<String>,
+    pub source_kind: Option<String>,
+    pub raw_payload_returned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

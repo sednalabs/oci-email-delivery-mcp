@@ -3,8 +3,9 @@ use crate::{
     error::OciEmailError,
     redact::{email_domain, is_host_token, redact_email, redact_sensitive_text, short_hash},
     response::{
-        EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, LedgerRowSummary,
-        LedgerWindowReport, LedgerWindowRequest, MetricRates, MetricResult, MetricTotals,
+        EmailDeliveryLogSummary, EmailEventSummary, EventFilters, EventsReport, EventsRequest,
+        Evidence, LedgerRowSummary, LedgerWindowReport, LedgerWindowRequest, LogGroupSummary,
+        LoggingStatusReport, LoggingStatusRequest, MetricRates, MetricResult, MetricTotals,
         MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
         ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
         SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest,
@@ -13,7 +14,8 @@ use crate::{
         TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents,
         TraceabilityAuditReport, TraceabilityAuditRequest, TraceabilitySummary,
         WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
-        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
+        DEFAULT_LOGGING_STATUS_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT,
+        HARD_LOGGING_STATUS_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -45,6 +47,14 @@ pub trait OciEmailBackend: Send + Sync {
     ) -> Result<OciEmailStatusReport, OciEmailError>;
     fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError>;
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError>;
+    fn logging_status(
+        &self,
+        _request: &LoggingStatusRequest,
+    ) -> Result<LoggingStatusReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "OCI Logging service-log status is not available for this backend".to_string(),
+        ))
+    }
     fn trace_message(
         &self,
         request: &TraceMessageRequest,
@@ -439,6 +449,203 @@ impl OciEmailBackend for LiveOciEmailBackend {
 
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
         self.events_inner(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<LoggingStatusReport, OciEmailError> {
+        if let Some(resource_id) = request.resource_id.as_deref() {
+            safe_query_value(resource_id).map_err(|_| {
+                OciEmailError::InvalidInput(
+                    "resource_id contains unsupported identifier characters".to_string(),
+                )
+            })?;
+        }
+        let compartment_id = self.compartment_id(request.compartment_id.as_deref())?;
+        let limit = cap_limit(
+            request.limit.unwrap_or(DEFAULT_LOGGING_STATUS_LIMIT),
+            HARD_LOGGING_STATUS_LIMIT,
+        );
+        let log_group_args = vec![
+            "logging".to_string(),
+            "log-group".to_string(),
+            "list".to_string(),
+            "--compartment-id".to_string(),
+            compartment_id.clone(),
+            "--limit".to_string(),
+            limit.to_string(),
+        ];
+        let log_group_json = self.runner.run_optional_json(&log_group_args)?;
+        let log_group_items = json_items(&log_group_json);
+        let log_groups = log_group_items
+            .iter()
+            .map(|item| log_group_summary(item))
+            .collect::<Vec<_>>();
+        let mut email_delivery_logs = Vec::new();
+        let mut service_log_count = 0usize;
+        let mut service_rows_capped = false;
+        let mut log_list_attempted = false;
+
+        for group in &log_group_items {
+            let Some(log_group_id) = string_field(group, "id") else {
+                continue;
+            };
+            log_list_attempted = true;
+            let log_args = vec![
+                "logging".to_string(),
+                "log".to_string(),
+                "list".to_string(),
+                "--log-group-id".to_string(),
+                log_group_id.to_string(),
+                "--log-type".to_string(),
+                "SERVICE".to_string(),
+                "--source-service".to_string(),
+                "emaildelivery".to_string(),
+                "--limit".to_string(),
+                limit.to_string(),
+            ];
+            let log_json = self.runner.run_optional_json(&log_args)?;
+            let logs = json_items(&log_json);
+            service_log_count += logs.len();
+            service_rows_capped |= rows_may_be_capped(logs.len(), limit);
+            email_delivery_logs.extend(
+                logs.into_iter()
+                    .filter(|item| is_email_delivery_service_log(item))
+                    .map(|item| email_delivery_log_summary(item, log_group_id)),
+            );
+        }
+
+        let active_email_delivery_log_count = email_delivery_logs
+            .iter()
+            .filter(|item| {
+                item.lifecycle_state
+                    .as_deref()
+                    .is_some_and(|state| state.eq_ignore_ascii_case("ACTIVE"))
+            })
+            .count();
+        let requested_resource_redacted = request
+            .resource_id
+            .as_deref()
+            .map(crate::redact::redact_ocid);
+        let matching_requested_resource_log_count = requested_resource_redacted
+            .as_deref()
+            .map(|redacted_resource_id| {
+                email_delivery_logs
+                    .iter()
+                    .filter(|item| {
+                        item.source_resource.redacted.as_deref() == Some(redacted_resource_id)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        let active_matching_requested_resource_log_count = requested_resource_redacted
+            .as_deref()
+            .map(|redacted_resource_id| {
+                email_delivery_logs
+                    .iter()
+                    .filter(|item| {
+                        item.source_resource.redacted.as_deref() == Some(redacted_resource_id)
+                    })
+                    .filter(|item| {
+                        item.lifecycle_state
+                            .as_deref()
+                            .is_some_and(|state| state.eq_ignore_ascii_case("ACTIVE"))
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        let log_group_rows_capped = rows_may_be_capped(log_groups.len(), limit);
+        let mut findings = Vec::new();
+        if log_groups.is_empty() {
+            findings.push(finding(
+                "blocker",
+                "logging_no_log_groups_visible",
+                "No OCI Logging log groups were visible to the selected profile; Email Delivery log configuration is not proven.",
+            ));
+        }
+        if email_delivery_logs.is_empty() {
+            findings.push(finding(
+                "blocker",
+                "logging_no_email_delivery_service_logs",
+                "No Email Delivery service logs were visible; exact OCI event traceability is not configured or not readable by this profile.",
+            ));
+        } else if active_email_delivery_log_count == 0 {
+            findings.push(finding(
+                "blocker",
+                "logging_no_active_email_delivery_service_logs",
+                "Email Delivery service logs were visible, but none were ACTIVE.",
+            ));
+        }
+        if request.resource_id.is_some() {
+            if matching_requested_resource_log_count == 0 {
+                findings.push(finding(
+                    "blocker",
+                    "logging_requested_resource_not_visible",
+                    "No visible Email Delivery service log matched the requested resource id.",
+                ));
+            } else if active_matching_requested_resource_log_count == 0 {
+                findings.push(finding(
+                    "blocker",
+                    "logging_requested_resource_not_active",
+                    "Email Delivery service logs matched the requested resource id, but none were ACTIVE.",
+                ));
+            }
+        }
+        if log_group_rows_capped {
+            findings.push(finding(
+                "warning",
+                "logging_log_groups_capped",
+                "Log group listing returned the requested limit; raise the limit before treating the log-group inventory as complete.",
+            ));
+        }
+        if service_rows_capped {
+            findings.push(finding(
+                "warning",
+                "logging_service_logs_capped",
+                "Service log listing returned the requested limit for at least one log group; raise the limit before treating the log inventory as complete.",
+            ));
+        }
+
+        let status = if findings.iter().any(|item| item.severity == "blocker") {
+            "blocked"
+        } else if findings.is_empty() {
+            "ok"
+        } else {
+            "degraded"
+        };
+        let mut evidence = vec![Evidence::new(
+            "oci_cli",
+            "logging log-group list",
+            log_group_rows_capped,
+        )];
+        if log_list_attempted {
+            evidence.push(Evidence::new(
+                "oci_cli",
+                "logging log list",
+                service_rows_capped,
+            ));
+        }
+
+        Ok(LoggingStatusReport {
+            status: status.to_string(),
+            send_authorized: false,
+            compartment: RedactedIdentifier::from_optional(Some(&compartment_id)),
+            requested_resource_id: RedactedIdentifier::from_optional(
+                request.resource_id.as_deref(),
+            ),
+            limit,
+            log_group_count: log_groups.len(),
+            service_log_count,
+            email_delivery_log_count: email_delivery_logs.len(),
+            active_email_delivery_log_count,
+            matching_requested_resource_log_count,
+            log_groups,
+            email_delivery_logs,
+            findings,
+            evidence,
+            raw_payload_returned: false,
+        })
     }
 
     fn trace_message(
@@ -1834,6 +2041,96 @@ fn suppression_summary(value: &Value) -> SuppressionSummary {
     }
 }
 
+fn log_group_summary(value: &Value) -> LogGroupSummary {
+    LogGroupSummary {
+        log_group_id: RedactedIdentifier::from_optional(string_field(value, "id")),
+        display_name_hash: string_field(value, "display-name")
+            .or_else(|| string_field(value, "displayName"))
+            .map(short_hash),
+        lifecycle_state: lifecycle_state(value),
+        raw_payload_returned: false,
+    }
+}
+
+fn email_delivery_log_summary(
+    value: &Value,
+    fallback_log_group_id: &str,
+) -> EmailDeliveryLogSummary {
+    let source = value
+        .get("configuration")
+        .and_then(|configuration| configuration.get("source"));
+    let log_group_id = string_field(value, "log-group-id")
+        .or_else(|| string_field(value, "logGroupId"))
+        .unwrap_or(fallback_log_group_id);
+    let source_resource = source
+        .and_then(|source| {
+            string_field(source, "resource")
+                .or_else(|| string_field(source, "source-resource"))
+                .or_else(|| string_field(source, "sourceResource"))
+        })
+        .or_else(|| string_field(value, "source-resource"))
+        .or_else(|| string_field(value, "sourceResource"));
+
+    EmailDeliveryLogSummary {
+        log_id: RedactedIdentifier::from_optional(string_field(value, "id")),
+        log_group_id: RedactedIdentifier::from_optional(Some(log_group_id)),
+        display_name_hash: string_field(value, "display-name")
+            .or_else(|| string_field(value, "displayName"))
+            .map(short_hash),
+        lifecycle_state: lifecycle_state(value),
+        source_service: source_service(value).map(|service| service.to_ascii_lowercase()),
+        source_resource: RedactedIdentifier::from_optional(source_resource),
+        source_category: source
+            .and_then(|source| {
+                string_field(source, "category")
+                    .or_else(|| string_field(source, "source-category"))
+                    .or_else(|| string_field(source, "sourceCategory"))
+            })
+            .or_else(|| string_field(value, "source-category"))
+            .or_else(|| string_field(value, "sourceCategory"))
+            .map(redact_sensitive_text),
+        source_kind: source
+            .and_then(|source| string_field(source, "kind"))
+            .or_else(|| string_field(value, "source-kind"))
+            .or_else(|| string_field(value, "sourceKind"))
+            .map(redact_sensitive_text),
+        raw_payload_returned: false,
+    }
+}
+
+fn is_email_delivery_service_log(value: &Value) -> bool {
+    let service_is_email_delivery = source_service(value).is_none_or(|service| {
+        service
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>()
+            .eq_ignore_ascii_case("emaildelivery")
+    });
+    let log_type_is_service = string_field(value, "log-type")
+        .or_else(|| string_field(value, "logType"))
+        .is_none_or(|log_type| log_type.eq_ignore_ascii_case("SERVICE"));
+    service_is_email_delivery && log_type_is_service
+}
+
+fn source_service(value: &Value) -> Option<&str> {
+    value
+        .get("configuration")
+        .and_then(|configuration| configuration.get("source"))
+        .and_then(|source| {
+            string_field(source, "service")
+                .or_else(|| string_field(source, "source-service"))
+                .or_else(|| string_field(source, "sourceService"))
+        })
+        .or_else(|| string_field(value, "source-service"))
+        .or_else(|| string_field(value, "sourceService"))
+}
+
+fn lifecycle_state(value: &Value) -> Option<String> {
+    string_field(value, "lifecycle-state")
+        .or_else(|| string_field(value, "lifecycleState"))
+        .map(redact_sensitive_text)
+}
+
 fn suppression_totals(suppressions: &[SuppressionSummary]) -> SuppressionTotals {
     let mut by_reason = BTreeMap::<String, usize>::new();
     let mut by_recipient_domain = BTreeMap::<String, usize>::new();
@@ -2216,5 +2513,231 @@ mod tests {
         assert!(!payload.contains("message@example.com"));
         assert!(!payload.contains("203.0.113.4"));
         assert!(!payload.contains("Example Mail Client"));
+    }
+
+    #[test]
+    fn logging_status_lists_service_logs_without_raw_identifiers() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner { logs_visible: true }),
+        );
+
+        let report = backend
+            .logging_status(&LoggingStatusRequest {
+                compartment_id: None,
+                resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging status: {err}"));
+        let payload = serde_json::to_string(&report).expect("serialize logging status");
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.log_group_count, 1);
+        assert_eq!(report.email_delivery_log_count, 1);
+        assert_eq!(report.active_email_delivery_log_count, 1);
+        assert_eq!(report.matching_requested_resource_log_count, 1);
+        assert!(!report.raw_payload_returned);
+        assert!(payload.contains("ocid1.emaildomain:"));
+        assert!(!payload.contains("ocid1.emaildomain.oc1.example"));
+        assert!(!payload.contains("Email Delivery Log"));
+    }
+
+    #[test]
+    fn logging_status_blocks_when_requested_resource_log_is_not_active() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureInactiveRequestedResourceRunner),
+        );
+
+        let report = backend
+            .logging_status(&LoggingStatusRequest {
+                compartment_id: None,
+                resource_id: Some("ocid1.emaildomain.oc1.requested".to_string()),
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging status: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.email_delivery_log_count, 2);
+        assert_eq!(report.active_email_delivery_log_count, 1);
+        assert_eq!(report.matching_requested_resource_log_count, 1);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| { finding.code == "logging_requested_resource_not_active" }));
+    }
+
+    #[test]
+    fn logging_status_blocks_when_no_email_delivery_logs_visible() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner {
+                logs_visible: false,
+            }),
+        );
+
+        let report = backend
+            .logging_status(&LoggingStatusRequest {
+                compartment_id: None,
+                resource_id: None,
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging status: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| { finding.code == "logging_no_email_delivery_service_logs" }));
+    }
+
+    #[test]
+    fn logging_status_only_reports_attempted_logging_commands() {
+        let backend =
+            LiveOciEmailBackend::with_runner(test_config(), Arc::new(FixtureNoLogGroupsRunner));
+
+        let report = backend
+            .logging_status(&LoggingStatusRequest {
+                compartment_id: None,
+                resource_id: None,
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging status: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert!(report
+            .evidence
+            .iter()
+            .any(|evidence| evidence.command == "logging log-group list"));
+        assert!(!report
+            .evidence
+            .iter()
+            .any(|evidence| evidence.command == "logging log list"));
+    }
+
+    struct FixtureLoggingRunner {
+        logs_visible: bool,
+    }
+
+    impl OciCliRunner for FixtureLoggingRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            match command_label(args).as_str() {
+                "logging log-group list" => Ok(serde_json::json!({
+                    "data": [{
+                        "id": "ocid1.loggroup.oc1.example",
+                        "display-name": "Private Log Group",
+                        "lifecycle-state": "ACTIVE"
+                    }]
+                })),
+                "logging log list" => {
+                    assert!(args.windows(2).any(|window| {
+                        window == ["--log-type".to_string(), "SERVICE".to_string()]
+                    }));
+                    assert!(args.windows(2).any(|window| {
+                        window == ["--source-service".to_string(), "emaildelivery".to_string()]
+                    }));
+                    if self.logs_visible {
+                        Ok(serde_json::json!({
+                            "data": [{
+                                "id": "ocid1.log.oc1.example",
+                                "log-group-id": "ocid1.loggroup.oc1.example",
+                                "display-name": "Email Delivery Log",
+                                "lifecycle-state": "ACTIVE",
+                                "log-type": "SERVICE",
+                                "configuration": {
+                                    "source": {
+                                        "service": "emaildelivery",
+                                        "resource": "ocid1.emaildomain.oc1.example",
+                                        "category": "emaildomain",
+                                        "kind": "service"
+                                    }
+                                }
+                            }]
+                        }))
+                    } else {
+                        Ok(serde_json::json!({ "data": [] }))
+                    }
+                }
+                other => panic!("unexpected OCI command: {other}"),
+            }
+        }
+    }
+
+    struct FixtureInactiveRequestedResourceRunner;
+
+    impl OciCliRunner for FixtureInactiveRequestedResourceRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            match command_label(args).as_str() {
+                "logging log-group list" => Ok(serde_json::json!({
+                    "data": [{
+                        "id": "ocid1.loggroup.oc1.example",
+                        "display-name": "Private Log Group",
+                        "lifecycle-state": "ACTIVE"
+                    }]
+                })),
+                "logging log list" => Ok(serde_json::json!({
+                    "data": [
+                        {
+                            "id": "ocid1.log.oc1.requested",
+                            "log-group-id": "ocid1.loggroup.oc1.example",
+                            "display-name": "Inactive Requested Resource Log",
+                            "lifecycle-state": "INACTIVE",
+                            "log-type": "SERVICE",
+                            "configuration": {
+                                "source": {
+                                    "service": "emaildelivery",
+                                    "resource": "ocid1.emaildomain.oc1.requested",
+                                    "category": "emaildomain",
+                                    "kind": "service"
+                                }
+                            }
+                        },
+                        {
+                            "id": "ocid1.log.oc1.other",
+                            "log-group-id": "ocid1.loggroup.oc1.example",
+                            "display-name": "Active Other Resource Log",
+                            "lifecycle-state": "ACTIVE",
+                            "log-type": "SERVICE",
+                            "configuration": {
+                                "source": {
+                                    "service": "emaildelivery",
+                                    "resource": "ocid1.emaildomain.oc1.other",
+                                    "category": "emaildomain",
+                                    "kind": "service"
+                                }
+                            }
+                        }
+                    ]
+                })),
+                other => panic!("unexpected OCI command: {other}"),
+            }
+        }
+    }
+
+    struct FixtureNoLogGroupsRunner;
+
+    impl OciCliRunner for FixtureNoLogGroupsRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            match command_label(args).as_str() {
+                "logging log-group list" => Ok(serde_json::json!({ "data": [] })),
+                other => panic!("unexpected OCI command: {other}"),
+            }
+        }
+    }
+
+    fn test_config() -> OciEmailConfig {
+        OciEmailConfig {
+            cli_bin: "oci".to_string(),
+            profile: "TEST".to_string(),
+            compartment_id: Some("ocid1.tenancy.oc1.example".to_string()),
+            region: Some("example-region-1".to_string()),
+            config_file: None,
+            ledger_path: None,
+            snapshot_root: None,
+            warn_hard_bounce_percent: 0.5,
+            pause_hard_bounce_percent: 0.55,
+            throttle_hard_bounce_percent: 0.75,
+            hard_stop_hard_bounce_percent: 1.0,
+        }
     }
 }

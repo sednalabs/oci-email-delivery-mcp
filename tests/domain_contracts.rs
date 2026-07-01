@@ -1,9 +1,10 @@
 use oci_email_delivery_mcp::{
     tests_support::FixtureBackend, EventFilters, EventsReport, EventsRequest, LedgerRowSummary,
     LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals,
-    MetricsReport, MetricsRequest, OciEmailBackend, OciEmailError, OciEmailStatusReport,
-    SendReadinessRequest, StatusRequest, SuppressionsReport, SuppressionsRequest, TraceCriteria,
-    TraceMessageReport, TraceMessageRequest, TraceabilityAuditRequest, WatchWindowRequest,
+    LoggingStatusRequest, MetricsReport, MetricsRequest, OciEmailBackend, OciEmailError,
+    OciEmailStatusReport, SendReadinessRequest, StatusRequest, SuppressionsReport,
+    SuppressionsRequest, TraceCriteria, TraceMessageReport, TraceMessageRequest,
+    TraceabilityAuditRequest, WatchWindowRequest,
 };
 
 #[test]
@@ -68,6 +69,31 @@ fn events_contract_does_not_return_raw_recipient_or_message_id() {
     assert!(!report.events[0].raw_payload_returned);
     assert!(!payload.contains("message@example.com"));
     assert!(!payload.contains("person@example.net"));
+}
+
+#[test]
+fn logging_status_contract_is_read_only_and_redacted() {
+    let backend = FixtureBackend;
+    let report = backend
+        .logging_status(&LoggingStatusRequest {
+            compartment_id: None,
+            resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
+            limit: Some(20),
+        })
+        .unwrap_or_else(|err| panic!("fixture logging status: {err}"));
+    let payload = serde_json::to_string(&report)
+        .unwrap_or_else(|err| panic!("serialize logging status: {err}"));
+
+    assert_eq!(report.status, "ok");
+    assert!(!report.send_authorized);
+    assert!(report.requested_resource_id.present);
+    assert_eq!(report.email_delivery_log_count, 1);
+    assert_eq!(report.active_email_delivery_log_count, 1);
+    assert_eq!(report.matching_requested_resource_log_count, 1);
+    assert!(!report.email_delivery_logs[0].raw_payload_returned);
+    assert!(report.email_delivery_logs[0].source_resource.present);
+    assert!(!payload.contains("ocid1.emaildomain.oc1"));
+    assert!(!payload.contains("Email Delivery"));
 }
 
 #[test]
