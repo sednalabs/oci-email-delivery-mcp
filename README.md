@@ -5,7 +5,7 @@ read-only; the only local write surface is a configured private artifact tool
 for redacted monitoring snapshots. The first operator goal is to let agents
 query OCI programmatically before production or cohort sends go live.
 
-The server exposes eleven curated intent tools:
+The server exposes twelve curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -14,6 +14,7 @@ The server exposes eleven curated intent tools:
 | `oci_email_ledger_window` | Summarize configured local send-ledger rows for a UTC window without raw recipients. |
 | `oci_email_events` | Search Email Delivery logs with whitelisted filters and redacted event summaries. |
 | `oci_email_logging_status` | Check whether Email Delivery service logs are configured and visible without enabling or changing logs. |
+| `oci_email_logging_enablement_plan` | Build a read-only operator plan for enabling Email Delivery service-log visibility and post-enable proof. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
 | `oci_email_suppressions` | Summarize OCI suppressions with reason/domain totals and no raw recipient addresses. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, metrics, logs, optional trace, and suppressions. |
@@ -82,6 +83,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   without enabling logs. It returns counts, lifecycle state, and redacted
   identifiers only; it blocks when active Email Delivery service logs are not
   visible.
+- `oci_email_logging_enablement_plan` turns that read-only status into an
+  operator checklist for the required Email Domain service-log categories,
+  permissions, approval boundary, and post-enable proof gates. It never
+  authorizes or applies the OCI change.
 - Local send-ledger reads are disabled unless `OCI_MCP_LEDGER_PATH` is set.
   The ledger tool summarizes JSONL rows with hashes and domains only.
 - Private monitoring snapshot artifacts are disabled unless

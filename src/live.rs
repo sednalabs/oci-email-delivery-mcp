@@ -5,17 +5,18 @@ use crate::{
     response::{
         EmailDeliveryLogSummary, EmailEventSummary, EventFilters, EventsReport, EventsRequest,
         Evidence, LedgerRowSummary, LedgerWindowReport, LedgerWindowRequest, LogGroupSummary,
-        LoggingStatusReport, LoggingStatusRequest, MetricRates, MetricResult, MetricTotals,
-        MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
-        ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
-        SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest,
-        StopThresholds, SuppressionCount, SuppressionSummary, SuppressionTotals,
-        SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
-        TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents,
-        TraceabilityAuditReport, TraceabilityAuditRequest, TraceabilitySummary,
-        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
-        DEFAULT_LOGGING_STATUS_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT,
-        HARD_LOGGING_STATUS_LIMIT, HARD_SUPPRESSION_LIMIT,
+        LoggingEnablementPlanReport, LoggingEnablementPlanRequest, LoggingStatusReport,
+        LoggingStatusRequest, MetricRates, MetricResult, MetricTotals, MetricsFilters,
+        MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding,
+        RedactedIdentifier, SendReadinessComponents, SendReadinessReport, SendReadinessRequest,
+        SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest, StopThresholds,
+        SuppressionCount, SuppressionSummary, SuppressionTotals, SuppressionsReport,
+        SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
+        TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
+        TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
+        WatchWindowRequest, DEFAULT_EVENT_LIMIT, DEFAULT_LOGGING_STATUS_LIMIT,
+        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_LOGGING_STATUS_LIMIT,
+        HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -54,6 +55,12 @@ pub trait OciEmailBackend: Send + Sync {
         Err(OciEmailError::Config(
             "OCI Logging service-log status is not available for this backend".to_string(),
         ))
+    }
+    fn logging_enablement_plan(
+        &self,
+        request: &LoggingEnablementPlanRequest,
+    ) -> Result<LoggingEnablementPlanReport, OciEmailError> {
+        Ok(compose_logging_enablement_plan(self, request))
     }
     fn trace_message(
         &self,
@@ -986,6 +993,116 @@ fn finding(severity: &str, code: &str, message: &str) -> ReadinessFinding {
         severity: severity.to_string(),
         code: code.to_string(),
         message: message.to_string(),
+    }
+}
+
+fn compose_logging_enablement_plan<B: OciEmailBackend + ?Sized>(
+    backend: &B,
+    request: &LoggingEnablementPlanRequest,
+) -> LoggingEnablementPlanReport {
+    let status_request = LoggingStatusRequest {
+        compartment_id: request.compartment_id.clone(),
+        resource_id: request.resource_id.clone(),
+        limit: request.limit,
+    };
+    let requested_resource_id =
+        RedactedIdentifier::from_optional(status_request.resource_id.as_deref());
+    let current_status_result = backend.logging_status(&status_request);
+    let mut findings = Vec::new();
+    let status = match &current_status_result {
+        Ok(report) if report.status == "ok" && status_request.resource_id.is_some() => {
+            findings.push(finding(
+                "info",
+                "logging_already_visible",
+                "Active OCI Email Delivery service logs are already visible to this profile; no log-enable apply is needed before post-enable proof.",
+            ));
+            "already_visible_no_apply_needed"
+        }
+        Ok(report) if report.status == "ok" => {
+            findings.push(finding(
+                "warning",
+                "logging_plan_resource_id_missing",
+                "Active OCI Email Delivery service logs are visible, but no Email Domain resource id was supplied; resource-specific readiness is not proven.",
+            ));
+            "review_required"
+        }
+        Ok(report)
+            if report
+                .findings
+                .iter()
+                .any(|item| item.severity == "blocker") =>
+        {
+            findings.push(finding(
+                "blocker",
+                "logging_enablement_approval_required",
+                "OCI Email Delivery service-log visibility is blocked; enabling or making service logs visible is an OCI configuration mutation and requires explicit operator approval.",
+            ));
+            "approval_required"
+        }
+        Ok(_) => {
+            findings.push(finding(
+                "warning",
+                "logging_enablement_review_required",
+                "OCI Email Delivery service-log visibility is degraded; review capped or partial logging evidence before any enablement decision.",
+            ));
+            "review_required"
+        }
+        Err(_) => {
+            findings.push(finding(
+                "blocker",
+                "logging_status_unavailable",
+                "Current logging status could not be read; the enablement plan cannot prove the target logging state.",
+            ));
+            "blocked"
+        }
+    };
+    let compartment = current_status_result
+        .as_ref()
+        .map(|report| report.compartment.clone())
+        .unwrap_or_else(|_| RedactedIdentifier::from_optional(request.compartment_id.as_deref()));
+    let provider_mutation_required = matches!(status, "approval_required");
+    let current_logging = match current_status_result {
+        Ok(report) => ToolCallOutcome::ok(report.status.clone(), report),
+        Err(error) => ToolCallOutcome::blocked(error),
+    };
+
+    LoggingEnablementPlanReport {
+        status: status.to_string(),
+        decision: status.to_string(),
+        send_authorized: false,
+        provider_mutation_required,
+        provider_mutation_authorized: false,
+        compartment,
+        requested_resource_id,
+        required_log_categories: vec![
+            "emaildelivery.emaildomain.outboundaccepted".to_string(),
+            "emaildelivery.emaildomain.outboundrelayed".to_string(),
+        ],
+        required_permissions: vec![
+            "EMAIL_DOMAIN_UPDATE for the Email Domain resource".to_string(),
+            "OCI Logging permissions for the target log group and service logs".to_string(),
+        ],
+        operator_steps: vec![
+            "Confirm the target OCI Email Domain and compartment; if the expected domain is not visible, switch to the owning compartment.".to_string(),
+            "Create or select an OCI Logging log group in the intended compartment.".to_string(),
+            "Enable Email Delivery service logs for the Email Domain resource before any seed or cohort send.".to_string(),
+            "Enable both required categories: outbound accepted and outbound relayed.".to_string(),
+            "Keep raw OCIDs, log names, provider JSON, and recipient data in private evidence only.".to_string(),
+        ],
+        post_enable_gates: vec![
+            "Re-run oci_email_logging_status with the Email Domain resource_id and require an ACTIVE matching Email Delivery service log.".to_string(),
+            "Run a bounded seed/proof window with a stored local ledger row and a message id or non-PII correlation header.".to_string(),
+            "Use oci_email_traceability_audit for that window and require exact traceability, not aggregate-only delivery pressure.".to_string(),
+            "Treat capped logging reads, absent log events, unavailable stop-gate metrics, or missing ledger trace keys as not ready.".to_string(),
+        ],
+        current_logging,
+        findings,
+        evidence: vec![Evidence::new(
+            "mcp_composed_read",
+            "oci_email_logging_status plus static logging enablement guidance",
+            false,
+        )],
+        raw_payload_returned: false,
     }
 }
 
@@ -2613,6 +2730,95 @@ mod tests {
             .evidence
             .iter()
             .any(|evidence| evidence.command == "logging log list"));
+    }
+
+    #[test]
+    fn logging_enablement_plan_blocks_without_authorizing_provider_mutation() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner {
+                logs_visible: false,
+            }),
+        );
+
+        let report = backend
+            .logging_enablement_plan(&LoggingEnablementPlanRequest {
+                compartment_id: None,
+                resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging enablement plan: {err}"));
+        let payload = serde_json::to_string(&report).expect("serialize logging enablement plan");
+
+        assert_eq!(report.status, "approval_required");
+        assert_eq!(report.decision, "approval_required");
+        assert!(!report.send_authorized);
+        assert!(!report.provider_mutation_required);
+        assert!(!report.provider_mutation_authorized);
+        assert_eq!(
+            report.required_log_categories,
+            vec![
+                "emaildelivery.emaildomain.outboundaccepted".to_string(),
+                "emaildelivery.emaildomain.outboundrelayed".to_string()
+            ]
+        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "logging_enablement_approval_required"));
+        assert_eq!(report.current_logging.status, "blocked");
+        assert!(!report.raw_payload_returned);
+        assert!(!payload.contains("ocid1.emaildomain.oc1.example"));
+    }
+
+    #[test]
+    fn logging_enablement_plan_reports_visible_logs_without_apply_need() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner { logs_visible: true }),
+        );
+
+        let report = backend
+            .logging_enablement_plan(&LoggingEnablementPlanRequest {
+                compartment_id: None,
+                resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging enablement plan: {err}"));
+
+        assert_eq!(report.status, "already_visible_no_apply_needed");
+        assert!(!report.send_authorized);
+        assert!(!report.provider_mutation_required);
+        assert!(!report.provider_mutation_authorized);
+        assert_eq!(report.current_logging.status, "ok");
+        assert!(report
+            .post_enable_gates
+            .iter()
+            .any(|gate| gate.contains("oci_email_traceability_audit")));
+    }
+
+    #[test]
+    fn logging_enablement_plan_requires_resource_id_for_no_apply_decision() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner { logs_visible: true }),
+        );
+
+        let report = backend
+            .logging_enablement_plan(&LoggingEnablementPlanRequest {
+                compartment_id: None,
+                resource_id: None,
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging enablement plan: {err}"));
+
+        assert_eq!(report.status, "review_required");
+        assert!(report.provider_mutation_required);
+        assert!(!report.provider_mutation_authorized);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "logging_plan_resource_id_missing"));
     }
 
     struct FixtureLoggingRunner {

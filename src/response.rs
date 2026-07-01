@@ -51,6 +51,13 @@ pub struct LoggingStatusRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct LoggingEnablementPlanRequest {
+    pub compartment_id: Option<String>,
+    pub resource_id: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct TraceMessageRequest {
     pub start_time: String,
     pub end_time: String,
@@ -251,6 +258,25 @@ pub struct EmailDeliveryLogSummary {
     pub source_resource: RedactedIdentifier,
     pub source_category: Option<String>,
     pub source_kind: Option<String>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LoggingEnablementPlanReport {
+    pub status: String,
+    pub decision: String,
+    pub send_authorized: bool,
+    pub provider_mutation_required: bool,
+    pub provider_mutation_authorized: bool,
+    pub compartment: RedactedIdentifier,
+    pub requested_resource_id: RedactedIdentifier,
+    pub required_log_categories: Vec<String>,
+    pub required_permissions: Vec<String>,
+    pub operator_steps: Vec<String>,
+    pub post_enable_gates: Vec<String>,
+    pub current_logging: ToolCallOutcome<LoggingStatusReport>,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
     pub raw_payload_returned: bool,
 }
 

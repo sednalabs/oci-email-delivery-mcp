@@ -49,6 +49,10 @@ explain its core value.
   active Email Delivery service-log configuration visibility from a bounded
   event search that simply returned no events. It is read-only and does not
   enable, update, or delete logs.
+- The adapter includes `oci_email_logging_enablement_plan` so a blocked or
+  degraded logging-status receipt turns into a generic, redacted operator plan
+  for service-log categories, approval boundaries, and post-enable proof
+  without authorizing the OCI mutation.
 - The adapter includes `oci_email_traceability_audit` so operators can ask the
   narrower question: does this window prove exact message and recipient
   overlap across OCI logs and the same configured local ledger row, or only

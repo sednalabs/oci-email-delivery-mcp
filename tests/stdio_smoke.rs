@@ -8,6 +8,7 @@ fn stdio_initializes_and_lists_tools() {
         &[
             "oci_email_events",
             "oci_email_ledger_window",
+            "oci_email_logging_enablement_plan",
             "oci_email_logging_status",
             "oci_email_metrics",
             "oci_email_monitoring_snapshot_artifact",
@@ -34,7 +35,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list array");
-    assert_eq!(tools.len(), 11);
+    assert_eq!(tools.len(), 12);
 
     for tool in tools {
         let name = tool["name"].as_str().expect("tool name");
@@ -68,6 +69,17 @@ fn stdio_tools_list_includes_input_schemas() {
         .expect("logging-status properties");
     assert!(logging_status_properties.contains_key("resource_id"));
     assert!(logging_status_properties.contains_key("compartment_id"));
+
+    let logging_enablement_plan = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_logging_enablement_plan")
+        .expect("logging enablement plan tool");
+    assert!(logging_enablement_plan["inputSchema"]["required"].is_null());
+    let logging_enablement_properties = logging_enablement_plan["inputSchema"]["properties"]
+        .as_object()
+        .expect("logging enablement plan properties");
+    assert!(logging_enablement_properties.contains_key("resource_id"));
+    assert!(logging_enablement_properties.contains_key("compartment_id"));
 
     let ledger = tools
         .iter()

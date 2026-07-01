@@ -118,6 +118,36 @@
       "name": "oci_email_ledger_window"
     },
     {
+      "description": "Build a read-only OCI Email Delivery service-log enablement plan without enabling or changing logs.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "resource_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "oci_email_logging_enablement_plan"
+    },
+    {
       "description": "Check whether OCI Email Delivery service logs are configured and visible without enabling or changing logs.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

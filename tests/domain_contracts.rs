@@ -1,10 +1,10 @@
 use oci_email_delivery_mcp::{
     tests_support::FixtureBackend, EventFilters, EventsReport, EventsRequest, LedgerRowSummary,
     LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals,
-    LoggingStatusRequest, MetricsReport, MetricsRequest, OciEmailBackend, OciEmailError,
-    OciEmailStatusReport, SendReadinessRequest, StatusRequest, SuppressionsReport,
-    SuppressionsRequest, TraceCriteria, TraceMessageReport, TraceMessageRequest,
-    TraceabilityAuditRequest, WatchWindowRequest,
+    LoggingEnablementPlanRequest, LoggingStatusRequest, MetricsReport, MetricsRequest,
+    OciEmailBackend, OciEmailError, OciEmailStatusReport, SendReadinessRequest, StatusRequest,
+    SuppressionsReport, SuppressionsRequest, TraceCriteria, TraceMessageReport,
+    TraceMessageRequest, TraceabilityAuditRequest, WatchWindowRequest,
 };
 
 #[test]
@@ -94,6 +94,37 @@ fn logging_status_contract_is_read_only_and_redacted() {
     assert!(report.email_delivery_logs[0].source_resource.present);
     assert!(!payload.contains("ocid1.emaildomain.oc1"));
     assert!(!payload.contains("Email Delivery"));
+}
+
+#[test]
+fn logging_enablement_plan_is_read_only_and_redacted() {
+    let backend = FixtureBackend;
+    let report = backend
+        .logging_enablement_plan(&LoggingEnablementPlanRequest {
+            compartment_id: None,
+            resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
+            limit: Some(20),
+        })
+        .unwrap_or_else(|err| panic!("fixture logging enablement plan: {err}"));
+    let payload = serde_json::to_string(&report)
+        .unwrap_or_else(|err| panic!("serialize logging enablement plan: {err}"));
+
+    assert_eq!(report.status, "already_visible_no_apply_needed");
+    assert_eq!(report.decision, "already_visible_no_apply_needed");
+    assert!(!report.send_authorized);
+    assert!(!report.provider_mutation_authorized);
+    assert!(!report.provider_mutation_required);
+    assert_eq!(
+        report.required_log_categories,
+        vec![
+            "emaildelivery.emaildomain.outboundaccepted",
+            "emaildelivery.emaildomain.outboundrelayed"
+        ]
+    );
+    assert!(report.requested_resource_id.present);
+    assert_eq!(report.current_logging.status, "ok");
+    assert!(!report.raw_payload_returned);
+    assert!(!payload.contains("ocid1.emaildomain.oc1"));
 }
 
 #[test]

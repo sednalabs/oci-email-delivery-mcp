@@ -54,15 +54,16 @@ use mcp_toolkit_core::{
 pub use response::{
     EmailDeliveryLogSummary, EmailEventSummary, EventFilters, EventsReport, EventsRequest,
     Evidence, LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest,
-    LedgerWindowTotals, LogGroupSummary, LoggingStatusReport, LoggingStatusRequest, MetricRates,
-    MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
-    OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
-    SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
-    SnapshotArtifactRequest, SnapshotArtifactSummary, StatusRequest, StopThresholds,
-    SuppressionCount, SuppressionSummary, SuppressionTotals, SuppressionsReport,
-    SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
-    TraceabilityAuditComponents, TraceabilityAuditReport, TraceabilityAuditRequest,
-    TraceabilitySummary, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
+    LedgerWindowTotals, LogGroupSummary, LoggingEnablementPlanReport, LoggingEnablementPlanRequest,
+    LoggingStatusReport, LoggingStatusRequest, MetricRates, MetricResult, MetricTotals,
+    MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
+    ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
+    SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, SnapshotArtifactSummary,
+    StatusRequest, StopThresholds, SuppressionCount, SuppressionSummary, SuppressionTotals,
+    SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
+    TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
+    TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
+    WatchWindowRequest,
 };
 
 #[derive(Clone)]
@@ -106,6 +107,11 @@ impl OciEmailMcpServer {
                     "oci_email_logging_status",
                     "Check whether OCI Email Delivery service logs are configured and visible without enabling or changing logs.",
                     ["oci", "email", "logs", "logging", "status"],
+                ),
+                read_capability(
+                    "oci_email_logging_enablement_plan",
+                    "Build a read-only operator plan for enabling OCI Email Delivery service-log visibility and post-enable proof.",
+                    ["oci", "email", "logs", "logging", "enablement", "plan"],
                 ),
                 read_capability(
                     "oci_email_trace_message",
@@ -204,6 +210,16 @@ impl OciEmailMcpServer {
     }
 
     #[tool(
+        description = "Build a read-only OCI Email Delivery service-log enablement plan without enabling or changing logs."
+    )]
+    fn oci_email_logging_enablement_plan(
+        &self,
+        Parameters(request): Parameters<LoggingEnablementPlanRequest>,
+    ) -> String {
+        response::tool_json(self.backend.logging_enablement_plan(&request))
+    }
+
+    #[tool(
         description = "Trace one message id or correlation header through OCI Email Delivery logs."
     )]
     fn oci_email_trace_message(
@@ -290,6 +306,7 @@ mod tests {
             vec![
                 "oci_email_events",
                 "oci_email_ledger_window",
+                "oci_email_logging_enablement_plan",
                 "oci_email_logging_status",
                 "oci_email_metrics",
                 "oci_email_monitoring_snapshot_artifact",

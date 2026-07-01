@@ -15,6 +15,9 @@ green.
 - `oci_email_logging_status` sees at least one ACTIVE Email Delivery service
   log in the selected compartment, and when an Email Domain/resource OCID is
   supplied it matches at least one visible service log.
+- `oci_email_logging_enablement_plan` is the no-mutation fallback when logging
+  status is blocked. It can prepare the operator checklist and post-enable
+  gates, but it does not authorize or apply the OCI change.
 - `oci_email_events` returns real Email Delivery log events for a seed/proof
   window before cohort expansion.
 - `oci_email_suppressions` is callable and returns either a normal empty list
@@ -89,6 +92,14 @@ lane, pass it as `resource_id` and require
 `matching_requested_resource_log_count > 0`. A clean logging-status receipt
 does not prove a particular send emitted events; it only proves the logging
 configuration is visible enough for later event reads to be meaningful.
+
+If logging status is blocked or degraded, call
+`oci_email_logging_enablement_plan` with the same `resource_id` and `limit`.
+Use its output as a planning receipt only. It should keep
+`provider_mutation_authorized=false` and list the required categories,
+permissions, approval boundary, and post-enable proof gates. After explicit
+operator approval and external OCI apply, rerun `oci_email_logging_status`
+before sending anything.
 
 `oci_email_send_readiness` is the preferred first receipt once the planned
 seed/cohort has a known expected local ledger row count. It composes the same
