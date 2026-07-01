@@ -1,10 +1,11 @@
 # OCI Email Delivery MCP
 
-Read-only stdio MCP server for OCI Email Delivery monitoring. The first
-operator goal is to let agents query OCI programmatically before production
-or cohort sends go live.
+Stdio MCP server for OCI Email Delivery monitoring. The OCI/provider surface is
+read-only; the only local write surface is a configured private artifact tool
+for redacted monitoring snapshots. The first operator goal is to let agents
+query OCI programmatically before production or cohort sends go live.
 
-The server exposes eight curated intent tools:
+The server exposes ten curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -16,6 +17,8 @@ The server exposes eight curated intent tools:
 | `oci_email_suppressions` | Summarize OCI suppressions without returning raw recipient addresses. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, metrics, logs, optional trace, and suppressions. |
 | `oci_email_send_readiness` | Build one read-only send-window receipt that combines watch-window evidence with local send-ledger proof and expected row-count gates. |
+| `oci_email_traceability_audit` | Audit whether one UTC window proves exact message/recipient traceability across OCI logs and the local send ledger, or only aggregate delivery pressure. |
+| `oci_email_monitoring_snapshot_artifact` | Write one redacted private monitoring, send-readiness, or traceability receipt artifact under the configured local snapshot root. |
 
 No tools send email, mutate OCI resources, enable logs, change DNS, import
 contacts, or alter suppressions.
@@ -41,6 +44,7 @@ export OCI_MCP_PAUSE_HARD_BOUNCE_PERCENT=0.55
 export OCI_MCP_THROTTLE_HARD_BOUNCE_PERCENT=0.75
 export OCI_MCP_HARD_STOP_HARD_BOUNCE_PERCENT=1.0
 export OCI_MCP_LEDGER_PATH=/path/to/private/send-ledger.jsonl
+export OCI_MCP_SNAPSHOT_ROOT=/path/to/private/monitoring-snapshots
 ```
 
 The hard-bounce threshold defaults above are operational guardrails only. Set
@@ -72,11 +76,22 @@ contract tests with an OCI profile configured. The live smoke must not use
   that bounce, complaint, open, or click counts are safe.
 - Local send-ledger reads are disabled unless `OCI_MCP_LEDGER_PATH` is set.
   The ledger tool summarizes JSONL rows with hashes and domains only.
+- Private monitoring snapshot artifacts are disabled unless
+  `OCI_MCP_SNAPSHOT_ROOT` is set to an absolute existing private directory.
+  On Unix, the directory must not grant group or other permissions. The
+  snapshot tool writes generated direct-child JSON files only, returns a
+  filename plus hashes rather than the private root path, and stores redacted
+  watch, readiness, or traceability receipts.
 - `oci_email_watch_window` blocks unscoped lane receipts when neither a metrics
   resource domain/resource id nor an event source domain is available.
 - `oci_email_send_readiness` also requires an expected local ledger row count
   and blocks when ledger rows are missing, capped, invalid, or lack trace or
   recipient reconciliation keys.
+- `oci_email_traceability_audit` is the exact-trace boundary. It returns
+  `aggregate_only=true` until a requested message/header trace returns OCI log
+  events and one uncapped local ledger row overlaps both the requested trace
+  key and the OCI event recipient hash. Aggregate metrics alone are never
+  reported as per-recipient proof.
 
 ## Release And Operations
 

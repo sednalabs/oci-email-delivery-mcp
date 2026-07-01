@@ -22,6 +22,14 @@ green.
 - `oci_email_send_readiness` is the preferred send-window receipt once a
   seed/cohort send has an expected ledger row count. It combines monitoring and
   local ledger proof and still returns `send_authorized=false`.
+- `oci_email_traceability_audit` is the preferred exact-proof receipt when an
+  operator needs to answer whether a specific message/header trace reached OCI
+  logs and overlaps the configured local send ledger. It returns
+  `aggregate_only=true` until exact message and recipient overlap is proven.
+- `oci_email_monitoring_snapshot_artifact` writes redacted watch-window,
+  send-readiness, or traceability-audit receipts to the configured private
+  snapshot root for later replay. It returns a generated filename, root hash,
+  bytes, and SHA-256, not the private root path.
 - Every send lane is queried with the approved sender/source/resource domain
   for that lane. Do not mix separate publication or brand lanes in one
   unfiltered compartment-wide read.
@@ -44,7 +52,14 @@ Pause the pilot or keep it paused when any of these are true:
   `expected_ledger_rows_zero`, `campaign_id_missing`, or `batch_id_missing`;
 - provider warning, authentication failure, blocklist evidence, or
   reputation-style deferral appears;
-- event ingestion fails or cannot be reconciled to the local send ledger.
+- event ingestion fails or cannot be reconciled to the local send ledger;
+- `oci_email_traceability_audit` returns `traceability_no_log_events`,
+  `traceability_no_trace_events`, `traceability_no_ledger_rows`,
+  `traceability_expected_ledger_rows_mismatch`,
+  `traceability_no_ledger_trace_key_overlap`,
+  `traceability_no_recipient_hash_overlap`,
+  `traceability_no_single_ledger_row_overlap`, or `aggregate_only=true` for
+  a send window that is expected to be traceable;
 - any event or suppression response returns exactly the requested limit; narrow
   the window or filters and rerun before treating the result set as complete.
 
@@ -63,11 +78,11 @@ private send-ledger proof:
   "start_time": "YYYY-MM-DDTHH:00:00Z",
   "end_time": "YYYY-MM-DDTHH:00:00Z",
   "interval": "1h",
-  "resource_domain": "update.example.com",
-  "source_domain": "update.example.com",
-  "sender_domain": "update.example.com",
-  "campaign_id": "campaign-token",
-  "batch_id": "batch-token",
+  "resource_domain": "mail.example.com",
+  "source_domain": "mail.example.com",
+  "sender_domain": "mail.example.com",
+  "campaign_id": "campaign-id-placeholder",
+  "batch_id": "batch-id-placeholder",
   "expected_ledger_rows": 1,
   "message_id": null,
   "header_name": null,
@@ -93,8 +108,8 @@ for diagnosis when ledger proof is not expected yet:
   "start_time": "YYYY-MM-DDTHH:00:00Z",
   "end_time": "YYYY-MM-DDTHH:00:00Z",
   "interval": "1h",
-  "resource_domain": "update.example.com",
-  "source_domain": "update.example.com",
+  "resource_domain": "mail.example.com",
+  "source_domain": "mail.example.com",
   "message_id": null,
   "header_name": null,
   "header_value": null,
@@ -106,13 +121,111 @@ Expected: `send_authorized=false`; a watch receipt without a metrics resource
 domain/resource id or without an event source domain is `blocked` because a
 compartment-wide receipt is not lane readiness proof.
 
+Use `oci_email_traceability_audit` when the question is whether one exact
+application, CRM, or SMTP test message can be tied to one local ledger row and
+one OCI log trail. Campaign and batch filters are optional
+narrowing inputs; exact proof is based on same-row trace-key and
+recipient-hash overlap, not row counts alone:
+
+```json
+{
+  "start_time": "YYYY-MM-DDTHH:00:00Z",
+  "end_time": "YYYY-MM-DDTHH:00:00Z",
+  "interval": "1h",
+  "resource_domain": "mail.example.com",
+  "source_domain": "mail.example.com",
+  "sender_domain": "mail.example.com",
+  "campaign_id": "campaign-id-placeholder",
+  "batch_id": "batch-id-placeholder",
+  "expected_ledger_rows": 1,
+  "message_id": "provider-message-id",
+  "header_name": null,
+  "header_value": null,
+  "limit": 50
+}
+```
+
+Expected: `send_authorized=false`. `exact_message_traceable=true` only when a
+message/header trace returned OCI log events, the configured local ledger has
+matching rows for the window, the ledger is uncapped and valid, and one ledger
+row overlaps both the requested trace key and OCI event recipient hash. The
+summary field `single_ledger_row_overlap` is the same-row gate. Otherwise the
+response is blocked or degraded with `aggregate_only=true`; aggregate accepted,
+relayed, suppressed, or bounce totals are useful pressure signals, not
+per-recipient proof.
+
+Use `oci_email_monitoring_snapshot_artifact` whenever the receipt needs to be
+replayable outside the MCP transcript. The tool writes only under
+`OCI_MCP_SNAPSHOT_ROOT`, which must be an absolute existing private directory.
+On Unix, create it with `chmod 700`; roots with group or other permissions are
+rejected. It does not accept an arbitrary output path.
+
+For a watch-window snapshot:
+
+```json
+{
+  "start_time": "YYYY-MM-DDTHH:00:00Z",
+  "end_time": "YYYY-MM-DDTHH:00:00Z",
+  "interval": "1h",
+  "resource_domain": "mail.example.com",
+  "source_domain": "mail.example.com",
+  "receipt_kind": "watch_window",
+  "artifact_prefix": "seed-window",
+  "limit": 50
+}
+```
+
+For a send-readiness snapshot after the local send ledger has expected rows:
+
+```json
+{
+  "start_time": "YYYY-MM-DDTHH:00:00Z",
+  "end_time": "YYYY-MM-DDTHH:00:00Z",
+  "interval": "1h",
+  "resource_domain": "mail.example.com",
+  "source_domain": "mail.example.com",
+  "sender_domain": "mail.example.com",
+  "campaign_id": "campaign-id-placeholder",
+  "batch_id": "batch-id-placeholder",
+  "expected_ledger_rows": 1,
+  "receipt_kind": "send_readiness",
+  "artifact_prefix": "seed-window",
+  "limit": 50
+}
+```
+
+For an exact traceability audit snapshot:
+
+```json
+{
+  "start_time": "YYYY-MM-DDTHH:00:00Z",
+  "end_time": "YYYY-MM-DDTHH:00:00Z",
+  "interval": "1h",
+  "resource_domain": "mail.example.com",
+  "source_domain": "mail.example.com",
+  "sender_domain": "mail.example.com",
+  "campaign_id": "campaign-id-placeholder",
+  "batch_id": "batch-id-placeholder",
+  "expected_ledger_rows": 1,
+  "message_id": "provider-message-id",
+  "receipt_kind": "traceability_audit",
+  "artifact_prefix": "seed-window",
+  "limit": 50
+}
+```
+
+Expected: the returned `artifact.filename`, `artifact.sha256`, and
+`artifact.bytes` identify the private JSON receipt. Public notes may cite the
+receipt status, decision, checksum, and root hash, but not the private root path
+or raw campaign, batch, recipient, message, or provider payload values.
+
 `oci_email_ledger_window` for the private local send ledger:
 
 ```json
 {
   "start_time": "YYYY-MM-DDTHH:00:00Z",
   "end_time": "YYYY-MM-DDTHH:00:00Z",
-  "sender_domain": "update.example.com",
+  "sender_domain": "mail.example.com",
   "campaign_id": null,
   "batch_id": null,
   "limit": 100
@@ -155,7 +268,7 @@ no raw recipient address is returned.
   "start_time": "YYYY-MM-DDTHH:00:00Z",
   "end_time": "YYYY-MM-DDTHH:00:00Z",
   "interval": "1h",
-  "resource_domain": "update.example.com"
+  "resource_domain": "mail.example.com"
 }
 ```
 
@@ -170,9 +283,11 @@ bounded. Compare every window against the previous one.
 
 Start each observation with `oci_email_send_readiness` using the same
 lane/domain and expected ledger-row filters once the send path has created
-ledger rows. If the receipt is `blocked`, keep the lane paused. If it is
-`degraded`, continue only as seed-only or hold for operator review, depending
-on the approved sender policy.
+ledger rows. When an exact message/header trace is available, follow with
+`oci_email_traceability_audit` for the same UTC window. If either receipt is
+`blocked`, keep the lane paused. If either is `degraded`, continue only as
+seed-only or hold for operator review, depending on the approved sender
+policy.
 
 For a real seed/cohort send, run `oci_email_ledger_window` for the same UTC
 window and lane when diagnosing a failed readiness receipt. OCI events without
@@ -205,7 +320,7 @@ Check:
   "start_time": "YYYY-MM-DDTHH:MM:00Z",
   "end_time": "YYYY-MM-DDTHH:MM:00Z",
   "action": null,
-  "source_domain": "update.example.com",
+  "source_domain": "mail.example.com",
   "limit": 50
 }
 ```
@@ -234,7 +349,7 @@ non-PII value generated for the seed/proof send.
   "message_id": "provider-message-id",
   "header_name": null,
   "header_value": null,
-  "source_domain": "update.example.com",
+  "source_domain": "mail.example.com",
   "limit": 20
 }
 ```
@@ -256,6 +371,10 @@ Record a private receipt containing:
 - explicit decision: remain paused, continue seed-only, expand cohort, or stop.
 - suppression baseline and post-window delta, reconciled back to the local send
   ledger without exposing raw recipients in public docs or tickets.
+
+Prefer `oci_email_monitoring_snapshot_artifact` for that private receipt so the
+same redacted JSON can be hashed, retained, and re-opened later without
+scraping a chat transcript.
 
 For a first seed or cohort window, use a tight cadence:
 

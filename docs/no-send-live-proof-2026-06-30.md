@@ -20,9 +20,10 @@ Result: passed locally on 2026-06-30 after changing metric aggregation from
 `count()` to `sum()` so message totals are not confused with datapoint counts.
 The public release scan returned `HIGH=0 MEDIUM=0 LOW=0`.
 
-Covered:
+Covered before the private snapshot artifact tool was added:
 
-- schema snapshot contract for all seven tools;
+- schema snapshot contract for the direct monitoring/readiness tools present at
+  the time;
 - stdio `tools/list` smoke;
 - fixture-backed domain output contracts;
 - redaction contracts for recipient, message-id, OCID, IP address,
@@ -35,7 +36,7 @@ Transport: stdio.
 
 Catalog proof:
 
-- required tools matched: `oci_email_status`, `oci_email_metrics`,
+- required direct read tools matched: `oci_email_status`, `oci_email_metrics`,
   `oci_email_ledger_window`, `oci_email_events`, `oci_email_trace_message`,
   `oci_email_suppressions`, `oci_email_watch_window`;
 - expected tool count matched: 7;
@@ -67,7 +68,7 @@ Tool-call proof:
   returned `blocked` with `decision=remain_paused`, `send_authorized=false`,
   status read `ready`, metrics `blocked`, events `degraded`, suppressions
   `ok`, no capped rows, and no raw provider payload.
-- Transcript scan across all seven tool calls found no raw email-shaped values.
+- Transcript scan across those tool calls found no raw email-shaped values.
 
 Operator-specific counts and live readback details are retained outside this
 public-release candidate repository.
@@ -77,6 +78,24 @@ combining the watch-window receipt with configured local send-ledger proof and
 expected row-count gates. Its fixture/schema proof is current, but live
 send-window proof remains pending until a real seed/cohort window has expected
 ledger rows and OCI log traceability.
+
+Second addendum: the later `oci_email_monitoring_snapshot_artifact` tool
+persists redacted watch/readiness/traceability receipts under
+`OCI_MCP_SNAPSHOT_ROOT` and returns filename/checksum/root-hash evidence
+without returning the private root path. Its fixture/schema proof is current,
+but live installed artifact proof remains pending until the hosted binary is
+released and the production host configures a private snapshot root.
+
+Third addendum: the later `oci_email_traceability_audit` tool makes the
+aggregate-versus-exact boundary explicit. It returns `exact_message_traceable`
+only when a requested message/header trace has OCI log events and those events
+overlap the same uncapped local ledger row by trace key and recipient hash.
+Otherwise it returns `aggregate_only=true` with blocker findings such as no log
+events, no trace events, no ledger rows, no trace-key overlap, no
+recipient-hash overlap, or split-row overlap.
+Fixture/schema proof is current; live exact traceability remains pending until
+a real seed/proof window has matching OCI log events and configured local
+ledger rows.
 
 ## Evidence Gaps Before Production Monitoring Readiness
 
@@ -89,4 +108,9 @@ ledger rows and OCI log traceability.
   for a seed/proof send before the trace path is considered operational.
 - The production host must configure the real private send-ledger JSONL path
   before ledger/event reconciliation can be treated as operational.
+- `oci_email_traceability_audit` must return exact traceability, not
+  aggregate-only pressure, for the relevant seed/proof message before the MCP
+  is treated as a full monitor.
+- The production host must configure the real private snapshot root before
+  monitoring receipts can be treated as durable operational evidence.
 - Hosted validation and reviewer signoff are still pending.

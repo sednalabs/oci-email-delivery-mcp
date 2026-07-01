@@ -3,14 +3,16 @@ use crate::{
     error::OciEmailError,
     redact::{email_domain, is_host_token, redact_email, redact_sensitive_text, short_hash},
     response::{
-        EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, LedgerWindowReport,
-        LedgerWindowRequest, MetricRates, MetricResult, MetricTotals, MetricsFilters,
-        MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding,
-        RedactedIdentifier, SendReadinessComponents, SendReadinessReport, SendReadinessRequest,
-        StatusRequest, StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest,
+        EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, LedgerRowSummary,
+        LedgerWindowReport, LedgerWindowRequest, MetricRates, MetricResult, MetricTotals,
+        MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
+        ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
+        SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest,
+        StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest,
         ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
-        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
-        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
+        TraceabilityAuditComponents, TraceabilityAuditReport, TraceabilityAuditRequest,
+        TraceabilitySummary, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
+        DEFAULT_EVENT_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -59,6 +61,22 @@ pub trait OciEmailBackend: Send + Sync {
         request: &SendReadinessRequest,
     ) -> Result<SendReadinessReport, OciEmailError> {
         Ok(compose_send_readiness(self, request))
+    }
+
+    fn traceability_audit(
+        &self,
+        request: &TraceabilityAuditRequest,
+    ) -> Result<TraceabilityAuditReport, OciEmailError> {
+        Ok(compose_traceability_audit(self, request))
+    }
+
+    fn snapshot_artifact(
+        &self,
+        _request: &SnapshotArtifactRequest,
+    ) -> Result<SnapshotArtifactReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "private monitoring snapshot artifacts are not available for this backend".to_string(),
+        ))
     }
 
     fn ledger_window(
@@ -539,6 +557,13 @@ impl OciEmailBackend for LiveOciEmailBackend {
         request: &LedgerWindowRequest,
     ) -> Result<LedgerWindowReport, OciEmailError> {
         crate::ledger::ledger_window(&self.config, request)
+    }
+
+    fn snapshot_artifact(
+        &self,
+        request: &SnapshotArtifactRequest,
+    ) -> Result<SnapshotArtifactReport, OciEmailError> {
+        crate::snapshot::snapshot_artifact(&self.config, self, request)
     }
 }
 
@@ -1067,6 +1092,426 @@ fn compose_send_readiness<B: OciEmailBackend + ?Sized>(
         evidence,
         raw_payload_returned: false,
     }
+}
+
+fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
+    backend: &B,
+    request: &TraceabilityAuditRequest,
+) -> TraceabilityAuditReport {
+    let watch_request = WatchWindowRequest {
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        interval: request.interval.clone(),
+        resource_domain: request.resource_domain.clone(),
+        source_domain: request.source_domain.clone(),
+        resource_id: request.resource_id.clone(),
+        message_id: request.message_id.clone(),
+        header_name: request.header_name.clone(),
+        header_value: request.header_value.clone(),
+        limit: request.limit,
+        compartment_id: request.compartment_id.clone(),
+    };
+    let mut watch_report = compose_watch_window(backend, &watch_request);
+    redact_watch_trace_header_names_for_readiness(&mut watch_report);
+    let mut findings = watch_report.findings.clone();
+    let mut evidence = watch_report.evidence.clone();
+    let sender_domain = non_empty_request_value(&request.sender_domain)
+        .or_else(|| watch_report.source_domain.clone())
+        .or_else(|| watch_report.resource_domain.clone());
+    let campaign_id = request.campaign_id.as_deref().and_then(non_empty_string);
+    let batch_id = request.batch_id.as_deref().and_then(non_empty_string);
+    let expected_rows = request.expected_ledger_rows.filter(|value| *value > 0);
+    let expected_rows_zero = request.expected_ledger_rows == Some(0);
+    if expected_rows_zero {
+        findings.push(finding(
+            "blocker",
+            "traceability_expected_ledger_rows_zero",
+            "Traceability audits cannot prove an exact message when expected_ledger_rows is explicitly zero.",
+        ));
+    }
+
+    let ledger = match sender_domain.clone() {
+        Some(sender_domain) => match backend.ledger_window(&LedgerWindowRequest {
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            sender_domain: Some(sender_domain),
+            campaign_id,
+            batch_id,
+            limit: request.limit,
+        }) {
+            Ok(report) => {
+                findings.extend(report.findings.clone());
+                evidence.extend(report.evidence.clone());
+                ToolCallOutcome::ok(report.status.clone(), report)
+            }
+            Err(error) => component_blocked(
+                &mut findings,
+                "ledger_read_blocked",
+                "Local send-ledger read failed; exact traceability cannot be proven for this audit window.",
+                error,
+            ),
+        },
+        None => component_blocked(
+            &mut findings,
+            "ledger_scope_missing",
+            "Traceability audits require sender_domain, source_domain, or resource_domain before reading the local send ledger.",
+            OciEmailError::InvalidInput(
+                "traceability_audit requires sender_domain, source_domain, or resource_domain before reading the local send ledger".to_string(),
+            ),
+        ),
+    };
+
+    if let Some(report) = ledger.report.as_ref() {
+        if let Some(expected) = expected_rows {
+            let matched = report.totals.matched_rows as u64;
+            if matched != expected {
+                findings.push(finding(
+                    "blocker",
+                    "traceability_expected_ledger_rows_mismatch",
+                    "Local send-ledger matched row count does not equal expected_ledger_rows; exact message traceability is not proven for this audit window.",
+                ));
+            }
+        }
+        if report.totals.matched_rows == 0 {
+            findings.push(finding(
+                "blocker",
+                "traceability_no_ledger_rows",
+                "No local send-ledger rows matched this audit window and filters; exact message traceability is not proven.",
+            ));
+        }
+        if report.totals.invalid_rows > 0 {
+            findings.push(finding(
+                "blocker",
+                "ledger_invalid_rows_block_traceability",
+                "Local send-ledger contains invalid rows in this window; narrow or repair the ledger before traceability proof.",
+            ));
+        }
+        if report.totals.rows_capped {
+            findings.push(finding(
+                "blocker",
+                "ledger_rows_capped_block_traceability",
+                "Local send-ledger rows were capped; narrow the window before traceability proof.",
+            ));
+        }
+        if report.totals.missing_trace_key_count > 0 {
+            findings.push(finding(
+                "blocker",
+                "ledger_missing_trace_keys_block_traceability",
+                "Local send-ledger rows are missing message or correlation identifiers needed for exact OCI traceability.",
+            ));
+        }
+        if report.totals.missing_recipient_key_count > 0 {
+            findings.push(finding(
+                "blocker",
+                "ledger_missing_recipient_keys_block_traceability",
+                "Local send-ledger rows are missing recipient hashes needed for recipient-level reconciliation.",
+            ));
+        }
+    }
+
+    let trace_requested = watch_report.trace_requested;
+    let ledger_trace_key_overlap = ledger_trace_key_overlap(ledger.report.as_ref(), &watch_report);
+    let recipient_hash_overlap = recipient_hash_overlap(ledger.report.as_ref(), &watch_report);
+    let single_ledger_row_overlap =
+        single_ledger_row_overlap(ledger.report.as_ref(), &watch_report);
+    let log_events_returned = log_events_returned(&watch_report);
+    let trace_events_returned = trace_events_returned(&watch_report);
+    let ledger_exact_ready = ledger.report.as_ref().is_some_and(|report| {
+        report.totals.matched_rows > 0
+            && report.totals.invalid_rows == 0
+            && !report.totals.rows_capped
+            && report.totals.missing_trace_key_count == 0
+            && report.totals.missing_recipient_key_count == 0
+    });
+    let exact_message_traceable = trace_requested
+        && !expected_rows_zero
+        && trace_events_returned.is_some_and(|returned| returned > 0)
+        && ledger_exact_ready
+        && ledger_trace_key_overlap
+        && recipient_hash_overlap
+        && single_ledger_row_overlap;
+    let aggregate_only = !exact_message_traceable;
+    if !trace_requested {
+        findings.push(finding(
+            "blocker",
+            "traceability_trace_criteria_missing",
+            "No message id or correlation header trace was requested; exact message traceability cannot be proven from aggregate metrics.",
+        ));
+    }
+    if log_events_returned == 0 {
+        findings.push(finding(
+            "blocker",
+            "traceability_no_log_events",
+            "OCI Email Delivery logs returned no events for this audit window; aggregate metrics are not exact message proof.",
+        ));
+    }
+    if trace_requested && trace_events_returned.unwrap_or(0) == 0 {
+        findings.push(finding(
+            "blocker",
+            "traceability_no_trace_events",
+            "The requested message or correlation trace returned no OCI Email Delivery log events.",
+        ));
+    }
+    if trace_requested
+        && ledger
+            .report
+            .as_ref()
+            .is_some_and(|report| report.totals.matched_rows > 0)
+        && !ledger_trace_key_overlap
+    {
+        findings.push(finding(
+            "blocker",
+            "traceability_no_ledger_trace_key_overlap",
+            "Requested message or correlation trace did not overlap the local send-ledger trace keys.",
+        ));
+    }
+    if trace_requested
+        && ledger
+            .report
+            .as_ref()
+            .is_some_and(|report| report.totals.matched_rows > 0)
+        && log_events_returned > 0
+        && !recipient_hash_overlap
+    {
+        findings.push(finding(
+            "blocker",
+            "traceability_no_recipient_hash_overlap",
+            "OCI log events did not overlap local send-ledger recipient hashes; recipient-level traceability is not proven.",
+        ));
+    }
+    if trace_requested
+        && ledger_trace_key_overlap
+        && recipient_hash_overlap
+        && !single_ledger_row_overlap
+    {
+        findings.push(finding(
+            "blocker",
+            "traceability_no_single_ledger_row_overlap",
+            "No single local send-ledger row overlapped both the requested OCI trace key and recipient hash; exact message-to-recipient traceability is not proven.",
+        ));
+    }
+    if aggregate_only {
+        findings.push(finding(
+            "warning",
+            "traceability_aggregate_only",
+            "This audit has aggregate delivery pressure but not exact message-to-recipient traceability across OCI logs and the local ledger.",
+        ));
+    }
+
+    let summary = traceability_summary(&watch_report, ledger.report.as_ref());
+    let status = traceability_status(&watch_report, &ledger, &findings, exact_message_traceable);
+    let decision = match status.as_str() {
+        "blocked" => "remain_paused".to_string(),
+        "degraded" => "hold_or_seed_only_with_operator_review".to_string(),
+        _ => "exact_traceability_ready_no_send_authorization".to_string(),
+    };
+    let interval = watch_report.interval.clone();
+    let resource_domain = watch_report.resource_domain.clone();
+    let source_domain = watch_report.source_domain.clone();
+
+    TraceabilityAuditReport {
+        status,
+        decision,
+        send_authorized: false,
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        interval,
+        resource_domain,
+        source_domain,
+        sender_domain,
+        expected_ledger_rows: request.expected_ledger_rows,
+        trace_requested,
+        exact_message_traceable,
+        aggregate_only,
+        summary,
+        components: TraceabilityAuditComponents {
+            watch_window: ToolCallOutcome::ok(watch_report.status.clone(), watch_report),
+            ledger,
+        },
+        findings,
+        evidence,
+        raw_payload_returned: false,
+    }
+}
+
+fn traceability_summary(
+    watch_report: &WatchWindowReport,
+    ledger_report: Option<&LedgerWindowReport>,
+) -> TraceabilitySummary {
+    let metrics = watch_report
+        .components
+        .metrics
+        .report
+        .as_ref()
+        .map(|report| &report.totals);
+    TraceabilitySummary {
+        aggregate_accepted: metrics.map(|totals| totals.accepted),
+        aggregate_relayed: metrics.map(|totals| totals.relayed),
+        aggregate_hard_bounced: metrics.map(|totals| totals.hard_bounced),
+        aggregate_suppressed: metrics.map(|totals| totals.suppressed),
+        log_events_returned: log_events_returned(watch_report),
+        trace_events_returned: trace_events_returned(watch_report),
+        ledger_rows_matched: ledger_report
+            .map(|report| report.totals.matched_rows)
+            .unwrap_or(0),
+        ledger_rows_capped: ledger_report
+            .map(|report| report.totals.rows_capped)
+            .unwrap_or(false),
+        ledger_trace_key_overlap: ledger_trace_key_overlap(ledger_report, watch_report),
+        recipient_hash_overlap: recipient_hash_overlap(ledger_report, watch_report),
+        single_ledger_row_overlap: single_ledger_row_overlap(ledger_report, watch_report),
+    }
+}
+
+fn trace_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {
+    watch_report
+        .components
+        .trace
+        .as_ref()
+        .and_then(|trace| trace.report.as_ref())
+        .map(|report| report.events.returned)
+}
+
+fn log_events_returned(watch_report: &WatchWindowReport) -> usize {
+    let events_returned = watch_report
+        .components
+        .events
+        .report
+        .as_ref()
+        .map(|report| report.returned)
+        .unwrap_or(0);
+    let trace_events_returned = trace_events_returned(watch_report).unwrap_or(0);
+    events_returned.max(trace_events_returned)
+}
+
+fn ledger_trace_key_overlap(
+    ledger_report: Option<&LedgerWindowReport>,
+    watch_report: &WatchWindowReport,
+) -> bool {
+    let Some(ledger_report) = ledger_report else {
+        return false;
+    };
+    ledger_report
+        .rows
+        .iter()
+        .any(|row| ledger_row_trace_key_overlap(row, watch_report))
+}
+
+fn recipient_hash_overlap(
+    ledger_report: Option<&LedgerWindowReport>,
+    watch_report: &WatchWindowReport,
+) -> bool {
+    let Some(ledger_report) = ledger_report else {
+        return false;
+    };
+    ledger_report
+        .rows
+        .iter()
+        .any(|row| ledger_row_recipient_hash_overlap(row, watch_report))
+}
+
+fn single_ledger_row_overlap(
+    ledger_report: Option<&LedgerWindowReport>,
+    watch_report: &WatchWindowReport,
+) -> bool {
+    let Some(ledger_report) = ledger_report else {
+        return false;
+    };
+    ledger_report.rows.iter().any(|row| {
+        ledger_row_trace_key_overlap(row, watch_report)
+            && ledger_row_recipient_hash_overlap(row, watch_report)
+    })
+}
+
+fn ledger_row_trace_key_overlap(row: &LedgerRowSummary, watch_report: &WatchWindowReport) -> bool {
+    let trace = watch_report
+        .components
+        .trace
+        .as_ref()
+        .and_then(|trace| trace.report.as_ref());
+    if let Some(trace) = trace {
+        return row
+            .message_id_hash
+            .as_ref()
+            .is_some_and(|hash| trace.criteria.message_id_hash.as_ref() == Some(hash))
+            || row
+                .correlation_id_hash
+                .as_ref()
+                .is_some_and(|hash| trace.criteria.header_value_hash.as_ref() == Some(hash));
+    }
+    watch_report
+        .components
+        .events
+        .report
+        .as_ref()
+        .is_some_and(|events| {
+            events.events.iter().any(|event| {
+                row.message_id_hash
+                    .as_ref()
+                    .is_some_and(|hash| event.message_id_hash.as_ref() == Some(hash))
+            })
+        })
+}
+
+fn ledger_row_recipient_hash_overlap(
+    row: &LedgerRowSummary,
+    watch_report: &WatchWindowReport,
+) -> bool {
+    let trace_report = watch_report
+        .components
+        .trace
+        .as_ref()
+        .and_then(|trace| trace.report.as_ref());
+    [
+        row.recipient_address_hash.as_ref(),
+        row.recipient_id_hash.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|hash| match trace_report {
+        Some(trace) => trace_recipient_hash_overlap(hash, trace),
+        None => watch_report
+            .components
+            .events
+            .report
+            .as_ref()
+            .is_some_and(|events| {
+                events
+                    .events
+                    .iter()
+                    .any(|event| event.recipient_hash.as_ref() == Some(hash))
+            }),
+    })
+}
+
+fn trace_recipient_hash_overlap(hash: &str, trace: &TraceMessageReport) -> bool {
+    trace
+        .events
+        .events
+        .iter()
+        .any(|event| event.recipient_hash.as_deref() == Some(hash))
+}
+
+fn traceability_status(
+    watch_report: &WatchWindowReport,
+    ledger: &ToolCallOutcome<LedgerWindowReport>,
+    findings: &[ReadinessFinding],
+    exact_message_traceable: bool,
+) -> String {
+    if findings.iter().any(|item| item.severity == "blocker")
+        || watch_report.status == "blocked"
+        || component_blocked_status(ledger)
+    {
+        return "blocked".to_string();
+    }
+    if !exact_message_traceable
+        || !findings.is_empty()
+        || !matches!(watch_report.status.as_str(), "ok" | "ready")
+        || component_degraded_status(ledger)
+    {
+        return "degraded".to_string();
+    }
+    "ok".to_string()
 }
 
 fn add_send_readiness_ledger_findings(

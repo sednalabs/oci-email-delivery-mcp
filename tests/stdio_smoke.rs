@@ -9,10 +9,12 @@ fn stdio_initializes_and_lists_tools() {
             "oci_email_events",
             "oci_email_ledger_window",
             "oci_email_metrics",
+            "oci_email_monitoring_snapshot_artifact",
             "oci_email_send_readiness",
             "oci_email_status",
             "oci_email_suppressions",
             "oci_email_trace_message",
+            "oci_email_traceability_audit",
             "oci_email_watch_window",
         ],
     );
@@ -31,7 +33,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list array");
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 10);
 
     for tool in tools {
         let name = tool["name"].as_str().expect("tool name");
@@ -101,4 +103,36 @@ fn stdio_tools_list_includes_input_schemas() {
     assert!(send_readiness_properties.contains_key("expected_ledger_rows"));
     assert!(send_readiness_properties.contains_key("campaign_id"));
     assert!(send_readiness_properties.contains_key("batch_id"));
+
+    let snapshot = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_monitoring_snapshot_artifact")
+        .expect("snapshot artifact tool");
+    assert_eq!(
+        snapshot["inputSchema"]["required"],
+        json!(["start_time", "end_time"])
+    );
+    let snapshot_properties = snapshot["inputSchema"]["properties"]
+        .as_object()
+        .expect("snapshot properties");
+    assert!(snapshot_properties.contains_key("receipt_kind"));
+    assert!(snapshot_properties.contains_key("artifact_prefix"));
+    assert!(!snapshot_properties.contains_key("output_dir"));
+
+    let traceability = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_traceability_audit")
+        .expect("traceability audit tool");
+    assert_eq!(
+        traceability["inputSchema"]["required"],
+        json!(["start_time", "end_time"])
+    );
+    let traceability_properties = traceability["inputSchema"]["properties"]
+        .as_object()
+        .expect("traceability audit properties");
+    assert!(traceability_properties.contains_key("message_id"));
+    assert!(traceability_properties.contains_key("header_name"));
+    assert!(traceability_properties.contains_key("header_value"));
+    assert!(traceability_properties.contains_key("expected_ledger_rows"));
+    assert!(traceability_properties.contains_key("source_domain"));
 }

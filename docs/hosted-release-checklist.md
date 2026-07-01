@@ -47,13 +47,15 @@ promotion gate after the reviewed commit is selected.
 4. Verify the SHA-256 sidecar against the downloaded binary.
 5. Install the binary to the intended local MCP binary path.
 6. Configure the MCP alias with the intended OCI profile, region, compartment,
-   hard-bounce thresholds, and private ledger path if send-ledger
-   reconciliation is required on that host.
+   hard-bounce thresholds, private snapshot root, and private ledger path if
+   send-ledger reconciliation is required on that host.
 7. Restart the MCP client process after changing the binary or environment.
 8. Verify the configured alias initializes and lists exactly:
    `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`,
    `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`,
-   `oci_email_watch_window`, and `oci_email_send_readiness`.
+   `oci_email_watch_window`, `oci_email_send_readiness`,
+   `oci_email_traceability_audit`, and
+   `oci_email_monitoring_snapshot_artifact`.
 
 Do not call the adapter released until the hosted artifact checksum and
 configured alias startup proof are both recorded.

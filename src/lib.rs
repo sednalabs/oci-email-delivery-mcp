@@ -1,19 +1,21 @@
 //! # OCI Email Delivery MCP
 //!
-//! Curated stdio MCP server for read-only OCI Email Delivery monitoring and
-//! no-send readiness evidence.
+//! Curated stdio MCP server for OCI Email Delivery monitoring and no-send
+//! readiness evidence.
 //!
 //! ## Rationale
 //!
 //! Agents need programmatic, redacted evidence from OCI Monitoring, Logging,
 //! approved sender/domain state, and suppression list visibility before
-//! production or cohort sends can safely expand. This crate keeps that surface
-//! narrow and read-only.
+//! production or cohort sends can safely expand. This crate keeps the
+//! OCI/provider surface narrow and read-only, with optional local private
+//! artifact writes for redacted monitoring snapshots.
 //!
 //! ## Security Boundaries
 //!
 //! * Uses the local OCI CLI credential chain.
-//! * Exposes only read-only intent tools.
+//! * Exposes only read-only OCI/provider intent tools and redacted local
+//!   snapshot artifact writes.
 //! * Blocks send, DNS, suppression mutation, log-enable, Connector Hub apply,
 //!   contact import, and production campaign actions.
 //! * Redacts recipient local parts, message ids, header values, OCIDs, raw CLI
@@ -33,6 +35,7 @@ mod ledger;
 mod live;
 mod redact;
 mod response;
+mod snapshot;
 
 use std::sync::Arc;
 
@@ -53,10 +56,12 @@ pub use response::{
     LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals, MetricRates,
     MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
     OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
-    SendReadinessComponents, SendReadinessReport, SendReadinessRequest, StatusRequest,
-    StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest, ToolCallOutcome,
-    TraceCriteria, TraceMessageReport, TraceMessageRequest, WatchWindowComponents,
-    WatchWindowReport, WatchWindowRequest,
+    SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
+    SnapshotArtifactRequest, SnapshotArtifactSummary, StatusRequest, StopThresholds,
+    SuppressionSummary, SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
+    TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
+    TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
+    WatchWindowRequest,
 };
 
 #[derive(Clone)]
@@ -116,6 +121,18 @@ impl OciEmailMcpServer {
                     "Build one read-only send-window readiness receipt from monitoring evidence plus local send-ledger proof.",
                     ["oci", "email", "readiness", "ledger"],
                 ),
+                read_capability(
+                    "oci_email_traceability_audit",
+                    "Audit whether one UTC window proves exact OCI log and local send-ledger traceability or only aggregate delivery pressure.",
+                    ["oci", "email", "traceability", "ledger", "logs"],
+                ),
+                ToolCapability::new("oci_email_monitoring_snapshot_artifact")
+                    .with_group("read")
+                    .with_risk_posture(GuardedActionPosture::no_mutation_proof())
+                    .with_discovery(ToolDiscoveryMetadata::new(
+                        "Write one redacted private OCI Email Delivery monitoring receipt artifact under a configured local root.",
+                        ["oci", "email", "monitoring", "snapshot", "artifact"],
+                    )),
             ])?,
         })
     }
@@ -207,13 +224,33 @@ impl OciEmailMcpServer {
     ) -> String {
         response::tool_json(self.backend.send_readiness(&request))
     }
+
+    #[tool(
+        description = "Audit whether one UTC window proves exact OCI Email Delivery traceability across logs and the local send ledger without authorizing a send."
+    )]
+    fn oci_email_traceability_audit(
+        &self,
+        Parameters(request): Parameters<TraceabilityAuditRequest>,
+    ) -> String {
+        response::tool_json(self.backend.traceability_audit(&request))
+    }
+
+    #[tool(
+        description = "Write one redacted private OCI Email Delivery monitoring or send-readiness receipt artifact under a configured local root."
+    )]
+    fn oci_email_monitoring_snapshot_artifact(
+        &self,
+        Parameters(request): Parameters<SnapshotArtifactRequest>,
+    ) -> String {
+        response::tool_json(self.backend.snapshot_artifact(&request))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for OciEmailMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Read-only OCI Email Delivery monitoring tools. No send, DNS, suppression mutation, log-enable, Connector Hub apply, contact import, or campaign action tools are exposed.")
+            .with_instructions("OCI Email Delivery monitoring tools with a read-only OCI/provider surface and optional redacted local private snapshot artifacts. No send, DNS, suppression mutation, log-enable, Connector Hub apply, contact import, or campaign action tools are exposed.")
     }
 }
 
@@ -238,10 +275,12 @@ mod tests {
                 "oci_email_events",
                 "oci_email_ledger_window",
                 "oci_email_metrics",
+                "oci_email_monitoring_snapshot_artifact",
                 "oci_email_send_readiness",
                 "oci_email_status",
                 "oci_email_suppressions",
                 "oci_email_trace_message",
+                "oci_email_traceability_audit",
                 "oci_email_watch_window"
             ]
         );
