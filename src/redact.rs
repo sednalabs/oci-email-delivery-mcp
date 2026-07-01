@@ -24,11 +24,15 @@ pub fn email_domain(value: &str) -> Option<String> {
 
 pub fn redact_ocid(value: &str) -> String {
     let mut parts = value.trim().split('.');
-    if parts.next() == Some("ocid1") {
+    if parts
+        .next()
+        .is_some_and(|part| part.eq_ignore_ascii_case("ocid1"))
+    {
         let resource_type = parts
             .next()
+            .map(|part| part.to_ascii_lowercase())
             .filter(|part| is_safe_ocid_resource_type(part))
-            .unwrap_or("resource");
+            .unwrap_or_else(|| "resource".to_string());
         format!("[redacted-ocid:{resource_type}:{}]", short_hash(value))
     } else {
         format!("[redacted-id:{}]", short_hash(value))
@@ -118,11 +122,7 @@ fn redact_email_addresses(input: &str) -> String {
 }
 
 fn redact_ocids(input: &str) -> String {
-    redact_tokens(
-        input,
-        |value| value.starts_with("ocid1."),
-        "[redacted-ocid]",
-    )
+    redact_tokens(input, is_ocid_token, "[redacted-ocid]")
 }
 
 fn redact_ip_addresses(input: &str) -> String {
@@ -170,6 +170,12 @@ fn is_email_token(value: &str) -> bool {
         return false;
     };
     !local.is_empty() && is_host_token(domain)
+}
+
+fn is_ocid_token(value: &str) -> bool {
+    value
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ocid1."))
 }
 
 fn is_ip_token(value: &str) -> bool {
@@ -272,20 +278,20 @@ mod tests {
 
     #[test]
     fn redacted_ocids_keep_type_without_ocid_shape() {
-        let redacted = redact_ocid("ocid1.emaildomain.oc1.ap-melbourne-1.example");
+        let redacted = redact_ocid("OCID1.EmailDomain.oc1.ap-melbourne-1.example");
 
         assert!(redacted.starts_with("[redacted-ocid:emaildomain:"));
         assert!(redacted.ends_with(']'));
-        assert!(!redacted.contains("ocid1."));
+        assert!(!redacted.to_ascii_lowercase().contains("ocid1."));
     }
 
     #[test]
     fn redacts_sensitive_text_tokens() {
         let output =
-            redact_sensitive_text("token abc user@example.com ocid1.tenancy.oc1..example 203.0.113.4 203.0.113.5:25 [2001:db8::1]:25 198.51.100.0/24 /home/me/.oci/config C:\\Users\\me\\.oci\\key.pem");
+            redact_sensitive_text("token abc user@example.com OCID1.tenancy.oc1..example 203.0.113.4 203.0.113.5:25 [2001:db8::1]:25 198.51.100.0/24 /home/me/.oci/config C:\\Users\\me\\.oci\\key.pem");
         assert!(!output.contains("abc"));
         assert!(!output.contains("user@example.com"));
-        assert!(!output.contains("ocid1.tenancy"));
+        assert!(!output.to_ascii_lowercase().contains("ocid1.tenancy"));
         assert!(!output.contains("203.0.113.4"));
         assert!(!output.contains("203.0.113.5"));
         assert!(!output.contains("2001:db8::1"));
