@@ -5,9 +5,10 @@ hosted validation and Code Quality enablement are the current gates.
 
 ## Classification
 
-Release Track candidate. The adapter is a generic read-only OCI Email Delivery
-MCP and does not need operator-specific state to build, test, or explain its
-core value.
+Release Track candidate. The adapter is a generic OCI Email Delivery MCP with
+a read-only OCI/provider surface plus a configured local private snapshot
+artifact surface. It does not need operator-specific state to build, test, or
+explain its core value.
 
 ## Current Public-Safety Posture
 
@@ -21,6 +22,10 @@ core value.
 - Local send-ledger support is default-deny unless `OCI_MCP_LEDGER_PATH` is
   configured at runtime. The repository contains no ledger data, and the tool
   returns hashes/domains/counts rather than raw recipients or campaign text.
+- Local monitoring snapshot artifacts are default-deny unless
+  `OCI_MCP_SNAPSHOT_ROOT` is configured at runtime. The tool writes only
+  generated direct-child files under that private root and returns filename,
+  root hash, byte count, and SHA-256 rather than the private path.
 - Operator-specific live telemetry is kept out of the repository; public docs
   describe proof categories and blocker state only.
 - GitHub Actions workflows use read-only top-level permissions, narrow
@@ -40,6 +45,15 @@ core value.
   and, when a seed/cohort has expected ledger rows, tie monitoring evidence to
   local ledger proof. Both remain read-only and always return
   `send_authorized=false`.
+- The adapter includes `oci_email_traceability_audit` so operators can ask the
+  narrower question: does this window prove exact message and recipient
+  overlap across OCI logs and the same configured local ledger row, or only
+  aggregate delivery pressure? The audit is read-only, redacted, and returns
+  `aggregate_only=true` whenever exact overlap is missing.
+- The adapter includes `oci_email_monitoring_snapshot_artifact` so those
+  redacted watch, readiness, or traceability receipts can be persisted
+  privately for later replay without scraping MCP transcripts or exposing raw
+  recipient/provider data.
 
 ## Publication Gates
 
@@ -54,11 +68,13 @@ core value.
   before the `code-coverage` workflow can upload Cobertura coverage
   successfully.
 - Before production monitoring use, the current hard-bounce blocker and
-  degraded log-event proof must be resolved, a host-local ledger path must be
-  configured, and `oci_email_send_readiness` must match the expected ledger row
-  count for the seed/cohort window. Operator acceptance of the current gap can
-  only mean remaining paused or seed-only. This is an operational-readiness
-  blocker, not a public-release source-code blocker.
+  degraded log-event proof must be resolved, host-local ledger and snapshot
+  paths must be configured, `oci_email_send_readiness` must match the expected
+  ledger row count for the seed/cohort window, and
+  `oci_email_traceability_audit` must move from aggregate-only to exact
+  traceability for the relevant seed/proof message. Operator acceptance of the
+  current gap can only mean remaining paused or seed-only. This is an
+  operational-readiness blocker, not a public-release source-code blocker.
 
 ## Useful Hosted Gates
 

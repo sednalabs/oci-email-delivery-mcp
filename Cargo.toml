@@ -2,7 +2,7 @@
 name = "oci-email-delivery-mcp"
 version = "0.1.0"
 edition = "2021"
-description = "Read-only MCP tools for OCI Email Delivery monitoring and no-send readiness checks"
+description = "MCP tools for OCI Email Delivery monitoring and no-send readiness checks"
 license = "Apache-2.0"
 publish = false
 

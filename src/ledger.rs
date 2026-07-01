@@ -726,6 +726,7 @@ mod tests {
             region: Some("example-region-1".to_string()),
             config_file: None,
             ledger_path: Some(path),
+            snapshot_root: None,
             warn_hard_bounce_percent: 0.5,
             pause_hard_bounce_percent: 0.55,
             throttle_hard_bounce_percent: 0.75,

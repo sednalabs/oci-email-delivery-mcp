@@ -1,8 +1,9 @@
 use oci_email_delivery_mcp::{
-    tests_support::FixtureBackend, EventsReport, EventsRequest, LedgerWindowRequest, MetricsReport,
-    MetricsRequest, OciEmailBackend, OciEmailError, OciEmailStatusReport, SendReadinessRequest,
-    StatusRequest, SuppressionsReport, SuppressionsRequest, TraceMessageReport,
-    TraceMessageRequest, WatchWindowRequest,
+    tests_support::FixtureBackend, EventFilters, EventsReport, EventsRequest, LedgerRowSummary,
+    LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals,
+    MetricsReport, MetricsRequest, OciEmailBackend, OciEmailError, OciEmailStatusReport,
+    SendReadinessRequest, StatusRequest, SuppressionsReport, SuppressionsRequest, TraceCriteria,
+    TraceMessageReport, TraceMessageRequest, TraceabilityAuditRequest, WatchWindowRequest,
 };
 
 #[test]
@@ -362,6 +363,236 @@ fn send_readiness_redacts_returned_trace_header_names() {
 }
 
 #[test]
+fn traceability_audit_distinguishes_exact_overlap_from_aggregate_pressure() {
+    let backend = FixtureBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: None,
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture traceability audit: {err}"));
+    let payload = serde_json::to_string(&report)
+        .unwrap_or_else(|err| panic!("serialize traceability audit: {err}"));
+
+    assert!(report.exact_message_traceable);
+    assert!(!report.aggregate_only);
+    assert!(!report.send_authorized);
+    assert_eq!(report.summary.log_events_returned, 1);
+    assert_eq!(report.summary.trace_events_returned, Some(1));
+    assert_eq!(report.summary.ledger_rows_matched, 1);
+    assert!(report.summary.ledger_trace_key_overlap);
+    assert!(report.summary.recipient_hash_overlap);
+    assert!(report.summary.single_ledger_row_overlap);
+    assert_eq!(report.components.ledger.status, "ok");
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_aggregate_only"));
+    assert!(!payload.contains("message-token-789"));
+    assert!(!payload.contains("campaign-private"));
+    assert!(!payload.contains("batch-private"));
+    let fixture_recipient = ["person", "example.net"].join("@");
+    assert!(!payload.contains(&fixture_recipient));
+}
+
+#[test]
+fn traceability_audit_blocks_when_metrics_exist_but_logs_and_ledger_do_not_match() {
+    let backend = AggregateOnlyBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("aggregate-only traceability audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.exact_message_traceable);
+    assert!(report.aggregate_only);
+    assert_eq!(report.summary.aggregate_accepted, Some(10.0));
+    assert_eq!(report.summary.log_events_returned, 0);
+    assert_eq!(report.summary.trace_events_returned, Some(0));
+    assert_eq!(report.summary.ledger_rows_matched, 0);
+    for code in [
+        "traceability_no_log_events",
+        "traceability_no_trace_events",
+        "traceability_no_ledger_rows",
+        "traceability_expected_ledger_rows_mismatch",
+        "traceability_aggregate_only",
+    ] {
+        assert!(
+            report.findings.iter().any(|finding| finding.code == code),
+            "missing finding {code}"
+        );
+    }
+}
+
+#[test]
+fn traceability_audit_requires_requested_trace_recipient_overlap() {
+    let backend = MismatchedTraceRecipientBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("mismatched trace recipient audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.exact_message_traceable);
+    assert!(report.aggregate_only);
+    assert!(report.summary.ledger_trace_key_overlap);
+    assert!(!report.summary.recipient_hash_overlap);
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_recipient_hash_overlap"));
+}
+
+#[test]
+fn traceability_audit_requires_requested_trace_key_overlap() {
+    let backend = MismatchedTraceKeyBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("mismatched trace key audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.exact_message_traceable);
+    assert!(report.aggregate_only);
+    assert!(!report.summary.ledger_trace_key_overlap);
+    assert!(report.summary.recipient_hash_overlap);
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_ledger_trace_key_overlap"));
+}
+
+#[test]
+fn traceability_audit_requires_same_ledger_row_for_trace_and_recipient_overlap() {
+    let backend = SplitLedgerOverlapBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(2),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("split ledger overlap audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.exact_message_traceable);
+    assert!(report.aggregate_only);
+    assert!(report.summary.ledger_trace_key_overlap);
+    assert!(report.summary.recipient_hash_overlap);
+    assert!(!report.summary.single_ledger_row_overlap);
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_single_ledger_row_overlap"));
+}
+
+#[test]
+fn traceability_audit_blocks_explicit_zero_expected_rows() {
+    let backend = FixtureBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(0),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("zero-row traceability audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.exact_message_traceable);
+    assert!(report.aggregate_only);
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_expected_ledger_rows_zero"));
+}
+
+#[test]
 fn watch_window_reports_component_failures_without_aborting_receipt() {
     let backend = MetricsFailureBackend;
     let report = backend
@@ -457,5 +688,283 @@ impl OciEmailBackend for MetricsFailureBackend {
         request: &SuppressionsRequest,
     ) -> Result<SuppressionsReport, OciEmailError> {
         FixtureBackend.suppressions(request)
+    }
+}
+
+struct AggregateOnlyBackend;
+
+impl OciEmailBackend for AggregateOnlyBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        Ok(empty_events(
+            &request.start_time,
+            &request.end_time,
+            request.source_domain.clone(),
+        ))
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        Ok(TraceMessageReport {
+            status: "ok".to_string(),
+            criteria: TraceCriteria {
+                message_id_hash: request.message_id.as_ref().map(|_| "unmatched".to_string()),
+                header_name: request.header_name.clone(),
+                header_value_hash: request
+                    .header_value
+                    .as_ref()
+                    .map(|_| "unmatched".to_string()),
+            },
+            events: empty_events(
+                &request.start_time,
+                &request.end_time,
+                request.source_domain.clone(),
+            ),
+        })
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        Ok(LedgerWindowReport {
+            status: "ok".to_string(),
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            filters: LedgerWindowFilters {
+                sender_domain: request.sender_domain.clone(),
+                campaign_hash: None,
+                batch_hash: None,
+            },
+            limit: request.limit.unwrap_or(20),
+            totals: LedgerWindowTotals {
+                scanned_rows: 0,
+                matched_rows: 0,
+                returned_rows: 0,
+                invalid_rows: 0,
+                rows_capped: false,
+                missing_trace_key_count: 0,
+                missing_recipient_key_count: 0,
+            },
+            sender_domains: Vec::new(),
+            campaigns: Vec::new(),
+            batches: Vec::new(),
+            rows: Vec::new(),
+            findings: Vec::new(),
+            evidence: Vec::new(),
+            raw_payload_returned: false,
+        })
+    }
+}
+
+struct MismatchedTraceRecipientBackend;
+
+impl OciEmailBackend for MismatchedTraceRecipientBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        let mut report = FixtureBackend.trace_message(request)?;
+        for event in &mut report.events.events {
+            event.recipient_hash = Some("trace-recipient-only".to_string());
+        }
+        Ok(report)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        FixtureBackend.ledger_window(request)
+    }
+}
+
+struct MismatchedTraceKeyBackend;
+
+impl OciEmailBackend for MismatchedTraceKeyBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        let mut report = FixtureBackend.trace_message(request)?;
+        report.criteria.message_id_hash = Some("trace-key-only".to_string());
+        report.criteria.header_value_hash = None;
+        Ok(report)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        FixtureBackend.ledger_window(request)
+    }
+}
+
+struct SplitLedgerOverlapBackend;
+
+impl OciEmailBackend for SplitLedgerOverlapBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        FixtureBackend.trace_message(request)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        Ok(LedgerWindowReport {
+            status: "ok".to_string(),
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            filters: LedgerWindowFilters {
+                sender_domain: request.sender_domain.clone(),
+                campaign_hash: None,
+                batch_hash: None,
+            },
+            limit: request.limit.unwrap_or(20),
+            totals: LedgerWindowTotals {
+                scanned_rows: 2,
+                matched_rows: 2,
+                returned_rows: 2,
+                invalid_rows: 0,
+                rows_capped: false,
+                missing_trace_key_count: 0,
+                missing_recipient_key_count: 0,
+            },
+            sender_domains: vec!["example.com".to_string()],
+            campaigns: Vec::new(),
+            batches: Vec::new(),
+            rows: vec![
+                LedgerRowSummary {
+                    submitted_at: Some("2026-06-30T00:10:00Z".to_string()),
+                    provider_hash: Some("fixture".to_string()),
+                    campaign_hash: None,
+                    batch_hash: None,
+                    sender_domain: Some("example.com".to_string()),
+                    recipient_domain: Some("example.net".to_string()),
+                    recipient_address_hash: Some("other-recipient".to_string()),
+                    recipient_id_hash: None,
+                    message_id_hash: Some("fixture".to_string()),
+                    correlation_id_hash: None,
+                    template_version_hash: None,
+                    subject_hash: None,
+                    raw_recipient_returned: false,
+                },
+                LedgerRowSummary {
+                    submitted_at: Some("2026-06-30T00:11:00Z".to_string()),
+                    provider_hash: Some("fixture".to_string()),
+                    campaign_hash: None,
+                    batch_hash: None,
+                    sender_domain: Some("example.com".to_string()),
+                    recipient_domain: Some("example.net".to_string()),
+                    recipient_address_hash: Some("fixture".to_string()),
+                    recipient_id_hash: None,
+                    message_id_hash: Some("other-message".to_string()),
+                    correlation_id_hash: None,
+                    template_version_hash: None,
+                    subject_hash: None,
+                    raw_recipient_returned: false,
+                },
+            ],
+            findings: Vec::new(),
+            evidence: Vec::new(),
+            raw_payload_returned: false,
+        })
+    }
+}
+
+fn empty_events(start_time: &str, end_time: &str, source_domain: Option<String>) -> EventsReport {
+    EventsReport {
+        status: "ok".to_string(),
+        start_time: start_time.to_string(),
+        end_time: end_time.to_string(),
+        filters: EventFilters {
+            action: None,
+            message_id_hash: None,
+            header_name: None,
+            header_value_hash: None,
+            receiving_domain: None,
+            source_domain,
+        },
+        limit: 20,
+        returned: 0,
+        events: Vec::new(),
+        findings: Vec::new(),
+        evidence: Vec::new(),
     }
 }

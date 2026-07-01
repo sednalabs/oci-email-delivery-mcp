@@ -1,18 +1,22 @@
 # AGENTS.md - OCI Email Delivery MCP
 
-This repository contains a read-only Rust MCP server for OCI Email Delivery
-monitoring and no-send readiness evidence. It follows the curated stdio
-intent-server pattern from `sednalabs/mcp-toolkit-rs`.
+This repository contains a Rust MCP server for OCI Email Delivery monitoring
+and no-send readiness evidence. Its OCI/provider surface is read-only; local
+private artifact writes are limited to redacted monitoring snapshots under a
+configured private root. It follows the curated stdio intent-server pattern
+from `sednalabs/mcp-toolkit-rs`.
 
 ## Engineering Rules
 
 - Keep the MCP surface small and operator-shaped. Prefer OCI Email Delivery
   intent tools over generic OCI CLI, raw API, log-query, or dashboard scraping
   escape hatches.
-- Read-only tools are the only current scope. Do not add email send, DNS,
-  suppression mutation, log-enable, Connector Hub apply, contact import, or
-  production campaign actions without a new preview/apply safety design and
-  explicit approval.
+- Read-only OCI/provider tools are the only current external scope. Local
+  private artifact writes are allowed only for redacted monitoring snapshots
+  under a configured private root. Do not add email send, DNS, suppression
+  mutation, log-enable, Connector Hub apply, contact import, or production
+  campaign actions without a new preview/apply safety design and explicit
+  approval.
 - Tool output must be redacted before it leaves the MCP. Never return raw
   recipient email addresses, raw OCIDs, credential paths, private key material,
   tokens, raw provider payloads, or full log events.

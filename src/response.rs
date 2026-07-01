@@ -10,6 +10,7 @@ pub const DEFAULT_SUPPRESSION_LIMIT: u32 = 20;
 pub const HARD_SUPPRESSION_LIMIT: u32 = 100;
 pub const DEFAULT_LEDGER_LIMIT: u32 = 100;
 pub const HARD_LEDGER_LIMIT: u32 = 1000;
+pub const DEFAULT_SNAPSHOT_PREFIX: &str = "oci-email-monitoring";
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct StatusRequest {
@@ -87,6 +88,46 @@ pub struct SendReadinessRequest {
     pub campaign_id: String,
     pub batch_id: String,
     pub expected_ledger_rows: u64,
+    pub message_id: Option<String>,
+    pub header_name: Option<String>,
+    pub header_value: Option<String>,
+    pub limit: Option<u32>,
+    pub compartment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct SnapshotArtifactRequest {
+    pub start_time: String,
+    pub end_time: String,
+    pub interval: Option<String>,
+    pub resource_domain: Option<String>,
+    pub source_domain: Option<String>,
+    pub resource_id: Option<String>,
+    pub sender_domain: Option<String>,
+    pub campaign_id: Option<String>,
+    pub batch_id: Option<String>,
+    pub expected_ledger_rows: Option<u64>,
+    pub message_id: Option<String>,
+    pub header_name: Option<String>,
+    pub header_value: Option<String>,
+    pub limit: Option<u32>,
+    pub compartment_id: Option<String>,
+    pub receipt_kind: Option<String>,
+    pub artifact_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct TraceabilityAuditRequest {
+    pub start_time: String,
+    pub end_time: String,
+    pub interval: Option<String>,
+    pub resource_domain: Option<String>,
+    pub source_domain: Option<String>,
+    pub resource_id: Option<String>,
+    pub sender_domain: Option<String>,
+    pub campaign_id: Option<String>,
+    pub batch_id: Option<String>,
+    pub expected_ledger_rows: Option<u64>,
     pub message_id: Option<String>,
     pub header_name: Option<String>,
     pub header_value: Option<String>,
@@ -409,6 +450,80 @@ pub struct SendReadinessReport {
     pub findings: Vec<ReadinessFinding>,
     pub evidence: Vec<Evidence>,
     pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SnapshotArtifactReport {
+    pub status: String,
+    pub decision: String,
+    pub send_authorized: bool,
+    pub receipt_kind: String,
+    pub receipt_status: String,
+    pub receipt_decision: String,
+    pub artifact: SnapshotArtifactSummary,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SnapshotArtifactSummary {
+    pub schema: String,
+    pub filename: String,
+    pub root_hash: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub resource_domain: Option<String>,
+    pub source_domain: Option<String>,
+    pub campaign_hash: Option<String>,
+    pub batch_hash: Option<String>,
+    pub expected_ledger_rows: Option<u64>,
+    pub trace_requested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TraceabilityAuditReport {
+    pub status: String,
+    pub decision: String,
+    pub send_authorized: bool,
+    pub start_time: String,
+    pub end_time: String,
+    pub interval: String,
+    pub resource_domain: Option<String>,
+    pub source_domain: Option<String>,
+    pub sender_domain: Option<String>,
+    pub expected_ledger_rows: Option<u64>,
+    pub trace_requested: bool,
+    pub exact_message_traceable: bool,
+    pub aggregate_only: bool,
+    pub summary: TraceabilitySummary,
+    pub components: TraceabilityAuditComponents,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TraceabilitySummary {
+    pub aggregate_accepted: Option<f64>,
+    pub aggregate_relayed: Option<f64>,
+    pub aggregate_hard_bounced: Option<f64>,
+    pub aggregate_suppressed: Option<f64>,
+    pub log_events_returned: usize,
+    pub trace_events_returned: Option<usize>,
+    pub ledger_rows_matched: usize,
+    pub ledger_rows_capped: bool,
+    pub ledger_trace_key_overlap: bool,
+    pub recipient_hash_overlap: bool,
+    pub single_ledger_row_overlap: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TraceabilityAuditComponents {
+    pub watch_window: ToolCallOutcome<WatchWindowReport>,
+    pub ledger: ToolCallOutcome<LedgerWindowReport>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
