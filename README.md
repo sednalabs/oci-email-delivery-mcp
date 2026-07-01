@@ -14,7 +14,7 @@ The server exposes ten curated intent tools:
 | `oci_email_ledger_window` | Summarize configured local send-ledger rows for a UTC window without raw recipients. |
 | `oci_email_events` | Search Email Delivery logs with whitelisted filters and redacted event summaries. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
-| `oci_email_suppressions` | Summarize OCI suppressions without returning raw recipient addresses. |
+| `oci_email_suppressions` | Summarize OCI suppressions with reason/domain totals and no raw recipient addresses. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, metrics, logs, optional trace, and suppressions. |
 | `oci_email_send_readiness` | Build one read-only send-window receipt that combines watch-window evidence with local send-ledger proof and expected row-count gates. |
 | `oci_email_traceability_audit` | Audit whether one UTC window proves exact message/recipient traceability across OCI logs and the local send ledger, or only aggregate delivery pressure. |
@@ -69,6 +69,9 @@ contract tests with an OCI profile configured. The live smoke must not use
 
 - Raw OCI JSON is not returned by tools.
 - Recipient addresses are reduced to domain plus a short stable hash.
+- Suppression reports include aggregate `totals` by reason and recipient
+  domain, plus a canonical hard-bounce count, so stop-gate reviews do not need
+  raw rows.
 - OCIDs are reduced to kind plus a short stable hash.
 - `EmailsRelayed` means recipient-domain acceptance only. It is not inbox
   placement proof.

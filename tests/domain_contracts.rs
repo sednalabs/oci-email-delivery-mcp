@@ -112,7 +112,30 @@ fn suppressions_contract_uses_hash_and_domain_only() {
         report.suppressions[0].recipient_hash,
         Some("fixture".to_string())
     );
+    assert_eq!(report.returned, 2);
+    assert_eq!(report.totals.hard_bounce, 1);
+    assert!(report
+        .totals
+        .by_reason
+        .iter()
+        .any(|item| item.key == "hardbounce" && item.count == 1));
+    assert!(report
+        .totals
+        .by_reason
+        .iter()
+        .any(|item| item.key == "complaint" && item.count == 1));
+    assert!(report
+        .totals
+        .by_recipient_domain
+        .iter()
+        .any(|item| item.key == "example.com" && item.count == 1));
+    assert!(report
+        .totals
+        .by_recipient_domain
+        .iter()
+        .any(|item| item.key == "example.net" && item.count == 1));
     assert!(!payload.contains("person@example.com"));
+    assert!(!payload.contains("person@example.net"));
 }
 
 #[test]

@@ -8,15 +8,20 @@ use crate::{
         MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
         ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
         SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest,
-        StopThresholds, SuppressionSummary, SuppressionsReport, SuppressionsRequest,
-        ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
-        TraceabilityAuditComponents, TraceabilityAuditReport, TraceabilityAuditRequest,
-        TraceabilitySummary, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
-        DEFAULT_EVENT_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
+        StopThresholds, SuppressionCount, SuppressionSummary, SuppressionTotals,
+        SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
+        TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents,
+        TraceabilityAuditReport, TraceabilityAuditRequest, TraceabilitySummary,
+        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
+        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
-use std::{collections::BTreeSet, process::Command, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    process::Command,
+    sync::Arc,
+};
 
 const NAMESPACE: &str = "oci_emaildelivery";
 
@@ -534,6 +539,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 "Suppression list returned the requested limit; narrow the time window or raise the limit before treating the result set as complete.",
             ));
         }
+        let totals = suppression_totals(&suppressions);
         Ok(SuppressionsReport {
             status: if findings.is_empty() {
                 "ok".to_string()
@@ -542,6 +548,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
             },
             limit,
             returned: suppressions.len(),
+            totals,
             suppressions,
             findings,
             evidence: vec![Evidence::new(
@@ -1827,6 +1834,60 @@ fn suppression_summary(value: &Value) -> SuppressionSummary {
     }
 }
 
+fn suppression_totals(suppressions: &[SuppressionSummary]) -> SuppressionTotals {
+    let mut by_reason = BTreeMap::<String, usize>::new();
+    let mut by_recipient_domain = BTreeMap::<String, usize>::new();
+    let mut hard_bounce = 0usize;
+    for suppression in suppressions {
+        if let Some(reason) = suppression.reason.as_deref().and_then(normalize_reason_key) {
+            if is_hard_bounce_reason(&reason) {
+                hard_bounce += 1;
+            }
+            *by_reason.entry(reason).or_default() += 1;
+        }
+        if let Some(domain) = suppression
+            .recipient_domain
+            .as_deref()
+            .and_then(normalize_summary_key)
+        {
+            *by_recipient_domain.entry(domain).or_default() += 1;
+        }
+    }
+    SuppressionTotals {
+        hard_bounce,
+        by_reason: counts_from_map(by_reason),
+        by_recipient_domain: counts_from_map(by_recipient_domain),
+    }
+}
+
+fn normalize_summary_key(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn normalize_reason_key(value: &str) -> Option<String> {
+    let normalized = normalize_summary_key(value)?;
+    if is_hard_bounce_reason(&normalized) {
+        Some("hardbounce".to_string())
+    } else {
+        Some(normalized)
+    }
+}
+
+fn is_hard_bounce_reason(reason: &str) -> bool {
+    reason
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        == "hardbounce"
+}
+
+fn counts_from_map(map: BTreeMap<String, usize>) -> Vec<SuppressionCount> {
+    map.into_iter()
+        .map(|(key, count)| SuppressionCount { key, count })
+        .collect()
+}
+
 fn email_event_summary(value: &Value) -> EmailEventSummary {
     let record = event_record(value);
     let data = record.get("data").unwrap_or(record);
@@ -2068,6 +2129,56 @@ mod tests {
         assert!(rows_may_be_capped(100, 100));
         assert!(!rows_may_be_capped(19, 20));
         assert!(!rows_may_be_capped(0, 20));
+    }
+
+    #[test]
+    fn suppression_totals_are_redacted_and_reason_normalized() {
+        let suppressions = vec![
+            SuppressionSummary {
+                time_created: Some("2026-06-30T00:00:00Z".to_string()),
+                reason: Some("HARDBOUNCE".to_string()),
+                recipient_redacted: Some("[redacted]@example.com".to_string()),
+                recipient_domain: Some("example.com".to_string()),
+                recipient_hash: Some("one".to_string()),
+                raw_payload_returned: false,
+            },
+            SuppressionSummary {
+                time_created: Some("2026-06-30T00:01:00Z".to_string()),
+                reason: Some("hard bounce".to_string()),
+                recipient_redacted: Some("[redacted]@example.com".to_string()),
+                recipient_domain: Some("example.com".to_string()),
+                recipient_hash: Some("two".to_string()),
+                raw_payload_returned: false,
+            },
+            SuppressionSummary {
+                time_created: Some("2026-06-30T00:02:00Z".to_string()),
+                reason: Some("COMPLAINT".to_string()),
+                recipient_redacted: Some("[redacted]@example.net".to_string()),
+                recipient_domain: Some("example.net".to_string()),
+                recipient_hash: Some("three".to_string()),
+                raw_payload_returned: false,
+            },
+        ];
+
+        let totals = suppression_totals(&suppressions);
+
+        assert_eq!(totals.hard_bounce, 2);
+        assert!(totals
+            .by_reason
+            .iter()
+            .any(|item| item.key == "hardbounce" && item.count == 2));
+        assert!(totals
+            .by_reason
+            .iter()
+            .any(|item| item.key == "complaint" && item.count == 1));
+        assert!(totals
+            .by_recipient_domain
+            .iter()
+            .any(|item| item.key == "example.com" && item.count == 2));
+        assert!(totals
+            .by_recipient_domain
+            .iter()
+            .any(|item| item.key == "example.net" && item.count == 1));
     }
 
     #[test]

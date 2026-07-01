@@ -359,9 +359,23 @@ pub struct SuppressionsReport {
     pub status: String,
     pub limit: u32,
     pub returned: usize,
+    pub totals: SuppressionTotals,
     pub suppressions: Vec<SuppressionSummary>,
     pub findings: Vec<ReadinessFinding>,
     pub evidence: Vec<Evidence>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct SuppressionTotals {
+    pub hard_bounce: usize,
+    pub by_reason: Vec<SuppressionCount>,
+    pub by_recipient_domain: Vec<SuppressionCount>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SuppressionCount {
+    pub key: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

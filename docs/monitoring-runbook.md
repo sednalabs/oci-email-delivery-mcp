@@ -15,7 +15,7 @@ green.
 - `oci_email_events` returns real Email Delivery log events for a seed/proof
   window before cohort expansion.
 - `oci_email_suppressions` is callable and returns either a normal empty list
-  or redacted suppression summaries.
+  or redacted suppression summaries with aggregate reason/domain totals.
 - `oci_email_ledger_window` is configured with the private local send-ledger
   JSONL path before any seed/proof send. It returns only hashes, domains, and
   aggregate counts.
@@ -259,7 +259,9 @@ visible, suppression query is `ok`, and `send_authorized` is `false`.
 ```
 
 Expected: `status` is `ok` or explicitly `degraded` with a documented reason;
-no raw recipient address is returned.
+no raw recipient address is returned. Use `totals.hard_bounce`,
+`totals.by_reason`, and `totals.by_recipient_domain` for stop-gate and
+clean-audience reconciliation before inspecting redacted sample rows.
 
 `oci_email_metrics` for the approved sender/resource domain:
 
