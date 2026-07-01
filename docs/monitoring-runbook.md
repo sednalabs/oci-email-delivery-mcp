@@ -340,6 +340,11 @@ expected delay, are reconciliation gaps.
 }
 ```
 
+Intervals should normally use OCI shorthand: `1m`, `5m`, `15m`, `30m`, `1h`,
+or `1d`. The MCP also accepts common ISO-8601 inputs `PT1M`, `PT5M`,
+`PT15M`, `PT30M`, `PT1H`, and `P1D` case-insensitively and normalizes them
+before building OCI Monitoring queries.
+
 Check:
 
 - accepted total moved when a send occurred;

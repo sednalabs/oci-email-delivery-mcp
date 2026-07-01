@@ -79,6 +79,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   placement proof.
 - Missing metrics or log rows are reported as missing evidence, not as proof
   that bounce, complaint, open, or click counts are safe.
+- Metric intervals accept OCI shorthand values `1m`, `5m`, `15m`, `30m`,
+  `1h`, and `1d`; common ISO-8601 forms `PT1M`, `PT5M`, `PT15M`, `PT30M`,
+  `PT1H`, and `P1D` are accepted case-insensitively and normalized to those
+  canonical values before queries are built.
 - `oci_email_logging_status` inventories visible service-log configuration
   without enabling logs. It returns counts, lifecycle state, and redacted
   identifiers only; it blocks when active Email Delivery service logs are not

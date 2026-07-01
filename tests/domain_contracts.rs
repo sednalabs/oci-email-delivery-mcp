@@ -47,6 +47,63 @@ fn metrics_contract_includes_stop_thresholds_and_missing_metric_findings() {
 }
 
 #[test]
+fn watch_window_normalizes_iso_interval_before_metrics_read() {
+    let backend = EchoIntervalBackend;
+    let report = backend
+        .watch_window(&WatchWindowRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T00:05:00Z".to_string(),
+            interval: Some("PT1M".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("watch window: {err}"));
+
+    assert_eq!(report.interval, "1m");
+    assert_eq!(report.components.metrics.report.unwrap().interval, "1m");
+}
+
+#[test]
+fn watch_window_blocks_invalid_interval_before_metrics_backend() {
+    let backend = EchoIntervalBackend;
+    let report = backend
+        .watch_window(&WatchWindowRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T00:05:00Z".to_string(),
+            interval: Some("PT2M".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("watch window: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.components.metrics.status, "blocked");
+    assert!(report.components.metrics.report.is_none());
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "metrics_interval_invalid"));
+    assert!(report
+        .components
+        .metrics
+        .error
+        .as_ref()
+        .is_some_and(|error| error.error == "invalid_input"));
+}
+
+#[test]
 fn events_contract_does_not_return_raw_recipient_or_message_id() {
     let backend = FixtureBackend;
     let report = backend
@@ -750,6 +807,38 @@ impl OciEmailBackend for MetricsFailureBackend {
         Err(OciEmailError::InvalidInput(
             "synthetic metrics failure".to_string(),
         ))
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        FixtureBackend.trace_message(request)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+}
+
+struct EchoIntervalBackend;
+
+impl OciEmailBackend for EchoIntervalBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        let mut report = FixtureBackend.metrics(request)?;
+        report.interval = request.interval.clone().unwrap_or_else(|| "1h".to_string());
+        Ok(report)
     }
 
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
