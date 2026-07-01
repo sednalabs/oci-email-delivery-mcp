@@ -344,7 +344,7 @@ pub mod tests_support {
                 region: Some("example-region-1".to_string()),
                 compartment: RedactedIdentifier {
                     present: true,
-                    redacted: Some("ocid1.tenancy:fixture".to_string()),
+                    redacted: Some("[redacted-ocid:tenancy:fixture]".to_string()),
                 },
                 approved_sender_count: 1,
                 active_sender_count: 1,
@@ -442,7 +442,7 @@ pub mod tests_support {
                 send_authorized: false,
                 compartment: RedactedIdentifier {
                     present: true,
-                    redacted: Some("ocid1.tenancy:fixture".to_string()),
+                    redacted: Some("[redacted-ocid:tenancy:fixture]".to_string()),
                 },
                 requested_resource_id: RedactedIdentifier::from_optional(
                     request.resource_id.as_deref(),
@@ -456,7 +456,7 @@ pub mod tests_support {
                 log_groups: vec![LogGroupSummary {
                     log_group_id: RedactedIdentifier {
                         present: true,
-                        redacted: Some("ocid1.loggroup:fixture".to_string()),
+                        redacted: Some("[redacted-ocid:loggroup:fixture]".to_string()),
                     },
                     display_name_hash: Some("fixture".to_string()),
                     lifecycle_state: Some("ACTIVE".to_string()),
@@ -465,11 +465,11 @@ pub mod tests_support {
                 email_delivery_logs: vec![EmailDeliveryLogSummary {
                     log_id: RedactedIdentifier {
                         present: true,
-                        redacted: Some("ocid1.log:fixture".to_string()),
+                        redacted: Some("[redacted-ocid:log:fixture]".to_string()),
                     },
                     log_group_id: RedactedIdentifier {
                         present: true,
-                        redacted: Some("ocid1.loggroup:fixture".to_string()),
+                        redacted: Some("[redacted-ocid:loggroup:fixture]".to_string()),
                     },
                     display_name_hash: Some("fixture".to_string()),
                     lifecycle_state: Some("ACTIVE".to_string()),

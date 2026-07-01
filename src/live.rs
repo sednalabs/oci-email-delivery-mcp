@@ -2589,8 +2589,8 @@ mod tests {
         );
 
         assert!(query.contains("resourceDomain = \"example.com\""));
-        assert!(query.contains("resourceId = \"ocid1.emaildomain:"));
-        assert!(!query.contains("ocid1.emaildomain.oc1"));
+        assert!(query.contains("resourceId = \"[redacted-ocid:emaildomain:"));
+        assert!(!query.contains("ocid1."));
     }
 
     #[test]
@@ -2857,8 +2857,8 @@ mod tests {
         assert_eq!(report.active_email_delivery_log_count, 1);
         assert_eq!(report.matching_requested_resource_log_count, 1);
         assert!(!report.raw_payload_returned);
-        assert!(payload.contains("ocid1.emaildomain:"));
-        assert!(!payload.contains("ocid1.emaildomain.oc1.example"));
+        assert!(payload.contains("[redacted-ocid:emaildomain:"));
+        assert!(!payload.contains("ocid1."));
         assert!(!payload.contains("Email Delivery Log"));
     }
 
@@ -2971,7 +2971,7 @@ mod tests {
             .any(|finding| finding.code == "logging_enablement_approval_required"));
         assert_eq!(report.current_logging.status, "blocked");
         assert!(!report.raw_payload_returned);
-        assert!(!payload.contains("ocid1.emaildomain.oc1.example"));
+        assert!(!payload.contains("ocid1."));
     }
 
     #[test]

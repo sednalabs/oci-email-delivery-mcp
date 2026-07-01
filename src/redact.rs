@@ -23,11 +23,15 @@ pub fn email_domain(value: &str) -> Option<String> {
 }
 
 pub fn redact_ocid(value: &str) -> String {
-    let kind = value.split('.').take(2).collect::<Vec<_>>().join(".");
-    if kind.starts_with("ocid1.") {
-        format!("{kind}:{}", short_hash(value))
+    let mut parts = value.trim().split('.');
+    if parts.next() == Some("ocid1") {
+        let resource_type = parts
+            .next()
+            .filter(|part| is_safe_ocid_resource_type(part))
+            .unwrap_or("resource");
+        format!("[redacted-ocid:{resource_type}:{}]", short_hash(value))
     } else {
-        format!("id:{}", short_hash(value))
+        format!("[redacted-id:{}]", short_hash(value))
     }
 }
 
@@ -202,6 +206,13 @@ fn is_private_path_token(value: &str) -> bool {
             .is_some_and(|prefix| prefix == ":\\" || prefix == ":/")
 }
 
+fn is_safe_ocid_resource_type(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
 fn is_ascii_digits(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
 }
@@ -257,6 +268,15 @@ mod tests {
             short_hash("user@example.com")
         );
         assert_eq!(short_hash("user@example.com").len(), 20);
+    }
+
+    #[test]
+    fn redacted_ocids_keep_type_without_ocid_shape() {
+        let redacted = redact_ocid("ocid1.emaildomain.oc1.ap-melbourne-1.example");
+
+        assert!(redacted.starts_with("[redacted-ocid:emaildomain:"));
+        assert!(redacted.ends_with(']'));
+        assert!(!redacted.contains("ocid1."));
     }
 
     #[test]
