@@ -58,10 +58,10 @@ pub use response::{
     OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
     SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
     SnapshotArtifactRequest, SnapshotArtifactSummary, StatusRequest, StopThresholds,
-    SuppressionSummary, SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
-    TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
-    TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
-    WatchWindowRequest,
+    SuppressionCount, SuppressionSummary, SuppressionTotals, SuppressionsReport,
+    SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
+    TraceabilityAuditComponents, TraceabilityAuditReport, TraceabilityAuditRequest,
+    TraceabilitySummary, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
 };
 
 #[derive(Clone)]
@@ -424,15 +424,48 @@ pub mod tests_support {
             Ok(SuppressionsReport {
                 status: "ok".to_string(),
                 limit: 20,
-                returned: 1,
-                suppressions: vec![SuppressionSummary {
-                    time_created: Some("2026-06-30T00:00:00Z".to_string()),
-                    reason: Some("bounce".to_string()),
-                    recipient_redacted: Some("[redacted]@example.com".to_string()),
-                    recipient_domain: Some("example.com".to_string()),
-                    recipient_hash: Some("fixture".to_string()),
-                    raw_payload_returned: false,
-                }],
+                returned: 2,
+                totals: SuppressionTotals {
+                    hard_bounce: 1,
+                    by_reason: vec![
+                        SuppressionCount {
+                            key: "complaint".to_string(),
+                            count: 1,
+                        },
+                        SuppressionCount {
+                            key: "hardbounce".to_string(),
+                            count: 1,
+                        },
+                    ],
+                    by_recipient_domain: vec![
+                        SuppressionCount {
+                            key: "example.com".to_string(),
+                            count: 1,
+                        },
+                        SuppressionCount {
+                            key: "example.net".to_string(),
+                            count: 1,
+                        },
+                    ],
+                },
+                suppressions: vec![
+                    SuppressionSummary {
+                        time_created: Some("2026-06-30T00:00:00Z".to_string()),
+                        reason: Some("HARDBOUNCE".to_string()),
+                        recipient_redacted: Some("[redacted]@example.com".to_string()),
+                        recipient_domain: Some("example.com".to_string()),
+                        recipient_hash: Some("fixture".to_string()),
+                        raw_payload_returned: false,
+                    },
+                    SuppressionSummary {
+                        time_created: Some("2026-06-30T00:05:00Z".to_string()),
+                        reason: Some("COMPLAINT".to_string()),
+                        recipient_redacted: Some("[redacted]@example.net".to_string()),
+                        recipient_domain: Some("example.net".to_string()),
+                        recipient_hash: Some("fixture-2".to_string()),
+                        raw_payload_returned: false,
+                    },
+                ],
                 findings: Vec::new(),
                 evidence: vec![Evidence::new("fixture", "suppressions", false)],
             })
