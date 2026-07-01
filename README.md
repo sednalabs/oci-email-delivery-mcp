@@ -107,7 +107,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   On Unix, the directory must not grant group or other permissions. The
   snapshot tool writes generated direct-child JSON files only, returns a
   filename plus hashes rather than the private root path, and stores redacted
-  watch, readiness, or traceability receipts.
+  watch, readiness, or traceability receipts. Redacted provider identifiers use
+  non-provider-shaped markers such as `[redacted-ocid:<type>:<hash>]`, so any
+  `ocid1.` string in a returned receipt or snapshot artifact is a leakage
+  defect.
 - `oci_email_watch_window` blocks unscoped lane receipts when neither a metrics
   resource domain/resource id nor an event source domain is available.
 - `oci_email_send_readiness` also requires an expected local ledger row count

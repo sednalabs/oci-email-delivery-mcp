@@ -626,6 +626,7 @@ mod tests {
         }
         assert!(artifact.contains("\"schema\": \"oci_email_monitoring_snapshot.v1\""));
         assert!(artifact.contains("\"header_name\": \"[redacted]\""));
+        assert!(!artifact.contains("ocid1."));
     }
 
     #[test]
@@ -665,6 +666,7 @@ mod tests {
         assert!(!artifact.contains("batch-token-456"));
         assert!(!artifact.contains("message-token-789"));
         assert!(!artifact.contains("person@example.net"));
+        assert!(!artifact.contains("ocid1."));
         assert!(artifact.contains("\"receipt_kind\": \"send_readiness\""));
         assert!(artifact.contains("\"raw_payload_returned\": false"));
     }
@@ -713,6 +715,7 @@ mod tests {
         ] {
             assert!(!artifact.contains(raw), "artifact leaked {raw}");
         }
+        assert!(!artifact.contains("ocid1."));
         assert!(artifact.contains("\"receipt_kind\": \"traceability_audit\""));
         assert!(artifact.contains("\"exact_message_traceable\": true"));
         assert!(artifact.contains("\"raw_payload_returned\": false"));

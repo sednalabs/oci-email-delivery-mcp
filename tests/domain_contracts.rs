@@ -19,8 +19,8 @@ fn status_contract_is_redacted_and_no_send() {
         serde_json::to_string(&report).unwrap_or_else(|err| panic!("serialize status: {err}"));
 
     assert!(!report.send_authorized);
-    assert!(payload.contains("ocid1.tenancy:fixture"));
-    assert!(!payload.contains("ocid1.tenancy.oc1"));
+    assert!(payload.contains("[redacted-ocid:tenancy:fixture]"));
+    assert!(!payload.contains("ocid1."));
     assert!(!payload.contains("@example.com"));
 }
 
@@ -149,7 +149,7 @@ fn logging_status_contract_is_read_only_and_redacted() {
     assert_eq!(report.matching_requested_resource_log_count, 1);
     assert!(!report.email_delivery_logs[0].raw_payload_returned);
     assert!(report.email_delivery_logs[0].source_resource.present);
-    assert!(!payload.contains("ocid1.emaildomain.oc1"));
+    assert!(!payload.contains("ocid1."));
     assert!(!payload.contains("Email Delivery"));
 }
 
@@ -181,7 +181,7 @@ fn logging_enablement_plan_is_read_only_and_redacted() {
     assert!(report.requested_resource_id.present);
     assert_eq!(report.current_logging.status, "ok");
     assert!(!report.raw_payload_returned);
-    assert!(!payload.contains("ocid1.emaildomain.oc1"));
+    assert!(!payload.contains("ocid1."));
 }
 
 #[test]
