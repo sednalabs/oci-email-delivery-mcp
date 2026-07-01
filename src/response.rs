@@ -383,6 +383,8 @@ pub struct EventsReport {
     pub end_time: String,
     pub filters: EventFilters,
     pub limit: u32,
+    pub provider_returned: usize,
+    pub source_domain_matched: usize,
     pub returned: usize,
     pub events: Vec<EmailEventSummary>,
     pub findings: Vec<ReadinessFinding>,

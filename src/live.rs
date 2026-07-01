@@ -831,17 +831,30 @@ impl LiveOciEmailBackend {
             limit.to_string(),
         ];
         let value = self.runner.run_optional_json(&args)?;
-        let events = log_results(&value)
+        let raw_events = log_results(&value)
             .into_iter()
             .map(email_event_summary)
             .collect::<Vec<_>>();
+        let rows_capped = rows_may_be_capped(raw_events.len(), limit);
+        let provider_returned = raw_events.len();
+        let events = raw_events
+            .into_iter()
+            .filter(|event| event_matches_source_domain(event, request.source_domain.as_deref()))
+            .collect::<Vec<_>>();
+        let source_domain_matched = events.len();
         let mut findings = Vec::new();
-        let rows_capped = rows_may_be_capped(events.len(), limit);
         if events.is_empty() {
             findings.push(finding(
                 "warning",
                 "no_log_events_returned",
                 "No Email Delivery log events matched this window/filter; this does not prove logging is enabled.",
+            ));
+        }
+        if provider_returned > 0 && request.source_domain.is_some() && source_domain_matched == 0 {
+            findings.push(finding(
+                "warning",
+                "source_domain_post_filter_no_match",
+                "Email Delivery log events were returned by the provider query, but none matched the requested source domain after redacted summary parsing.",
             ));
         }
         if rows_capped {
@@ -868,6 +881,8 @@ impl LiveOciEmailBackend {
                 source_domain: request.source_domain.clone(),
             },
             limit,
+            provider_returned,
+            source_domain_matched,
             returned: events.len(),
             events,
             findings,
@@ -2331,9 +2346,7 @@ fn email_event_summary(value: &Value) -> EmailEventSummary {
             .map(ToString::to_string),
         log_type,
         action: string_field(data, "action").map(ToString::to_string),
-        source_domain: string_field(record, "source")
-            .filter(|value| is_host_token(value))
-            .map(|value| value.to_ascii_lowercase()),
+        source_domain: email_event_source_domain(record, data),
         receiving_domain: string_field(data, "receivingDomain")
             .filter(|value| is_host_token(value))
             .map(|value| value.to_ascii_lowercase()),
@@ -2388,10 +2401,6 @@ fn build_search_query(
             safe_query_value(domain)?
         ));
     }
-    if let Some(domain) = request.source_domain.as_deref() {
-        validate_domain(domain, "source_domain")?;
-        filters.push(format!("source='{}'", safe_query_value(domain)?));
-    }
     Ok(format!(
         "search \"{}\" | {} | sort by datetime desc",
         safe_query_value(compartment_id)?,
@@ -2425,6 +2434,12 @@ fn validate_event_request(request: &EventsRequest) -> Result<(), OciEmailError> 
     if let Some(name) = request.header_name.as_deref() {
         validate_header_name(name)?;
     }
+    if let Some(domain) = request.receiving_domain.as_deref() {
+        validate_domain(domain, "receiving_domain")?;
+    }
+    if let Some(domain) = request.source_domain.as_deref() {
+        validate_domain(domain, "source_domain")?;
+    }
     for (label, value) in [
         ("message_id", request.message_id.as_deref()),
         ("header_value", request.header_value.as_deref()),
@@ -2436,6 +2451,40 @@ fn validate_event_request(request: &EventsRequest) -> Result<(), OciEmailError> 
         }
     }
     Ok(())
+}
+
+fn email_event_source_domain(record: &Value, data: &Value) -> Option<String> {
+    string_field(data, "sender")
+        .and_then(email_domain)
+        .or_else(|| string_field(data, "envelopeSender").and_then(email_domain))
+        .or_else(|| string_field(data, "envelope-sender").and_then(email_domain))
+        .or_else(|| {
+            string_field(data, "sourceDomain")
+                .filter(|value| is_host_token(value))
+                .or_else(|| {
+                    string_field(data, "source-domain").filter(|value| is_host_token(value))
+                })
+                .or_else(|| string_field(data, "senderDomain").filter(|value| is_host_token(value)))
+                .or_else(|| {
+                    string_field(data, "sender-domain").filter(|value| is_host_token(value))
+                })
+                .map(|value| value.to_ascii_lowercase())
+        })
+        .or_else(|| {
+            string_field(record, "source")
+                .filter(|value| is_host_token(value))
+                .map(|value| value.to_ascii_lowercase())
+        })
+}
+
+fn event_matches_source_domain(event: &EmailEventSummary, source_domain: Option<&str>) -> bool {
+    let Some(source_domain) = source_domain else {
+        return true;
+    };
+    event
+        .source_domain
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(source_domain))
 }
 
 fn validate_header_name(value: &str) -> Result<(), OciEmailError> {
@@ -2678,6 +2727,112 @@ mod tests {
         assert!(!payload.contains("message@example.com"));
         assert!(!payload.contains("203.0.113.4"));
         assert!(!payload.contains("Example Mail Client"));
+    }
+
+    #[test]
+    fn event_source_domain_falls_back_after_invalid_sender() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "source": "oci.emaildelivery",
+                    "data": {
+                        "action": "accept",
+                        "sender": "not-an-email",
+                        "envelopeSender": "bounce@envelope.example",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value);
+
+        assert_eq!(summary.source_domain.as_deref(), Some("envelope.example"));
+    }
+
+    #[test]
+    fn event_source_domain_falls_back_after_invalid_source_domain() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "source": "oci.emaildelivery",
+                    "data": {
+                        "action": "accept",
+                        "sourceDomain": "bad domain token",
+                        "source-domain": "source.example",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value);
+
+        assert_eq!(summary.source_domain.as_deref(), Some("source.example"));
+    }
+
+    #[test]
+    fn event_search_keeps_source_domain_out_of_provider_query() {
+        let query = build_search_query(
+            "ocid1.tenancy.oc1.example",
+            &EventsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                action: Some("relay".to_string()),
+                message_id: None,
+                header_name: None,
+                header_value: None,
+                receiving_domain: Some("recipient.example".to_string()),
+                source_domain: Some("sender.example".to_string()),
+                limit: Some(20),
+                compartment_id: None,
+            },
+        )
+        .expect("query");
+
+        assert!(query.contains("type='com.oraclecloud.emaildelivery.emaildomain.outbound*'"));
+        assert!(query.contains("data.receivingDomain='recipient.example'"));
+        assert!(!query.contains("source='sender.example'"));
+    }
+
+    #[test]
+    fn event_search_filters_source_domain_after_redacted_summary() {
+        let backend =
+            LiveOciEmailBackend::with_runner(test_config(), Arc::new(FixtureEventSearchRunner));
+
+        let report = backend
+            .events(&EventsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                action: None,
+                message_id: None,
+                header_name: None,
+                header_value: None,
+                receiving_domain: None,
+                source_domain: Some("sender.example".to_string()),
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .expect("events");
+        let payload = serde_json::to_string(&report).expect("serialize events");
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.provider_returned, 2);
+        assert_eq!(report.source_domain_matched, 1);
+        assert_eq!(report.returned, 1);
+        assert_eq!(
+            report.events[0].source_domain.as_deref(),
+            Some("sender.example")
+        );
+        assert_eq!(
+            report.events[0].recipient_domain.as_deref(),
+            Some("recipient.example")
+        );
+        assert!(!payload.contains("person@recipient.example"));
+        assert!(!payload.contains("sender@sender.example"));
+        assert!(!payload.contains("other@other.example"));
     }
 
     #[test]
@@ -2976,6 +3131,60 @@ mod tests {
                 "logging log-group list" => Ok(serde_json::json!({ "data": [] })),
                 other => panic!("unexpected OCI command: {other}"),
             }
+        }
+    }
+
+    struct FixtureEventSearchRunner;
+
+    impl OciCliRunner for FixtureEventSearchRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            let label = command_label(args);
+            if label.starts_with("logging-search search-logs") {
+                let query = args
+                    .windows(2)
+                    .find_map(|window| (window[0] == "--search-query").then(|| window[1].as_str()))
+                    .expect("search query argument");
+                assert!(!query.contains("source='sender.example'"));
+                return Ok(serde_json::json!({
+                    "data": {
+                        "results": [
+                            {
+                                "datetime": "2026-06-30T00:10:00Z",
+                                "data": {
+                                    "logContent": {
+                                        "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                        "source": "oci.emaildelivery",
+                                        "time": "2026-06-30T00:10:00Z",
+                                        "data": {
+                                            "action": "accept",
+                                            "sender": "sender@sender.example",
+                                            "recipient": "person@recipient.example",
+                                            "messageId": "message-one"
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                "datetime": "2026-06-30T00:11:00Z",
+                                "data": {
+                                    "logContent": {
+                                        "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                        "source": "oci.emaildelivery",
+                                        "time": "2026-06-30T00:11:00Z",
+                                        "data": {
+                                            "action": "accept",
+                                            "sender": "other@other.example",
+                                            "recipient": "other-person@recipient.example",
+                                            "messageId": "message-two"
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }));
+            }
+            panic!("unexpected OCI command: {label}")
         }
     }
 

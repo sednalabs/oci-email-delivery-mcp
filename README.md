@@ -91,6 +91,15 @@ contract tests with an OCI profile configured. The live smoke must not use
   operator checklist for the required Email Domain service-log categories,
   permissions, approval boundary, and post-enable proof gates. It never
   authorizes or applies the OCI change.
+- `oci_email_events` keeps the provider query scoped to Email Delivery event
+  types plus exact action/message/header/recipient-domain filters, then applies
+  `source_domain` after redacted event summaries are parsed. This avoids hiding
+  valid events if OCI varies the top-level log `source` field; an empty result
+  with `source_domain` is still missing event evidence, not proof of no sends.
+  `provider_returned` and `source_domain_matched` distinguish no provider
+  events from post-summary source-domain mismatch without returning raw events.
+  When no `source_domain` is requested, `source_domain_matched` equals the
+  returned event count.
 - Local send-ledger reads are disabled unless `OCI_MCP_LEDGER_PATH` is set.
   The ledger tool summarizes JSONL rows with hashes and domains only.
 - Private monitoring snapshot artifacts are disabled unless
