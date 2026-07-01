@@ -368,6 +368,12 @@ Check:
 Check:
 
 - expected accepted/relayed/bounce/suppression event types appear;
+- `source_domain` is matched after the MCP parses redacted event summaries,
+  so an empty result means no matching summarized event evidence was found; it
+  does not prove the provider emitted no events for the broader compartment.
+- compare `provider_returned`, `source_domain_matched`, and `returned` to
+  separate no provider rows from source-domain post-filter mismatch; when no
+  `source_domain` is requested, `source_domain_matched` equals `returned`.
 - recipient values are domains and hashes only;
 - raw provider payload is not returned;
 - zero rows in an active send window pauses expansion until logging is proven.

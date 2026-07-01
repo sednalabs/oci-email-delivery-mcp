@@ -1131,6 +1131,8 @@ fn empty_events(start_time: &str, end_time: &str, source_domain: Option<String>)
             source_domain,
         },
         limit: 20,
+        provider_returned: 0,
+        source_domain_matched: 0,
         returned: 0,
         events: Vec::new(),
         findings: Vec::new(),

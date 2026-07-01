@@ -625,6 +625,8 @@ pub mod tests_support {
                 source_domain: Some("example.com".to_string()),
             },
             limit: 20,
+            provider_returned: 1,
+            source_domain_matched: 1,
             returned: 1,
             events: vec![EmailEventSummary {
                 datetime: Some("2026-06-30T00:10:00Z".to_string()),
