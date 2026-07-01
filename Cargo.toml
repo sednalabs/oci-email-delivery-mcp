@@ -10,10 +10,10 @@ publish = false
 hex = "0.4.3"
 mcp-toolkit = { version = "0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "211c5687645b08e1beb81ad78891dd3214746fea", features = ["server-stdio"] }
 mcp-toolkit-core = { version = "0.1.0", git = "https://github.com/sednalabs/mcp-toolkit-rs", rev = "211c5687645b08e1beb81ad78891dd3214746fea" }
-rmcp = { version = "=1.8.0", default-features = false, features = ["macros", "schemars", "server", "transport-io"] }
+rmcp = { version = "=2.0.0", default-features = false, features = ["macros", "schemars", "server", "transport-io"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 thiserror = "2.0.17"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
 
