@@ -2455,15 +2455,19 @@ fn validate_event_request(request: &EventsRequest) -> Result<(), OciEmailError> 
 
 fn email_event_source_domain(record: &Value, data: &Value) -> Option<String> {
     string_field(data, "sender")
-        .or_else(|| string_field(data, "envelopeSender"))
-        .or_else(|| string_field(data, "envelope-sender"))
         .and_then(email_domain)
+        .or_else(|| string_field(data, "envelopeSender").and_then(email_domain))
+        .or_else(|| string_field(data, "envelope-sender").and_then(email_domain))
         .or_else(|| {
             string_field(data, "sourceDomain")
-                .or_else(|| string_field(data, "source-domain"))
-                .or_else(|| string_field(data, "senderDomain"))
-                .or_else(|| string_field(data, "sender-domain"))
                 .filter(|value| is_host_token(value))
+                .or_else(|| {
+                    string_field(data, "source-domain").filter(|value| is_host_token(value))
+                })
+                .or_else(|| string_field(data, "senderDomain").filter(|value| is_host_token(value)))
+                .or_else(|| {
+                    string_field(data, "sender-domain").filter(|value| is_host_token(value))
+                })
                 .map(|value| value.to_ascii_lowercase())
         })
         .or_else(|| {
@@ -2723,6 +2727,50 @@ mod tests {
         assert!(!payload.contains("message@example.com"));
         assert!(!payload.contains("203.0.113.4"));
         assert!(!payload.contains("Example Mail Client"));
+    }
+
+    #[test]
+    fn event_source_domain_falls_back_after_invalid_sender() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "source": "oci.emaildelivery",
+                    "data": {
+                        "action": "accept",
+                        "sender": "not-an-email",
+                        "envelopeSender": "bounce@envelope.example",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value);
+
+        assert_eq!(summary.source_domain.as_deref(), Some("envelope.example"));
+    }
+
+    #[test]
+    fn event_source_domain_falls_back_after_invalid_source_domain() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "source": "oci.emaildelivery",
+                    "data": {
+                        "action": "accept",
+                        "sourceDomain": "bad domain token",
+                        "source-domain": "source.example",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value);
+
+        assert_eq!(summary.source_domain.as_deref(), Some("source.example"));
     }
 
     #[test]
