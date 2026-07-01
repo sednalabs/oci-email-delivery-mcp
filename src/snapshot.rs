@@ -2,7 +2,7 @@ use crate::{
     config::OciEmailConfig,
     error::OciEmailError,
     live::OciEmailBackend,
-    redact::short_hash,
+    redact::{redact_sensitive_text, short_hash},
     response::{
         Evidence, ReadinessFinding, SendReadinessRequest, SnapshotArtifactReport,
         SnapshotArtifactRequest, SnapshotArtifactSummary, ToolCallOutcome,
@@ -166,10 +166,11 @@ fn validate_snapshot_root(config: &OciEmailConfig) -> Result<PathBuf, OciEmailEr
             "OCI_MCP_SNAPSHOT_ROOT must be an absolute private directory".to_string(),
         ));
     }
-    let metadata = fs::symlink_metadata(root).map_err(|_| {
-        OciEmailError::Config(
-            "configured snapshot root must already exist and be readable".to_string(),
-        )
+    let metadata = fs::symlink_metadata(root).map_err(|err| {
+        OciEmailError::Config(format!(
+            "configured snapshot root must already exist and be readable: {}",
+            redact_sensitive_text(&err.to_string())
+        ))
     })?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(OciEmailError::Config(
@@ -501,15 +502,24 @@ fn write_new_snapshot_file(path: &Path, bytes: &[u8]) -> Result<(), OciEmailErro
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path).map_err(|_| {
-        OciEmailError::Config(
-            "failed to create snapshot artifact as a new direct child file".to_string(),
-        )
+    let mut file = options.open(path).map_err(|err| {
+        OciEmailError::Config(format!(
+            "failed to create snapshot artifact as a new direct child file: {}",
+            redact_sensitive_text(&err.to_string())
+        ))
     })?;
-    file.write_all(bytes)
-        .map_err(|_| OciEmailError::Config("failed to write snapshot artifact".to_string()))?;
-    file.sync_all()
-        .map_err(|_| OciEmailError::Config("failed to sync snapshot artifact".to_string()))
+    file.write_all(bytes).map_err(|err| {
+        OciEmailError::Config(format!(
+            "failed to write snapshot artifact: {}",
+            redact_sensitive_text(&err.to_string())
+        ))
+    })?;
+    file.sync_all().map_err(|err| {
+        OciEmailError::Config(format!(
+            "failed to sync snapshot artifact: {}",
+            redact_sensitive_text(&err.to_string())
+        ))
+    })
 }
 
 fn to_json_value<T: Serialize>(value: &T) -> Result<serde_json::Value, OciEmailError> {
