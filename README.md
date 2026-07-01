@@ -5,7 +5,7 @@ read-only; the only local write surface is a configured private artifact tool
 for redacted monitoring snapshots. The first operator goal is to let agents
 query OCI programmatically before production or cohort sends go live.
 
-The server exposes ten curated intent tools:
+The server exposes eleven curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -13,6 +13,7 @@ The server exposes ten curated intent tools:
 | `oci_email_metrics` | Query fixed `oci_emaildelivery` Monitoring metrics for an explicit UTC window. |
 | `oci_email_ledger_window` | Summarize configured local send-ledger rows for a UTC window without raw recipients. |
 | `oci_email_events` | Search Email Delivery logs with whitelisted filters and redacted event summaries. |
+| `oci_email_logging_status` | Check whether Email Delivery service logs are configured and visible without enabling or changing logs. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
 | `oci_email_suppressions` | Summarize OCI suppressions with reason/domain totals and no raw recipient addresses. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, metrics, logs, optional trace, and suppressions. |
@@ -77,6 +78,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   placement proof.
 - Missing metrics or log rows are reported as missing evidence, not as proof
   that bounce, complaint, open, or click counts are safe.
+- `oci_email_logging_status` inventories visible service-log configuration
+  without enabling logs. It returns counts, lifecycle state, and redacted
+  identifiers only; it blocks when active Email Delivery service logs are not
+  visible.
 - Local send-ledger reads are disabled unless `OCI_MCP_LEDGER_PATH` is set.
   The ledger tool summarizes JSONL rows with hashes and domains only.
 - Private monitoring snapshot artifacts are disabled unless

@@ -52,8 +52,9 @@ use mcp_toolkit_core::{
     tool_inventory::{ToolCapability, ToolDiscoveryMetadata, ToolInventory, ToolInventoryError},
 };
 pub use response::{
-    EmailEventSummary, EventFilters, EventsReport, EventsRequest, Evidence, LedgerRowSummary,
-    LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals, MetricRates,
+    EmailDeliveryLogSummary, EmailEventSummary, EventFilters, EventsReport, EventsRequest,
+    Evidence, LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest,
+    LedgerWindowTotals, LogGroupSummary, LoggingStatusReport, LoggingStatusRequest, MetricRates,
     MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
     OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
     SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
@@ -100,6 +101,11 @@ impl OciEmailMcpServer {
                     "oci_email_events",
                     "Search OCI Email Delivery logs with redacted event summaries.",
                     ["oci", "email", "logs", "events"],
+                ),
+                read_capability(
+                    "oci_email_logging_status",
+                    "Check whether OCI Email Delivery service logs are configured and visible without enabling or changing logs.",
+                    ["oci", "email", "logs", "logging", "status"],
                 ),
                 read_capability(
                     "oci_email_trace_message",
@@ -185,6 +191,16 @@ impl OciEmailMcpServer {
     #[tool(description = "Search OCI Email Delivery logs with redacted event summaries.")]
     fn oci_email_events(&self, Parameters(request): Parameters<EventsRequest>) -> String {
         response::tool_json(self.backend.events(&request))
+    }
+
+    #[tool(
+        description = "Check whether OCI Email Delivery service logs are configured and visible without enabling or changing logs."
+    )]
+    fn oci_email_logging_status(
+        &self,
+        Parameters(request): Parameters<LoggingStatusRequest>,
+    ) -> String {
+        response::tool_json(self.backend.logging_status(&request))
     }
 
     #[tool(
@@ -274,6 +290,7 @@ mod tests {
             vec![
                 "oci_email_events",
                 "oci_email_ledger_window",
+                "oci_email_logging_status",
                 "oci_email_metrics",
                 "oci_email_monitoring_snapshot_artifact",
                 "oci_email_send_readiness",
@@ -391,6 +408,64 @@ pub mod tests_support {
 
         fn events(&self, _request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
             Ok(fixture_events())
+        }
+
+        fn logging_status(
+            &self,
+            request: &LoggingStatusRequest,
+        ) -> Result<LoggingStatusReport, OciEmailError> {
+            let source_resource = request
+                .resource_id
+                .as_deref()
+                .unwrap_or("ocid1.emaildomain.oc1.fixture");
+            let source_resource = RedactedIdentifier::from_optional(Some(source_resource));
+            let matching_requested_resource_log_count = usize::from(request.resource_id.is_some());
+            Ok(LoggingStatusReport {
+                status: "ok".to_string(),
+                send_authorized: false,
+                compartment: RedactedIdentifier {
+                    present: true,
+                    redacted: Some("ocid1.tenancy:fixture".to_string()),
+                },
+                requested_resource_id: RedactedIdentifier::from_optional(
+                    request.resource_id.as_deref(),
+                ),
+                limit: 20,
+                log_group_count: 1,
+                service_log_count: 1,
+                email_delivery_log_count: 1,
+                active_email_delivery_log_count: 1,
+                matching_requested_resource_log_count,
+                log_groups: vec![LogGroupSummary {
+                    log_group_id: RedactedIdentifier {
+                        present: true,
+                        redacted: Some("ocid1.loggroup:fixture".to_string()),
+                    },
+                    display_name_hash: Some("fixture".to_string()),
+                    lifecycle_state: Some("ACTIVE".to_string()),
+                    raw_payload_returned: false,
+                }],
+                email_delivery_logs: vec![EmailDeliveryLogSummary {
+                    log_id: RedactedIdentifier {
+                        present: true,
+                        redacted: Some("ocid1.log:fixture".to_string()),
+                    },
+                    log_group_id: RedactedIdentifier {
+                        present: true,
+                        redacted: Some("ocid1.loggroup:fixture".to_string()),
+                    },
+                    display_name_hash: Some("fixture".to_string()),
+                    lifecycle_state: Some("ACTIVE".to_string()),
+                    source_service: Some("emaildelivery".to_string()),
+                    source_resource,
+                    source_category: Some("emaildomain".to_string()),
+                    source_kind: Some("service".to_string()),
+                    raw_payload_returned: false,
+                }],
+                findings: Vec::new(),
+                evidence: vec![Evidence::new("fixture", "logging status", false)],
+                raw_payload_returned: false,
+            })
         }
 
         fn trace_message(

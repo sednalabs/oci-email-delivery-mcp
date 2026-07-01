@@ -45,6 +45,10 @@ explain its core value.
   and, when a seed/cohort has expected ledger rows, tie monitoring evidence to
   local ledger proof. Both remain read-only and always return
   `send_authorized=false`.
+- The adapter includes `oci_email_logging_status` so operators can distinguish
+  active Email Delivery service-log configuration visibility from a bounded
+  event search that simply returned no events. It is read-only and does not
+  enable, update, or delete logs.
 - The adapter includes `oci_email_traceability_audit` so operators can ask the
   narrower question: does this window prove exact message and recipient
   overlap across OCI logs and the same configured local ledger row, or only
@@ -68,9 +72,10 @@ explain its core value.
   before the `code-coverage` workflow can upload Cobertura coverage
   successfully.
 - Before production monitoring use, the current hard-bounce blocker and
-  degraded log-event proof must be resolved, host-local ledger and snapshot
-  paths must be configured, `oci_email_send_readiness` must match the expected
-  ledger row count for the seed/cohort window, and
+  degraded log-event proof must be resolved, `oci_email_logging_status` must
+  prove active service-log visibility for the sender lane, host-local ledger
+  and snapshot paths must be configured, `oci_email_send_readiness` must match
+  the expected ledger row count for the seed/cohort window, and
   `oci_email_traceability_audit` must move from aggregate-only to exact
   traceability for the relevant seed/proof message. Operator acceptance of the
   current gap can only mean remaining paused or seed-only. This is an

@@ -12,6 +12,9 @@ green.
 - `oci_email_status` returns `send_authorized=false` and no blocker findings.
 - `oci_email_metrics` sees the stop-gate metric definitions needed for the
   sender policy.
+- `oci_email_logging_status` sees at least one ACTIVE Email Delivery service
+  log in the selected compartment, and when an Email Domain/resource OCID is
+  supplied it matches at least one visible service log.
 - `oci_email_events` returns real Email Delivery log events for a seed/proof
   window before cohort expansion.
 - `oci_email_suppressions` is callable and returns either a normal empty list
@@ -43,6 +46,8 @@ Pause the pilot or keep it paused when any of these are true:
 - complaint metric or complaint log evidence appears above the sender policy;
 - soft-bounce, hard-bounce, suppression, or complaint metrics are missing and
   log evidence does not cover the gap;
+- `oci_email_logging_status` returns no active Email Delivery service logs or
+  cannot match the requested resource id for the sender lane;
 - log search returns no events for a send window that should have accepted or
   relayed mail;
 - suppression readback is blocked;
@@ -67,6 +72,23 @@ Pause the pilot or keep it paused when any of these are true:
 
 Run these read-only tool calls for the planned UTC window or the immediately
 preceding smoke window.
+
+First prove that service-log configuration is visible. This is read-only and
+does not enable logs:
+
+```json
+{
+  "resource_id": null,
+  "limit": 50
+}
+```
+
+Expected: `send_authorized=false`; at least one active Email Delivery service
+log is visible. When the operator has the Email Domain/resource OCID for the
+lane, pass it as `resource_id` and require
+`matching_requested_resource_log_count > 0`. A clean logging-status receipt
+does not prove a particular send emitted events; it only proves the logging
+configuration is visible enough for later event reads to be meaningful.
 
 `oci_email_send_readiness` is the preferred first receipt once the planned
 seed/cohort has a known expected local ledger row count. It composes the same

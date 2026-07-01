@@ -7,10 +7,11 @@ pilot monitoring.
 | --- | --- | --- |
 | Server shape | Standalone curated stdio intent server built with `mcp-toolkit-rs`. | implemented locally |
 | Toolkit template | `templates/curated-stdio-intent-server`. | implemented locally |
-| Intent tools | `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`, `oci_email_events`, `oci_email_trace_message`, `oci_email_suppressions`, `oci_email_watch_window`, `oci_email_send_readiness`, `oci_email_traceability_audit`, `oci_email_monitoring_snapshot_artifact`. | implemented locally |
+| Intent tools | `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`, `oci_email_events`, `oci_email_logging_status`, `oci_email_trace_message`, `oci_email_suppressions`, `oci_email_watch_window`, `oci_email_send_readiness`, `oci_email_traceability_audit`, `oci_email_monitoring_snapshot_artifact`. | implemented locally |
 | Toolkit contract tests | Schema snapshot and real stdio `tools/list` smoke. | implemented locally |
 | Domain output contract tests | Fixture-backed output, redaction, missing-auth, invalid-filter, and missing-metric tests. | implemented locally |
 | Live no-send proof | OCI profile read-only status, metric discovery/summarize, log search, and suppression query without `submit-email` or mutation commands. | passed as no-send/blocked on 2026-06-30; see `docs/no-send-live-proof-2026-06-30.md` |
+| Logging configuration visibility | `oci_email_logging_status` inventories visible OCI service-log configuration and blocks when no active Email Delivery service log is visible, without enabling or mutating logs. | implemented with fixture tests; pending live configured-alias proof after hosted artifact install |
 | Suppression aggregate proof | `oci_email_suppressions` returns redacted sample rows plus `totals.hard_bounce`, `totals.by_reason`, and `totals.by_recipient_domain` so clean-audience and stop-gate reconciliation does not depend on raw recipients. | implemented with fixture tests; pending hosted artifact install |
 | Local send ledger proof | Configured private JSONL ledger can be summarized by UTC window with hashes/domains only and no raw recipients. | implemented with fixture tests; pending live configured ledger path |
 | Composed send readiness proof | `oci_email_send_readiness` combines watch-window proof with local ledger row-count, trace-key, and recipient-key gates while still returning `send_authorized=false`. | implemented with fixture tests; pending live seed/cohort ledger rows and log traceability |
