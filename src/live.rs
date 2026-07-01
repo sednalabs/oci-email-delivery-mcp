@@ -274,7 +274,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
     }
 
     fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
-        validate_interval(request.interval.as_deref().unwrap_or("1h"))?;
+        let interval = normalize_interval(request.interval.as_deref())?;
         validate_time(&request.start_time, "start_time")?;
         validate_time(&request.end_time, "end_time")?;
         if let Some(domain) = request.resource_domain.as_deref() {
@@ -289,7 +289,6 @@ impl OciEmailBackend for LiveOciEmailBackend {
         }
 
         let compartment_id = self.compartment_id(request.compartment_id.as_deref())?;
-        let interval = request.interval.clone().unwrap_or_else(|| "1h".to_string());
         let definitions = self.metric_definitions(&compartment_id)?;
         let definition_set = definitions
             .iter()
@@ -1110,7 +1109,13 @@ fn compose_watch_window<B: OciEmailBackend + ?Sized>(
     backend: &B,
     request: &WatchWindowRequest,
 ) -> WatchWindowReport {
-    let interval = request.interval.clone().unwrap_or_else(|| "1h".to_string());
+    let (interval, interval_error) = match normalize_interval(request.interval.as_deref()) {
+        Ok(interval) => (interval, None),
+        Err(error) => (
+            request.interval.clone().unwrap_or_else(|| "1h".to_string()),
+            Some(error),
+        ),
+    };
     let requested_resource_domain = non_empty_request_value(&request.resource_domain);
     let requested_source_domain = non_empty_request_value(&request.source_domain);
     let resource_id = non_empty_request_value(&request.resource_id);
@@ -1160,6 +1165,13 @@ fn compose_watch_window<B: OciEmailBackend + ?Sized>(
             "watch_window requires resource_domain or resource_id before reading metrics"
                 .to_string(),
         ))
+    } else if let Some(error) = interval_error {
+        component_blocked(
+            &mut findings,
+            "metrics_interval_invalid",
+            "Watch-window metrics interval is invalid; stop-gate counters are not proven for this window.",
+            error,
+        )
     } else {
         match backend.metrics(&MetricsRequest {
             start_time: request.start_time.clone(),
@@ -2450,15 +2462,22 @@ fn validate_domain(value: &str, label: &str) -> Result<(), OciEmailError> {
     }
 }
 
-fn validate_interval(value: &str) -> Result<(), OciEmailError> {
-    let valid = matches!(value, "1m" | "5m" | "15m" | "30m" | "1h" | "1d");
-    if valid {
-        Ok(())
-    } else {
-        Err(OciEmailError::InvalidInput(
-            "interval must be one of 1m, 5m, 15m, 30m, 1h, or 1d".to_string(),
-        ))
-    }
+fn normalize_interval(value: Option<&str>) -> Result<String, OciEmailError> {
+    let raw = value.unwrap_or("1h").trim();
+    let normalized = match raw.to_ascii_uppercase().as_str() {
+        "1M" | "PT1M" => "1m",
+        "5M" | "PT5M" => "5m",
+        "15M" | "PT15M" => "15m",
+        "30M" | "PT30M" => "30m",
+        "1H" | "PT1H" => "1h",
+        "1D" | "P1D" => "1d",
+        _ => {
+            return Err(OciEmailError::InvalidInput(
+                "interval must be one of 1m, 5m, 15m, 30m, 1h, 1d, PT1M, PT5M, PT15M, PT30M, PT1H, or P1D".to_string(),
+            ));
+        }
+    };
+    Ok(normalized.to_string())
 }
 
 fn validate_time(value: &str, label: &str) -> Result<(), OciEmailError> {
@@ -2523,6 +2542,35 @@ mod tests {
         assert!(query.contains("resourceDomain = \"example.com\""));
         assert!(query.contains("resourceId = \"ocid1.emaildomain:"));
         assert!(!query.contains("ocid1.emaildomain.oc1"));
+    }
+
+    #[test]
+    fn normalizes_canonical_and_iso_metric_intervals() {
+        for (input, expected) in [
+            (None, "1h"),
+            (Some("1m"), "1m"),
+            (Some("PT1M"), "1m"),
+            (Some("pt1m"), "1m"),
+            (Some("1M"), "1m"),
+            (Some("5m"), "5m"),
+            (Some("PT5M"), "5m"),
+            (Some("15m"), "15m"),
+            (Some("PT15M"), "15m"),
+            (Some("30m"), "30m"),
+            (Some("PT30M"), "30m"),
+            (Some("1h"), "1h"),
+            (Some("PT1H"), "1h"),
+            (Some("pt1h"), "1h"),
+            (Some("1H"), "1h"),
+            (Some("1d"), "1d"),
+            (Some("P1D"), "1d"),
+            (Some("p1d"), "1d"),
+        ] {
+            assert_eq!(normalize_interval(input).unwrap(), expected);
+        }
+
+        let err = normalize_interval(Some("PT2M")).unwrap_err();
+        assert!(matches!(err, OciEmailError::InvalidInput(_)));
     }
 
     #[test]
