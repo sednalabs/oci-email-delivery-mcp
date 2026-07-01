@@ -276,7 +276,7 @@ fn required_snapshot_value(value: &Option<String>, name: &str) -> Result<String,
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
         .ok_or_else(|| {
-            OciEmailError::InvalidInput(format!("send_readiness snapshots require {name}"))
+            OciEmailError::InvalidInput(format!("send_readiness snapshots require {}", name))
         })
 }
 
