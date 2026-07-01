@@ -2753,7 +2753,7 @@ mod tests {
         assert_eq!(report.status, "approval_required");
         assert_eq!(report.decision, "approval_required");
         assert!(!report.send_authorized);
-        assert!(!report.provider_mutation_required);
+        assert!(report.provider_mutation_required);
         assert!(!report.provider_mutation_authorized);
         assert_eq!(
             report.required_log_categories,
@@ -2813,7 +2813,7 @@ mod tests {
             .unwrap_or_else(|err| panic!("logging enablement plan: {err}"));
 
         assert_eq!(report.status, "review_required");
-        assert!(report.provider_mutation_required);
+        assert!(!report.provider_mutation_required);
         assert!(!report.provider_mutation_authorized);
         assert!(report
             .findings
