@@ -85,8 +85,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   canonical values before queries are built.
 - `oci_email_logging_status` inventories visible service-log configuration
   without enabling logs. It returns counts, lifecycle state, and redacted
-  identifiers only; it blocks when active Email Delivery service logs are not
-  visible.
+  identifiers only; when `resource_id` is supplied it reports both matching
+  and active matching resource-log counts. It blocks when active Email Delivery
+  service logs are not visible or when the requested resource has no active
+  matching log.
 - `oci_email_logging_enablement_plan` turns that read-only status into an
   operator checklist for the required Email Domain service-log categories,
   permissions, approval boundary, and post-enable proof gates. It never

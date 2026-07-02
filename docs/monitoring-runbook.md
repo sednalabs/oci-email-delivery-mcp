@@ -89,9 +89,9 @@ does not enable logs:
 Expected: `send_authorized=false`; at least one active Email Delivery service
 log is visible. When the operator has the Email Domain/resource OCID for the
 lane, pass it as `resource_id` and require
-`matching_requested_resource_log_count > 0`. A clean logging-status receipt
-does not prove a particular send emitted events; it only proves the logging
-configuration is visible enough for later event reads to be meaningful.
+`active_matching_requested_resource_log_count > 0`. A clean logging-status
+receipt does not prove a particular send emitted events; it only proves the
+logging configuration is visible enough for later event reads to be meaningful.
 
 If logging status is blocked or degraded, call
 `oci_email_logging_enablement_plan` with the same `resource_id` and `limit`.

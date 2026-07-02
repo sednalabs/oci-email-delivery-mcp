@@ -453,6 +453,7 @@ pub mod tests_support {
                 email_delivery_log_count: 1,
                 active_email_delivery_log_count: 1,
                 matching_requested_resource_log_count,
+                active_matching_requested_resource_log_count: matching_requested_resource_log_count,
                 log_groups: vec![LogGroupSummary {
                     log_group_id: RedactedIdentifier {
                         present: true,

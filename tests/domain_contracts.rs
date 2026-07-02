@@ -147,6 +147,7 @@ fn logging_status_contract_is_read_only_and_redacted() {
     assert_eq!(report.email_delivery_log_count, 1);
     assert_eq!(report.active_email_delivery_log_count, 1);
     assert_eq!(report.matching_requested_resource_log_count, 1);
+    assert_eq!(report.active_matching_requested_resource_log_count, 1);
     assert!(!report.email_delivery_logs[0].raw_payload_returned);
     assert!(report.email_delivery_logs[0].source_resource.present);
     assert!(!payload.contains("ocid1."));
