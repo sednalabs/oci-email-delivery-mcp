@@ -233,6 +233,7 @@ pub struct LoggingStatusReport {
     pub email_delivery_log_count: usize,
     pub active_email_delivery_log_count: usize,
     pub matching_requested_resource_log_count: usize,
+    pub active_matching_requested_resource_log_count: usize,
     pub log_groups: Vec<LogGroupSummary>,
     pub email_delivery_logs: Vec<EmailDeliveryLogSummary>,
     pub findings: Vec<ReadinessFinding>,

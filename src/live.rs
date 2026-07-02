@@ -646,6 +646,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
             email_delivery_log_count: email_delivery_logs.len(),
             active_email_delivery_log_count,
             matching_requested_resource_log_count,
+            active_matching_requested_resource_log_count,
             log_groups,
             email_delivery_logs,
             findings,
@@ -2856,6 +2857,7 @@ mod tests {
         assert_eq!(report.email_delivery_log_count, 1);
         assert_eq!(report.active_email_delivery_log_count, 1);
         assert_eq!(report.matching_requested_resource_log_count, 1);
+        assert_eq!(report.active_matching_requested_resource_log_count, 1);
         assert!(!report.raw_payload_returned);
         assert!(payload.contains("[redacted-ocid:emaildomain:"));
         assert!(!payload.contains("ocid1."));
@@ -2881,6 +2883,7 @@ mod tests {
         assert_eq!(report.email_delivery_log_count, 2);
         assert_eq!(report.active_email_delivery_log_count, 1);
         assert_eq!(report.matching_requested_resource_log_count, 1);
+        assert_eq!(report.active_matching_requested_resource_log_count, 0);
         assert!(report
             .findings
             .iter()
