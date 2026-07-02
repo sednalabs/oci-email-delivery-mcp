@@ -2652,14 +2652,22 @@ fn suppression_count_state(empty_stdout: bool, rows_capped: bool) -> String {
 fn suppression_time_bounds(
     suppressions: &[SuppressionSummary],
 ) -> (Option<String>, Option<String>) {
-    let mut times = suppressions
+    let mut oldest_time: Option<&str> = None;
+    let mut newest_time: Option<&str> = None;
+    for time in suppressions
         .iter()
         .filter_map(|suppression| suppression.time_created.as_deref())
-        .collect::<Vec<_>>();
-    times.sort_unstable();
+    {
+        if oldest_time.is_none_or(|oldest| time < oldest) {
+            oldest_time = Some(time);
+        }
+        if newest_time.is_none_or(|newest| time > newest) {
+            newest_time = Some(time);
+        }
+    }
     (
-        times.first().map(|value| (*value).to_string()),
-        times.last().map(|value| (*value).to_string()),
+        oldest_time.map(ToString::to_string),
+        newest_time.map(ToString::to_string),
     )
 }
 
@@ -3014,6 +3022,11 @@ fn parse_strict_utc_time(value: &str, label: &str) -> Result<ParsedUtcTime, OciE
 
 fn parse_seconds_fraction(value: &str, label: &str) -> Result<(u32, u32), OciEmailError> {
     let Some((seconds, fraction)) = value.split_once('.') else {
+        if value.len() != 2 {
+            return Err(OciEmailError::InvalidInput(format!(
+                "{label} must use YYYY-MM-DDTHH:MM:SSZ"
+            )));
+        }
         return Ok((parse_fixed_u32(value, label)?, 0));
     };
     if seconds.len() != 2
@@ -3054,8 +3067,9 @@ fn days_in_month(year: u32, month: u32) -> u32 {
     }
 }
 
+#[allow(clippy::manual_is_multiple_of)]
 fn is_leap_year(year: u32) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 fn safe_query_value(value: &str) -> Result<String, OciEmailError> {

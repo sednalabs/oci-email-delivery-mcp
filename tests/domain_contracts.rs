@@ -362,6 +362,7 @@ fn suppression_delta_rejects_invalid_or_inverted_windows() {
     let backend = FixtureBackend;
     for (start_time, end_time) in [
         ("2026-02-30T00:00:00Z", "2026-03-01T00:00:00Z"),
+        ("2026-06-30T00:00:5Z", "2026-06-30T00:01:00Z"),
         ("2026-06-30T01:00:00Z", "2026-06-30T00:00:00Z"),
         ("2026-06-30T00:00:00Z", "2026-06-30T00:00:00Z"),
     ] {
