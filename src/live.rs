@@ -461,6 +461,9 @@ impl OciEmailBackend for LiveOciEmailBackend {
         &self,
         request: &LoggingStatusRequest,
     ) -> Result<LoggingStatusReport, OciEmailError> {
+        if let Some(resource_domain) = request.resource_domain.as_deref() {
+            validate_domain(resource_domain, "resource_domain")?;
+        }
         if let Some(resource_id) = request.resource_id.as_deref() {
             safe_query_value(resource_id).map_err(|_| {
                 OciEmailError::InvalidInput(
@@ -473,6 +476,66 @@ impl OciEmailBackend for LiveOciEmailBackend {
             request.limit.unwrap_or(DEFAULT_LOGGING_STATUS_LIMIT),
             HARD_LOGGING_STATUS_LIMIT,
         );
+        let mut findings = Vec::new();
+        let mut resolved_resource_id = request.resource_id.clone();
+        let mut domain_lookup_attempted = false;
+        let mut domain_lookup_capped = false;
+        if let Some(resource_domain) = request.resource_domain.as_deref() {
+            domain_lookup_attempted = true;
+            let domain_args = vec![
+                "email".to_string(),
+                "domain".to_string(),
+                "list".to_string(),
+                "--compartment-id".to_string(),
+                compartment_id.clone(),
+                "--limit".to_string(),
+                limit.to_string(),
+            ];
+            let domain_json = self.runner.run_optional_json(&domain_args)?;
+            let domain_items = json_items(&domain_json);
+            domain_lookup_capped = rows_may_be_capped(domain_items.len(), limit);
+            if let Some(domain_item) = domain_items.iter().find(|item| {
+                string_field_any(item, &["domain-name", "domainName", "name"])
+                    .is_some_and(|value| value.eq_ignore_ascii_case(resource_domain))
+            }) {
+                if string_field(domain_item, "lifecycle-state")
+                    .is_some_and(|state| !state.eq_ignore_ascii_case("ACTIVE"))
+                {
+                    findings.push(finding(
+                        "blocker",
+                        "logging_requested_resource_domain_not_active",
+                        "The requested Email Domain is visible, but it is not ACTIVE.",
+                    ));
+                }
+                if let Some(id) = string_field(domain_item, "id") {
+                    if request
+                        .resource_id
+                        .as_deref()
+                        .is_some_and(|requested_id| requested_id != id)
+                    {
+                        findings.push(finding(
+                            "blocker",
+                            "logging_requested_resource_scope_mismatch",
+                            "The supplied resource_id does not match the visible Email Domain resolved from resource_domain.",
+                        ));
+                    } else {
+                        resolved_resource_id = Some(id.to_string());
+                    }
+                } else {
+                    findings.push(finding(
+                        "blocker",
+                        "logging_requested_resource_domain_missing_id",
+                        "The requested Email Domain was visible, but OCI did not return a resource id to match against service logs.",
+                    ));
+                }
+            } else {
+                findings.push(finding(
+                    "blocker",
+                    "logging_requested_resource_domain_not_visible",
+                    "No visible Email Domain matched the requested resource_domain.",
+                ));
+            }
+        }
         let log_group_args = vec![
             "logging".to_string(),
             "log-group".to_string(),
@@ -530,8 +593,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
                     .is_some_and(|state| state.eq_ignore_ascii_case("ACTIVE"))
             })
             .count();
-        let requested_resource_redacted = request
-            .resource_id
+        let requested_resource_redacted = resolved_resource_id
             .as_deref()
             .map(crate::redact::redact_ocid);
         let matching_requested_resource_log_count = requested_resource_redacted
@@ -562,7 +624,6 @@ impl OciEmailBackend for LiveOciEmailBackend {
             })
             .unwrap_or(0);
         let log_group_rows_capped = rows_may_be_capped(log_groups.len(), limit);
-        let mut findings = Vec::new();
         if log_groups.is_empty() {
             findings.push(finding(
                 "blocker",
@@ -583,7 +644,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 "Email Delivery service logs were visible, but none were ACTIVE.",
             ));
         }
-        if request.resource_id.is_some() {
+        if resolved_resource_id.is_some() {
             if matching_requested_resource_log_count == 0 {
                 findings.push(finding(
                     "blocker",
@@ -597,6 +658,13 @@ impl OciEmailBackend for LiveOciEmailBackend {
                     "Email Delivery service logs matched the requested resource id, but none were ACTIVE.",
                 ));
             }
+        }
+        if domain_lookup_capped {
+            findings.push(finding(
+                "warning",
+                "logging_email_domains_capped",
+                "Email Domain listing returned the requested limit; raise the limit before treating a missing resource_domain match as complete.",
+            ));
         }
         if log_group_rows_capped {
             findings.push(finding(
@@ -620,11 +688,19 @@ impl OciEmailBackend for LiveOciEmailBackend {
         } else {
             "degraded"
         };
-        let mut evidence = vec![Evidence::new(
+        let mut evidence = Vec::new();
+        if domain_lookup_attempted {
+            evidence.push(Evidence::new(
+                "oci_cli",
+                "email domain list",
+                domain_lookup_capped,
+            ));
+        }
+        evidence.push(Evidence::new(
             "oci_cli",
             "logging log-group list",
             log_group_rows_capped,
-        )];
+        ));
         if log_list_attempted {
             evidence.push(Evidence::new(
                 "oci_cli",
@@ -637,8 +713,9 @@ impl OciEmailBackend for LiveOciEmailBackend {
             status: status.to_string(),
             send_authorized: false,
             compartment: RedactedIdentifier::from_optional(Some(&compartment_id)),
+            resource_domain: request.resource_domain.clone(),
             requested_resource_id: RedactedIdentifier::from_optional(
-                request.resource_id.as_deref(),
+                resolved_resource_id.as_deref(),
             ),
             limit,
             log_group_count: log_groups.len(),
@@ -995,6 +1072,10 @@ fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
 
+fn string_field_any<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| string_field(value, key))
+}
+
 fn nested_string<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
     let mut cursor = value;
     for key in path {
@@ -1017,15 +1098,14 @@ fn compose_logging_enablement_plan<B: OciEmailBackend + ?Sized>(
 ) -> LoggingEnablementPlanReport {
     let status_request = LoggingStatusRequest {
         compartment_id: request.compartment_id.clone(),
+        resource_domain: request.resource_domain.clone(),
         resource_id: request.resource_id.clone(),
         limit: request.limit,
     };
-    let requested_resource_id =
-        RedactedIdentifier::from_optional(status_request.resource_id.as_deref());
     let current_status_result = backend.logging_status(&status_request);
     let mut findings = Vec::new();
     let status = match &current_status_result {
-        Ok(report) if report.status == "ok" && status_request.resource_id.is_some() => {
+        Ok(report) if report.status == "ok" && report.requested_resource_id.present => {
             findings.push(finding(
                 "info",
                 "logging_already_visible",
@@ -1037,9 +1117,17 @@ fn compose_logging_enablement_plan<B: OciEmailBackend + ?Sized>(
             findings.push(finding(
                 "warning",
                 "logging_plan_resource_id_missing",
-                "Active OCI Email Delivery service logs are visible, but no Email Domain resource id was supplied; resource-specific readiness is not proven.",
+                "Active OCI Email Delivery service logs are visible, but no Email Domain resource id or resolvable resource_domain was supplied; resource-specific readiness is not proven.",
             ));
             "review_required"
+        }
+        Ok(report) if report.findings.iter().any(is_logging_target_scope_blocker) => {
+            findings.push(finding(
+                "blocker",
+                "logging_enablement_target_scope_unresolved",
+                "The requested Email Domain scope is not resolved; fix resource_domain, resource_id, or compartment before planning an OCI logging configuration change.",
+            ));
+            "blocked"
         }
         Ok(report)
             if report
@@ -1075,6 +1163,10 @@ fn compose_logging_enablement_plan<B: OciEmailBackend + ?Sized>(
         .as_ref()
         .map(|report| report.compartment.clone())
         .unwrap_or_else(|_| RedactedIdentifier::from_optional(request.compartment_id.as_deref()));
+    let requested_resource_id = current_status_result
+        .as_ref()
+        .map(|report| report.requested_resource_id.clone())
+        .unwrap_or_else(|_| RedactedIdentifier::from_optional(request.resource_id.as_deref()));
     let provider_mutation_required = matches!(status, "approval_required");
     let current_logging = match current_status_result {
         Ok(report) => ToolCallOutcome::ok(report.status.clone(), report),
@@ -1088,6 +1180,7 @@ fn compose_logging_enablement_plan<B: OciEmailBackend + ?Sized>(
         provider_mutation_required,
         provider_mutation_authorized: false,
         compartment,
+        resource_domain: request.resource_domain.clone(),
         requested_resource_id,
         required_log_categories: vec![
             "emaildelivery.emaildomain.outboundaccepted".to_string(),
@@ -1105,7 +1198,7 @@ fn compose_logging_enablement_plan<B: OciEmailBackend + ?Sized>(
             "Keep raw OCIDs, log names, provider JSON, and recipient data in private evidence only.".to_string(),
         ],
         post_enable_gates: vec![
-            "Re-run oci_email_logging_status with the Email Domain resource_id and require an ACTIVE matching Email Delivery service log.".to_string(),
+            "Re-run oci_email_logging_status with the Email Domain resource_domain or resource_id and require an ACTIVE matching Email Delivery service log.".to_string(),
             "Run a bounded seed/proof window with a stored local ledger row and a message id or non-PII correlation header.".to_string(),
             "Use oci_email_traceability_audit for that window and require exact traceability, not aggregate-only delivery pressure.".to_string(),
             "Treat capped logging reads, absent log events, unavailable stop-gate metrics, or missing ledger trace keys as not ready.".to_string(),
@@ -1119,6 +1212,16 @@ fn compose_logging_enablement_plan<B: OciEmailBackend + ?Sized>(
         )],
         raw_payload_returned: false,
     }
+}
+
+fn is_logging_target_scope_blocker(finding: &ReadinessFinding) -> bool {
+    matches!(
+        finding.code.as_str(),
+        "logging_requested_resource_scope_mismatch"
+            | "logging_requested_resource_domain_not_visible"
+            | "logging_requested_resource_domain_missing_id"
+            | "logging_requested_resource_domain_not_active"
+    )
 }
 
 fn compose_watch_window<B: OciEmailBackend + ?Sized>(
@@ -1174,6 +1277,32 @@ fn compose_watch_window<B: OciEmailBackend + ?Sized>(
             "OCI Email Delivery status read failed; profile, sender, domain, and suppression visibility are not proven.",
             error,
         ),
+    };
+
+    let logging = if metrics_scope_missing {
+        ToolCallOutcome::blocked(OciEmailError::InvalidInput(
+            "watch_window requires resource_domain or resource_id before reading logging status"
+                .to_string(),
+        ))
+    } else {
+        match backend.logging_status(&LoggingStatusRequest {
+            compartment_id: request.compartment_id.clone(),
+            resource_domain: resource_domain.clone(),
+            resource_id: resource_id.clone(),
+            limit: request.limit,
+        }) {
+            Ok(report) => {
+                findings.extend(report.findings.clone());
+                evidence.extend(report.evidence.clone());
+                ToolCallOutcome::ok(report.status.clone(), report)
+            }
+            Err(error) => component_blocked(
+                &mut findings,
+                "logging_status_blocked",
+                "OCI Email Delivery service-log status read failed; logging configuration visibility is not proven for this window.",
+                error,
+            ),
+        }
     };
 
     let metrics = if metrics_scope_missing {
@@ -1294,6 +1423,7 @@ fn compose_watch_window<B: OciEmailBackend + ?Sized>(
 
     let components = WatchWindowComponents {
         status,
+        logging,
         metrics,
         events,
         trace,
@@ -1997,6 +2127,7 @@ fn trace_requested(request: &WatchWindowRequest) -> bool {
 fn watch_status(components: &WatchWindowComponents, findings: &[ReadinessFinding]) -> String {
     if findings.iter().any(|item| item.severity == "blocker")
         || component_blocked_status(&components.status)
+        || component_blocked_status(&components.logging)
         || component_blocked_status(&components.metrics)
         || component_blocked_status(&components.events)
         || components
@@ -2009,6 +2140,7 @@ fn watch_status(components: &WatchWindowComponents, findings: &[ReadinessFinding
     }
     if !findings.is_empty()
         || component_degraded_status(&components.status)
+        || component_degraded_status(&components.logging)
         || component_degraded_status(&components.metrics)
         || component_degraded_status(&components.events)
         || components
@@ -2846,6 +2978,7 @@ mod tests {
         let report = backend
             .logging_status(&LoggingStatusRequest {
                 compartment_id: None,
+                resource_domain: None,
                 resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
                 limit: Some(20),
             })
@@ -2865,6 +2998,90 @@ mod tests {
     }
 
     #[test]
+    fn logging_status_resolves_resource_domain_to_matching_log() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner { logs_visible: true }),
+        );
+
+        let report = backend
+            .logging_status(&LoggingStatusRequest {
+                compartment_id: None,
+                resource_domain: Some("example.com".to_string()),
+                resource_id: None,
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging status: {err}"));
+        let payload = serde_json::to_string(&report).expect("serialize logging status");
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.resource_domain, Some("example.com".to_string()));
+        assert!(report.requested_resource_id.present);
+        assert_eq!(report.matching_requested_resource_log_count, 1);
+        assert_eq!(report.active_matching_requested_resource_log_count, 1);
+        assert!(report
+            .evidence
+            .iter()
+            .any(|evidence| evidence.command == "email domain list"));
+        assert!(!payload.contains("ocid1."));
+        assert!(!payload.contains("Email Delivery Log"));
+    }
+
+    #[test]
+    fn logging_status_blocks_when_resource_domain_is_not_visible() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner { logs_visible: true }),
+        );
+
+        let report = backend
+            .logging_status(&LoggingStatusRequest {
+                compartment_id: None,
+                resource_domain: Some("missing.example".to_string()),
+                resource_id: None,
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging status: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert!(!report.requested_resource_id.present);
+        assert_eq!(report.matching_requested_resource_log_count, 0);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "logging_requested_resource_domain_not_visible"));
+    }
+
+    #[test]
+    fn logging_status_blocks_when_resource_domain_and_id_disagree() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner { logs_visible: true }),
+        );
+
+        let report = backend
+            .logging_status(&LoggingStatusRequest {
+                compartment_id: None,
+                resource_domain: Some("example.com".to_string()),
+                resource_id: Some("ocid1.emaildomain.oc1.other".to_string()),
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging status: {err}"));
+        let payload = serde_json::to_string(&report).expect("serialize logging status");
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.resource_domain, Some("example.com".to_string()));
+        assert!(report.requested_resource_id.present);
+        assert_eq!(report.matching_requested_resource_log_count, 0);
+        assert_eq!(report.active_matching_requested_resource_log_count, 0);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "logging_requested_resource_scope_mismatch"));
+        assert!(!payload.contains("ocid1."));
+    }
+
+    #[test]
     fn logging_status_blocks_when_requested_resource_log_is_not_active() {
         let backend = LiveOciEmailBackend::with_runner(
             test_config(),
@@ -2874,6 +3091,7 @@ mod tests {
         let report = backend
             .logging_status(&LoggingStatusRequest {
                 compartment_id: None,
+                resource_domain: None,
                 resource_id: Some("ocid1.emaildomain.oc1.requested".to_string()),
                 limit: Some(20),
             })
@@ -2902,6 +3120,7 @@ mod tests {
         let report = backend
             .logging_status(&LoggingStatusRequest {
                 compartment_id: None,
+                resource_domain: None,
                 resource_id: None,
                 limit: Some(20),
             })
@@ -2922,6 +3141,7 @@ mod tests {
         let report = backend
             .logging_status(&LoggingStatusRequest {
                 compartment_id: None,
+                resource_domain: None,
                 resource_id: None,
                 limit: Some(20),
             })
@@ -2950,6 +3170,7 @@ mod tests {
         let report = backend
             .logging_enablement_plan(&LoggingEnablementPlanRequest {
                 compartment_id: None,
+                resource_domain: None,
                 resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
                 limit: Some(20),
             })
@@ -2987,6 +3208,7 @@ mod tests {
         let report = backend
             .logging_enablement_plan(&LoggingEnablementPlanRequest {
                 compartment_id: None,
+                resource_domain: None,
                 resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
                 limit: Some(20),
             })
@@ -3004,7 +3226,7 @@ mod tests {
     }
 
     #[test]
-    fn logging_enablement_plan_requires_resource_id_for_no_apply_decision() {
+    fn logging_enablement_plan_accepts_resource_domain_for_no_apply_decision() {
         let backend = LiveOciEmailBackend::with_runner(
             test_config(),
             Arc::new(FixtureLoggingRunner { logs_visible: true }),
@@ -3013,6 +3235,63 @@ mod tests {
         let report = backend
             .logging_enablement_plan(&LoggingEnablementPlanRequest {
                 compartment_id: None,
+                resource_domain: Some("example.com".to_string()),
+                resource_id: None,
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging enablement plan: {err}"));
+
+        assert_eq!(report.status, "already_visible_no_apply_needed");
+        assert_eq!(report.resource_domain, Some("example.com".to_string()));
+        assert!(report.requested_resource_id.present);
+        assert_eq!(report.current_logging.status, "ok");
+        assert_eq!(
+            report
+                .current_logging
+                .report
+                .as_ref()
+                .map(|current| current.active_matching_requested_resource_log_count),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn logging_enablement_plan_blocks_scope_mismatch_without_provider_mutation() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner { logs_visible: true }),
+        );
+
+        let report = backend
+            .logging_enablement_plan(&LoggingEnablementPlanRequest {
+                compartment_id: None,
+                resource_domain: Some("example.com".to_string()),
+                resource_id: Some("ocid1.emaildomain.oc1.other".to_string()),
+                limit: Some(20),
+            })
+            .unwrap_or_else(|err| panic!("logging enablement plan: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert!(!report.provider_mutation_required);
+        assert!(!report.provider_mutation_authorized);
+        assert_eq!(report.current_logging.status, "blocked");
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "logging_enablement_target_scope_unresolved"));
+    }
+
+    #[test]
+    fn logging_enablement_plan_requires_resource_scope_for_no_apply_decision() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureLoggingRunner { logs_visible: true }),
+        );
+
+        let report = backend
+            .logging_enablement_plan(&LoggingEnablementPlanRequest {
+                compartment_id: None,
+                resource_domain: None,
                 resource_id: None,
                 limit: Some(20),
             })
@@ -3034,6 +3313,13 @@ mod tests {
     impl OciCliRunner for FixtureLoggingRunner {
         fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
             match command_label(args).as_str() {
+                "email domain list" => Ok(serde_json::json!({
+                    "data": [{
+                        "id": "ocid1.emaildomain.oc1.example",
+                        "domain-name": "example.com",
+                        "lifecycle-state": "ACTIVE"
+                    }]
+                })),
                 "logging log-group list" => Ok(serde_json::json!({
                     "data": [{
                         "id": "ocid1.loggroup.oc1.example",

@@ -42,13 +42,15 @@ explain its core value.
   artifact after checksum verification, not a local EC2 build.
 - The adapter includes composed `oci_email_watch_window` and
   `oci_email_send_readiness` receipts so operators can inspect one UTC window
-  and, when a seed/cohort has expected ledger rows, tie monitoring evidence to
-  local ledger proof. Both remain read-only and always return
+  with resource-scoped logging-status proof and, when a seed/cohort has
+  expected ledger rows, tie monitoring evidence to local ledger proof. Both
+  remain read-only and always return
   `send_authorized=false`.
 - The adapter includes `oci_email_logging_status` so operators can distinguish
   active Email Delivery service-log configuration visibility from a bounded
-  event search that simply returned no events. It is read-only and does not
-  enable, update, or delete logs.
+  event search that simply returned no events. It accepts either a generic
+  Email Domain `resource_domain` or a private resource id for resource-scoped
+  proof. It is read-only and does not enable, update, or delete logs.
 - The adapter includes `oci_email_logging_enablement_plan` so a blocked or
   degraded logging-status receipt turns into a generic, redacted operator plan
   for service-log categories, approval boundaries, and post-enable proof
@@ -77,9 +79,10 @@ explain its core value.
   successfully.
 - Before production monitoring use, the current hard-bounce blocker and
   degraded log-event proof must be resolved, `oci_email_logging_status` must
-  prove active service-log visibility for the sender lane, host-local ledger
-  and snapshot paths must be configured, `oci_email_send_readiness` must match
-  the expected ledger row count for the seed/cohort window, and
+  prove active service-log visibility for the sender lane using a
+  `resource_domain` or private resource id, host-local ledger and snapshot
+  paths must be configured, `oci_email_send_readiness` must match the expected
+  ledger row count for the seed/cohort window, and
   `oci_email_traceability_audit` must move from aggregate-only to exact
   traceability for the relevant seed/proof message. Operator acceptance of the
   current gap can only mean remaining paused or seed-only. This is an

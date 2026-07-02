@@ -46,6 +46,7 @@ pub struct EventsRequest {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct LoggingStatusRequest {
     pub compartment_id: Option<String>,
+    pub resource_domain: Option<String>,
     pub resource_id: Option<String>,
     pub limit: Option<u32>,
 }
@@ -53,6 +54,7 @@ pub struct LoggingStatusRequest {
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct LoggingEnablementPlanRequest {
     pub compartment_id: Option<String>,
+    pub resource_domain: Option<String>,
     pub resource_id: Option<String>,
     pub limit: Option<u32>,
 }
@@ -226,6 +228,7 @@ pub struct LoggingStatusReport {
     pub status: String,
     pub send_authorized: bool,
     pub compartment: RedactedIdentifier,
+    pub resource_domain: Option<String>,
     pub requested_resource_id: RedactedIdentifier,
     pub limit: u32,
     pub log_group_count: usize,
@@ -270,6 +273,7 @@ pub struct LoggingEnablementPlanReport {
     pub provider_mutation_required: bool,
     pub provider_mutation_authorized: bool,
     pub compartment: RedactedIdentifier,
+    pub resource_domain: Option<String>,
     pub requested_resource_id: RedactedIdentifier,
     pub required_log_categories: Vec<String>,
     pub required_permissions: Vec<String>,
@@ -494,6 +498,7 @@ impl<T> ToolCallOutcome<T> {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WatchWindowComponents {
     pub status: ToolCallOutcome<OciEmailStatusReport>,
+    pub logging: ToolCallOutcome<LoggingStatusReport>,
     pub metrics: ToolCallOutcome<MetricsReport>,
     pub events: ToolCallOutcome<EventsReport>,
     pub trace: Option<ToolCallOutcome<TraceMessageReport>>,

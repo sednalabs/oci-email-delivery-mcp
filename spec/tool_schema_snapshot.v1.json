@@ -136,6 +136,12 @@
               "null"
             ]
           },
+          "resource_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "resource_id": {
             "type": [
               "string",
@@ -163,6 +169,12 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "resource_domain": {
+            "type": [
+              "string",
               "null"
             ]
           },

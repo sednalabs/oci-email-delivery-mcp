@@ -67,6 +67,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let logging_status_properties = logging_status["inputSchema"]["properties"]
         .as_object()
         .expect("logging-status properties");
+    assert!(logging_status_properties.contains_key("resource_domain"));
     assert!(logging_status_properties.contains_key("resource_id"));
     assert!(logging_status_properties.contains_key("compartment_id"));
 
@@ -78,6 +79,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let logging_enablement_properties = logging_enablement_plan["inputSchema"]["properties"]
         .as_object()
         .expect("logging enablement plan properties");
+    assert!(logging_enablement_properties.contains_key("resource_domain"));
     assert!(logging_enablement_properties.contains_key("resource_id"));
     assert!(logging_enablement_properties.contains_key("compartment_id"));
 
