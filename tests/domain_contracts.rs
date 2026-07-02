@@ -134,6 +134,7 @@ fn logging_status_contract_is_read_only_and_redacted() {
     let report = backend
         .logging_status(&LoggingStatusRequest {
             compartment_id: None,
+            resource_domain: None,
             resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
             limit: Some(20),
         })
@@ -160,6 +161,7 @@ fn logging_enablement_plan_is_read_only_and_redacted() {
     let report = backend
         .logging_enablement_plan(&LoggingEnablementPlanRequest {
             compartment_id: None,
+            resource_domain: None,
             resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
             limit: Some(20),
         })
@@ -311,6 +313,16 @@ fn watch_window_contract_composes_receipt_without_authorizing_send() {
     assert_eq!(report.resource_domain, Some("example.com".to_string()));
     assert_eq!(report.source_domain, Some("example.com".to_string()));
     assert!(report.trace_requested);
+    assert_eq!(report.components.logging.status, "ok");
+    assert_eq!(
+        report
+            .components
+            .logging
+            .report
+            .as_ref()
+            .map(|logging| logging.active_matching_requested_resource_log_count),
+        Some(1)
+    );
     assert_eq!(report.components.metrics.status, "degraded");
     assert_eq!(report.components.events.status, "ok");
     assert_eq!(report.components.suppressions.status, "ok");
@@ -753,6 +765,7 @@ fn watch_window_reports_component_failures_without_aborting_receipt() {
     assert_eq!(report.decision, "remain_paused");
     assert!(!report.send_authorized);
     assert_eq!(report.components.status.status, "degraded");
+    assert_eq!(report.components.logging.status, "ok");
     assert_eq!(report.components.metrics.status, "blocked");
     assert!(report.components.metrics.error.is_some());
     assert!(report
@@ -783,6 +796,8 @@ fn watch_window_blocks_unscoped_lane_receipts() {
     assert_eq!(report.status, "blocked");
     assert_eq!(report.decision, "remain_paused");
     assert!(!report.send_authorized);
+    assert_eq!(report.components.logging.status, "blocked");
+    assert!(report.components.logging.report.is_none());
     assert_eq!(report.components.metrics.status, "blocked");
     assert!(report.components.metrics.report.is_none());
     assert_eq!(report.components.events.status, "blocked");
@@ -808,6 +823,13 @@ impl OciEmailBackend for MetricsFailureBackend {
         Err(OciEmailError::InvalidInput(
             "synthetic metrics failure".to_string(),
         ))
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
     }
 
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
@@ -842,6 +864,13 @@ impl OciEmailBackend for EchoIntervalBackend {
         Ok(report)
     }
 
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
         FixtureBackend.events(request)
     }
@@ -870,6 +899,13 @@ impl OciEmailBackend for AggregateOnlyBackend {
 
     fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
         FixtureBackend.metrics(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
     }
 
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
@@ -954,6 +990,13 @@ impl OciEmailBackend for MismatchedTraceRecipientBackend {
         FixtureBackend.metrics(request)
     }
 
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
         FixtureBackend.events(request)
     }
@@ -995,6 +1038,13 @@ impl OciEmailBackend for MismatchedTraceKeyBackend {
         FixtureBackend.metrics(request)
     }
 
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
         FixtureBackend.events(request)
     }
@@ -1033,6 +1083,13 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
 
     fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
         FixtureBackend.metrics(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
     }
 
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {

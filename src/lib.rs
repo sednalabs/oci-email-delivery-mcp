@@ -431,12 +431,17 @@ pub mod tests_support {
             &self,
             request: &LoggingStatusRequest,
         ) -> Result<LoggingStatusReport, OciEmailError> {
-            let source_resource = request
-                .resource_id
+            let resolved_resource_id = request.resource_id.clone().or_else(|| {
+                request
+                    .resource_domain
+                    .as_ref()
+                    .map(|_| "ocid1.emaildomain.oc1.fixture".to_string())
+            });
+            let source_resource = resolved_resource_id
                 .as_deref()
                 .unwrap_or("ocid1.emaildomain.oc1.fixture");
             let source_resource = RedactedIdentifier::from_optional(Some(source_resource));
-            let matching_requested_resource_log_count = usize::from(request.resource_id.is_some());
+            let matching_requested_resource_log_count = usize::from(resolved_resource_id.is_some());
             Ok(LoggingStatusReport {
                 status: "ok".to_string(),
                 send_authorized: false,
@@ -444,8 +449,9 @@ pub mod tests_support {
                     present: true,
                     redacted: Some("[redacted-ocid:tenancy:fixture]".to_string()),
                 },
+                resource_domain: request.resource_domain.clone(),
                 requested_resource_id: RedactedIdentifier::from_optional(
-                    request.resource_id.as_deref(),
+                    resolved_resource_id.as_deref(),
                 ),
                 limit: 20,
                 log_group_count: 1,

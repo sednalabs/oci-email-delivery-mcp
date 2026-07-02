@@ -17,7 +17,7 @@ The server exposes twelve curated intent tools:
 | `oci_email_logging_enablement_plan` | Build a read-only operator plan for enabling Email Delivery service-log visibility and post-enable proof. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
 | `oci_email_suppressions` | Summarize OCI suppressions with reason/domain totals and no raw recipient addresses. |
-| `oci_email_watch_window` | Build one read-only monitoring receipt from status, metrics, logs, optional trace, and suppressions. |
+| `oci_email_watch_window` | Build one read-only monitoring receipt from status, logging configuration, metrics, logs, optional trace, and suppressions. |
 | `oci_email_send_readiness` | Build one read-only send-window receipt that combines watch-window evidence with local send-ledger proof and expected row-count gates. |
 | `oci_email_traceability_audit` | Audit whether one UTC window proves exact message/recipient traceability across OCI logs and the local send ledger, or only aggregate delivery pressure. |
 | `oci_email_monitoring_snapshot_artifact` | Write one redacted private monitoring, send-readiness, or traceability receipt artifact under the configured local snapshot root. |
@@ -85,14 +85,21 @@ contract tests with an OCI profile configured. The live smoke must not use
   canonical values before queries are built.
 - `oci_email_logging_status` inventories visible service-log configuration
   without enabling logs. It returns counts, lifecycle state, and redacted
-  identifiers only; when `resource_id` is supplied it reports both matching
-  and active matching resource-log counts. It blocks when active Email Delivery
-  service logs are not visible or when the requested resource has no active
-  matching log.
+  identifiers only; when `resource_domain` or `resource_id` is supplied it
+  reports both matching and active matching resource-log counts. A
+  `resource_domain` request is resolved through the read-only OCI Email Domain
+  list before log matching, so operators do not need to handle raw OCIDs for
+  the common domain-scoped proof. If both `resource_domain` and `resource_id`
+  are supplied, they must resolve to the same Email Domain. It blocks when
+  active Email Delivery service logs are not visible, when the requested domain
+  is not visible, when the supplied scope conflicts, or when the requested
+  resource has no active matching log.
 - `oci_email_logging_enablement_plan` turns that read-only status into an
   operator checklist for the required Email Domain service-log categories,
   permissions, approval boundary, and post-enable proof gates. It never
-  authorizes or applies the OCI change.
+  authorizes or applies the OCI change. Target-scope problems such as an
+  unresolved `resource_domain` or a domain/id mismatch block the plan without
+  marking an OCI logging mutation as required.
 - `oci_email_events` keeps the provider query scoped to Email Delivery event
   types plus exact action/message/header/recipient-domain filters, then applies
   `source_domain` after redacted event summaries are parsed. This avoids hiding
@@ -113,8 +120,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   non-provider-shaped markers such as `[redacted-ocid:<type>:<hash>]`, so any
   `ocid1.` string in a returned receipt or snapshot artifact is a leakage
   defect.
-- `oci_email_watch_window` blocks unscoped lane receipts when neither a metrics
-  resource domain/resource id nor an event source domain is available.
+- `oci_email_watch_window` includes logging-status proof and blocks unscoped
+  lane receipts when neither a metrics/logging resource domain/resource id nor
+  an event source domain is available.
 - `oci_email_send_readiness` also requires an expected local ledger row count
   and blocks when ledger rows are missing, capped, invalid, or lack trace or
   recipient reconciliation keys.

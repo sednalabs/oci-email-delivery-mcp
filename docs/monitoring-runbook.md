@@ -81,25 +81,34 @@ does not enable logs:
 
 ```json
 {
+  "resource_domain": "mail.example.com",
   "resource_id": null,
   "limit": 50
 }
 ```
 
 Expected: `send_authorized=false`; at least one active Email Delivery service
-log is visible. When the operator has the Email Domain/resource OCID for the
-lane, pass it as `resource_id` and require
-`active_matching_requested_resource_log_count > 0`. A clean logging-status
+log is visible. Prefer `resource_domain` for the lane when the Email Domain
+name is known; the tool resolves it through OCI Email Domain readback and then
+requires `active_matching_requested_resource_log_count > 0`. If the operator
+already has the Email Domain/resource OCID in private context, `resource_id`
+can be supplied directly. If both fields are supplied, they must resolve to the
+same Email Domain before the receipt can be clean. A clean logging-status
 receipt does not prove a particular send emitted events; it only proves the
 logging configuration is visible enough for later event reads to be meaningful.
 
 If logging status is blocked or degraded, call
-`oci_email_logging_enablement_plan` with the same `resource_id` and `limit`.
-Use its output as a planning receipt only. It should keep
+`oci_email_logging_enablement_plan` with the same `resource_domain` or
+`resource_id` and `limit`. Use its output as a planning receipt only. It should keep
 `provider_mutation_authorized=false` and list the required categories,
 permissions, approval boundary, and post-enable proof gates. After explicit
 operator approval and external OCI apply, rerun `oci_email_logging_status`
 before sending anything.
+
+If the plan reports an unresolved target scope, such as a missing
+`resource_domain` match or a domain/id mismatch, fix the target domain,
+resource id, or compartment first. That condition is not proof that enabling
+or changing OCI service logs is the correct next action.
 
 `oci_email_send_readiness` is the preferred first receipt once the planned
 seed/cohort has a known expected local ledger row count. It composes the same
@@ -124,8 +133,9 @@ private send-ledger proof:
 }
 ```
 
-Expected: `send_authorized=false`; watch-window component status, metrics,
-events, optional trace, suppressions, and ledger component are present.
+Expected: `send_authorized=false`; watch-window component status, logging
+configuration, metrics, events, optional trace, suppressions, and ledger
+component are present.
 `decision` is `remain_paused`, `hold_or_seed_only_with_operator_review`, or
 `monitoring_and_ledger_ready_no_send_authorization`. The final state never
 authorizes a send by itself. A missing or blank campaign/batch identifier,
@@ -150,9 +160,11 @@ for diagnosis when ledger proof is not expected yet:
 }
 ```
 
-Expected: `send_authorized=false`; a watch receipt without a metrics resource
-domain/resource id or without an event source domain is `blocked` because a
-compartment-wide receipt is not lane readiness proof.
+Expected: `send_authorized=false`; the receipt includes a logging-status
+component for the requested resource domain or resource id. A watch receipt
+without a metrics/logging resource domain/resource id or without an event
+source domain is `blocked` because a compartment-wide receipt is not lane
+readiness proof.
 
 Use `oci_email_traceability_audit` when the question is whether one exact
 application, CRM, or SMTP test message can be tied to one local ledger row and
@@ -411,7 +423,7 @@ Record a private receipt containing:
 - UTC window;
 - campaign/batch identifier or private evidence pointer;
 - tool versions or artifact checksum;
-- status, metrics, events, trace, and suppression summaries;
+- status, logging-status, metrics, events, trace, and suppression summaries;
 - stop-threshold evaluation;
 - unresolved proof gaps;
 - explicit decision: remain paused, continue seed-only, expand cohort, or stop.
@@ -424,8 +436,8 @@ scraping a chat transcript.
 
 For a first seed or cohort window, use a tight cadence:
 
-- take a status, metrics, events, trace, and suppression snapshot immediately
-  before send;
+- take a status, logging-status, metrics, events, trace, and suppression
+  snapshot immediately before send;
 - monitor 1 to 5 minute windows for the first 30 minutes after send start;
 - check again at 60 minutes, 4 hours, and 24 hours for delayed bounces,
   complaints, suppressions, and deferrals;
