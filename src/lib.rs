@@ -595,18 +595,26 @@ pub mod tests_support {
 
         fn ledger_window(
             &self,
-            _request: &LedgerWindowRequest,
+            request: &LedgerWindowRequest,
         ) -> Result<LedgerWindowReport, OciEmailError> {
             Ok(LedgerWindowReport {
                 status: "ok".to_string(),
-                start_time: "2026-06-30T00:00:00Z".to_string(),
-                end_time: "2026-06-30T01:00:00Z".to_string(),
+                start_time: request.start_time.clone(),
+                end_time: request.end_time.clone(),
                 filters: LedgerWindowFilters {
-                    sender_domain: Some("example.com".to_string()),
+                    sender_domain: request
+                        .sender_domain
+                        .clone()
+                        .or_else(|| Some("example.com".to_string())),
                     campaign_hash: Some("fixture".to_string()),
                     batch_hash: Some("fixture".to_string()),
+                    message_id_hash: request.message_id.as_ref().map(|_| "fixture".to_string()),
+                    correlation_id_hash: request
+                        .correlation_id
+                        .as_ref()
+                        .map(|_| "fixture".to_string()),
                 },
-                limit: 20,
+                limit: request.limit.unwrap_or(20),
                 totals: LedgerWindowTotals {
                     scanned_rows: 1,
                     matched_rows: 1,

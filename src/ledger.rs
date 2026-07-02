@@ -46,6 +46,16 @@ pub fn ledger_window(
     );
     let campaign_filter = request.campaign_id.as_deref();
     let batch_filter = request.batch_id.as_deref();
+    let message_filter_hash = request
+        .message_id
+        .as_deref()
+        .and_then(non_empty_string)
+        .map(redacted_hash);
+    let correlation_filter_hash = request
+        .correlation_id
+        .as_deref()
+        .and_then(non_empty_string)
+        .map(redacted_hash);
     let sender_filter = request
         .sender_domain
         .as_deref()
@@ -121,6 +131,16 @@ pub fn ledger_window(
                 continue;
             }
         }
+        if message_filter_hash.is_some()
+            && row.message_id_hash.as_deref() != message_filter_hash.as_deref()
+        {
+            continue;
+        }
+        if correlation_filter_hash.is_some()
+            && row.correlation_id_hash.as_deref() != correlation_filter_hash.as_deref()
+        {
+            continue;
+        }
 
         matched_rows += 1;
         if row.message_id_hash.is_none() && row.correlation_id_hash.is_none() {
@@ -194,6 +214,8 @@ pub fn ledger_window(
             sender_domain: sender_filter,
             campaign_hash: campaign_filter.map(redacted_hash),
             batch_hash: batch_filter.map(redacted_hash),
+            message_id_hash: message_filter_hash,
+            correlation_id_hash: correlation_filter_hash,
         },
         limit,
         totals: LedgerWindowTotals {
@@ -352,6 +374,11 @@ fn matches_optional_identifier(
 fn string_any<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_str))
+}
+
+fn non_empty_string(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 fn domain_from_address_or_domain(value: &str) -> Option<String> {
@@ -530,6 +557,8 @@ mod tests {
                 sender_domain: Some("example.com".to_string()),
                 campaign_id: Some("campaign-private".to_string()),
                 batch_id: Some("batch-private".to_string()),
+                message_id: None,
+                correlation_id: None,
                 limit: Some(20),
             },
         )
@@ -581,6 +610,8 @@ mod tests {
                 sender_domain: None,
                 campaign_id: None,
                 batch_id: None,
+                message_id: None,
+                correlation_id: None,
                 limit: Some(20),
             },
         )
@@ -634,6 +665,8 @@ mod tests {
                 sender_domain: Some("example.com".to_string()),
                 campaign_id: Some("campaign-private".to_string()),
                 batch_id: Some(batch_hash.clone()),
+                message_id: None,
+                correlation_id: None,
                 limit: Some(20),
             },
         )
@@ -653,6 +686,166 @@ mod tests {
     }
 
     #[test]
+    fn ledger_window_filters_by_message_or_correlation_before_limit() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/trace-filter.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            concat!(
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"sender_domain\":\"example.com\",\"recipient\":\"first@example.net\",\"message_id\":\"message-a\",\"correlation_id\":\"corr-a\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"sender_domain\":\"example.com\",\"recipient\":\"second@example.net\",\"message_id\":\"message-b\",\"correlation_id\":\"corr-b\"}\n"
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let by_message = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some("message-b".to_string()),
+                correlation_id: None,
+                limit: Some(1),
+            },
+        )
+        .expect("message-filtered ledger report");
+
+        assert_eq!(by_message.totals.matched_rows, 1);
+        assert!(!by_message.totals.rows_capped);
+        assert_eq!(by_message.totals.returned_rows, 1);
+        assert_eq!(
+            by_message.filters.message_id_hash,
+            Some(short_hash("message-b"))
+        );
+        assert_eq!(
+            by_message.rows[0].recipient_address_hash,
+            Some(short_hash("second@example.net"))
+        );
+
+        let by_correlation = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: None,
+                batch_id: None,
+                message_id: None,
+                correlation_id: Some("corr-a".to_string()),
+                limit: Some(1),
+            },
+        )
+        .expect("correlation-filtered ledger report");
+
+        assert_eq!(by_correlation.totals.matched_rows, 1);
+        assert!(!by_correlation.totals.rows_capped);
+        assert_eq!(
+            by_correlation.filters.correlation_id_hash,
+            Some(short_hash("corr-a"))
+        );
+        assert_eq!(
+            by_correlation.rows[0].recipient_address_hash,
+            Some(short_hash("first@example.net"))
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_window_filters_by_message_and_correlation_keys() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/trace-key-filter.jsonl");
+        let target_message = "message-target";
+        let other_message = "message-other";
+        let shared_correlation = "corr-shared";
+        let other_correlation = "corr-other";
+        let target_message_hash = short_hash(target_message);
+        let shared_correlation_hash = short_hash(shared_correlation);
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "{{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"sender\":\"news@example.com\",\"recipient\":\"first@example.net\",\"message_id\":\"{}\",\"correlation_id\":\"{}\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"sender\":\"news@example.com\",\"recipient\":\"second@example.net\",\"message_id\":\"{}\",\"correlation_id\":\"{}\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:12:00Z\",\"sender_domain\":\"example.com\",\"recipient_domain\":\"example.net\",\"recipient_hash\":\"{}\",\"message_id_hash\":\"{}\",\"correlationIdHash\":\"{}\"}}\n"
+                ),
+                target_message,
+                shared_correlation,
+                other_message,
+                shared_correlation,
+                short_hash("prehashed@example.net"),
+                target_message_hash,
+                short_hash(other_correlation)
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let message_report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some(target_message.to_string()),
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("message-filtered ledger report");
+        let message_payload =
+            serde_json::to_string(&message_report).expect("serialize message-filtered report");
+
+        assert_eq!(message_report.status, "ok");
+        assert_eq!(message_report.totals.matched_rows, 2);
+        assert_eq!(
+            message_report.filters.message_id_hash,
+            Some(target_message_hash.clone())
+        );
+        assert!(message_report
+            .rows
+            .iter()
+            .all(|row| row.message_id_hash.as_ref() == Some(&target_message_hash)));
+        assert!(!message_payload.contains(target_message));
+
+        let combined_report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some(target_message.to_string()),
+                correlation_id: Some(shared_correlation.to_string()),
+                limit: Some(20),
+            },
+        )
+        .expect("trace-key-filtered ledger report");
+
+        assert_eq!(combined_report.status, "ok");
+        assert_eq!(combined_report.totals.matched_rows, 1);
+        assert_eq!(
+            combined_report.filters.correlation_id_hash,
+            Some(shared_correlation_hash)
+        );
+        assert_eq!(
+            combined_report.rows[0].message_id_hash,
+            Some(target_message_hash)
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn ledger_window_rejects_invalid_or_inverted_utc_windows() {
         let config = config_with_no_ledger();
 
@@ -664,6 +857,8 @@ mod tests {
                 sender_domain: None,
                 campaign_id: None,
                 batch_id: None,
+                message_id: None,
+                correlation_id: None,
                 limit: Some(20),
             },
         )
@@ -678,6 +873,8 @@ mod tests {
                 sender_domain: None,
                 campaign_id: None,
                 batch_id: None,
+                message_id: None,
+                correlation_id: None,
                 limit: Some(20),
             },
         )
@@ -692,6 +889,8 @@ mod tests {
                 sender_domain: None,
                 campaign_id: None,
                 batch_id: None,
+                message_id: None,
+                correlation_id: None,
                 limit: Some(20),
             },
         )
@@ -710,6 +909,8 @@ mod tests {
                 sender_domain: None,
                 campaign_id: None,
                 batch_id: None,
+                message_id: None,
+                correlation_id: None,
                 limit: Some(20),
             },
         )

@@ -126,7 +126,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   hard-bounce or complaint suppressions block; other new suppression reasons or
   no-sample/lower-bound reads degrade the receipt for operator review.
 - Local send-ledger reads are disabled unless `OCI_MCP_LEDGER_PATH` is set.
-  The ledger tool summarizes JSONL rows with hashes and domains only.
+  The ledger tool summarizes JSONL rows with hashes and domains only. It can
+  narrow a large window by message id or approved non-PII correlation value
+  before applying the returned-row cap, so exact traceability audits do not
+  have to expose or scan a whole campaign in the transcript.
 - Private monitoring snapshot artifacts are disabled unless
   `OCI_MCP_SNAPSHOT_ROOT` is set to an absolute existing private directory.
   On Unix, the directory must not grant group or other permissions. The
@@ -145,8 +148,10 @@ contract tests with an OCI profile configured. The live smoke must not use
 - `oci_email_traceability_audit` is the exact-trace boundary. It returns
   `aggregate_only=true` until a requested message/header trace returns OCI log
   events and one uncapped local ledger row overlaps both the requested trace
-  key and the OCI event recipient hash. Aggregate metrics alone are never
-  reported as per-recipient proof.
+  key and the OCI event recipient hash. The audit passes the requested trace
+  key into the local ledger read before the row cap, which keeps high-volume
+  windows measurable without weakening exact-proof requirements. Aggregate
+  metrics alone are never reported as per-recipient proof.
 
 ## Release And Operations
 

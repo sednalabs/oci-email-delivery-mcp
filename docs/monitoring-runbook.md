@@ -174,9 +174,11 @@ readiness proof.
 
 Use `oci_email_traceability_audit` when the question is whether one exact
 application, CRM, or SMTP test message can be tied to one local ledger row and
-one OCI log trail. Campaign and batch filters are optional
-narrowing inputs; exact proof is based on same-row trace-key and
-recipient-hash overlap, not row counts alone:
+one OCI log trail. Campaign and batch filters are optional narrowing inputs.
+The requested message id or correlation header is also passed into the local
+ledger read before the returned-row cap, which keeps high-volume windows
+auditable without returning a broad ledger sample. Exact proof is based on
+same-row trace-key and recipient-hash overlap, not row counts alone:
 
 ```json
 {
@@ -200,10 +202,12 @@ Expected: `send_authorized=false`. `exact_message_traceable=true` only when a
 message/header trace returned OCI log events, the configured local ledger has
 matching rows for the window, the ledger is uncapped and valid, and one ledger
 row overlaps both the requested trace key and OCI event recipient hash. The
-summary field `single_ledger_row_overlap` is the same-row gate. Otherwise the
-response is blocked or degraded with `aggregate_only=true`; aggregate accepted,
-relayed, suppressed, or bounce totals are useful pressure signals, not
-per-recipient proof.
+ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
+confirms which trace key was used for the narrowed local read. The summary field
+`single_ledger_row_overlap` is the same-row gate. Otherwise the response is
+blocked or degraded with `aggregate_only=true`; aggregate accepted, relayed,
+suppressed, or bounce totals are useful pressure signals, not per-recipient
+proof.
 
 Use `oci_email_monitoring_snapshot_artifact` whenever the receipt needs to be
 replayable outside the MCP transcript. The tool writes only under
@@ -279,6 +283,8 @@ or raw campaign, batch, recipient, message, or provider payload values.
   "sender_domain": "mail.example.com",
   "campaign_id": null,
   "batch_id": null,
+  "message_id": null,
+  "correlation_id": null,
   "limit": 100
 }
 ```
@@ -286,7 +292,9 @@ or raw campaign, batch, recipient, message, or provider payload values.
 Expected: the tool is configured through `OCI_MCP_LEDGER_PATH`, matching rows
 have message or correlation hashes, recipient address or recipient-id hashes,
 and no raw recipient, message id, subject, campaign id, batch id, or private
-path is returned. `ledger_no_rows_matched`, `ledger_results_capped`,
+path is returned. When `message_id` or `correlation_id` is supplied, the
+returned `filters` contain only redacted hashes and the filter is applied before
+the row cap. `ledger_no_rows_matched`, `ledger_results_capped`,
 `ledger_missing_trace_keys`, or `ledger_missing_recipient_keys` keeps the lane
 paused for proof sends that should have ledger rows.
 
@@ -371,6 +379,10 @@ For a real seed/cohort send, run `oci_email_ledger_window` for the same UTC
 window and lane when diagnosing a failed readiness receipt. OCI events without
 a local ledger row, or local ledger rows without a provider event after the
 expected delay, are reconciliation gaps.
+If the failed receipt includes a provider message id or approved non-PII
+correlation value, rerun the ledger window with `message_id` or
+`correlation_id` before widening the time range; a capped broad ledger sample
+is not proof that the trace row is absent.
 
 `oci_email_metrics`:
 
@@ -443,9 +455,9 @@ non-PII value generated for the seed/proof send.
 }
 ```
 
-Expected: trace criteria are hashed in the response and events connect the
-local send ledger row to OCI accepted, relayed, bounced, complained, or
-suppressed evidence.
+Expected: trace criteria are hashed in the response and returned events can be
+fed into `oci_email_traceability_audit` for the ledger join. This direct trace
+tool alone does not prove the local send ledger row.
 
 ## Post-Window Receipt
 
