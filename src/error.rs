@@ -24,6 +24,7 @@ impl OciEmailError {
         match self {
             Self::MissingCompartment => "missing_compartment",
             Self::InvalidInput(_) => "invalid_input",
+            Self::Cli { stderr, .. } if is_rate_limited(stderr) => "oci_cli_rate_limited",
             Self::Cli { .. } => "oci_cli_failed",
             Self::Json { .. } => "oci_json_parse_failed",
             Self::Config(_) => "configuration_error",
@@ -32,6 +33,45 @@ impl OciEmailError {
 
     pub fn redacted_message(&self) -> String {
         redact_sensitive_text(&self.to_string())
+    }
+}
+
+fn is_rate_limited(stderr: &str) -> bool {
+    let compact = stderr
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    compact.contains("toomanyrequests")
+        || compact.contains("\"status\":429")
+        || compact.contains("status:429")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_429_errors_are_classified_as_rate_limited() {
+        let error = OciEmailError::Cli {
+            command: "email suppression list".to_string(),
+            status: Some(1),
+            stderr: r#"TransientServiceError: { "code": "TooManyRequests", "status": 429 }"#
+                .to_string(),
+        };
+
+        assert_eq!(error.code(), "oci_cli_rate_limited");
+    }
+
+    #[test]
+    fn cli_429_status_matching_tolerates_spacing_variants() {
+        let error = OciEmailError::Cli {
+            command: "email suppression list".to_string(),
+            status: Some(1),
+            stderr: r#"TransientServiceError: {"status":429}"#.to_string(),
+        };
+
+        assert_eq!(error.code(), "oci_cli_rate_limited");
     }
 }
 

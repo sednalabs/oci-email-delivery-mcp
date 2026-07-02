@@ -111,11 +111,15 @@ contract tests with an OCI profile configured. The live smoke must not use
   `provider_returned` and `source_domain_matched` distinguish no provider
   events from post-summary source-domain mismatch without returning raw events.
   When no `source_domain` is requested, `source_domain_matched` equals the
-  returned event count.
+  returned event count. SMTP diagnostic blobs are summarized and capped so
+  receipts keep bounce context without returning verbose provider diagnostics.
 - `oci_email_suppressions` fetches all pages for totals and timestamp bounds
-  while returning only a bounded redacted sample in `suppressions`. Use
-  `total_matched` and `count_state` for counts; use `returned` for sample rows.
-  Use `totals.by_recipient_domain_omitted` to detect omitted domain buckets.
+  with a provider-friendly page size while returning only a bounded redacted
+  sample in `suppressions`. Use `total_matched` and `count_state` for counts;
+  use `returned` for sample rows. Use
+  `totals.by_recipient_domain_omitted` to detect omitted domain buckets. If OCI
+  rate-limits the read, treat the receipt as blocked evidence and retry later
+  instead of treating the suppression state as clean.
 - `oci_email_suppression_delta` compares a full active suppression read with a
   bounded UTC window. It reports a clean decision only when both reads have
   complete count state and the window has no new active suppressions. New

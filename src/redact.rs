@@ -54,6 +54,8 @@ pub fn redact_sensitive_text(value: &str) -> String {
         "private_key",
         "secret",
         "authorization",
+        "opc-request-id",
+        "opc-work-request-id",
     ] {
         output = redact_marker(&output, marker);
     }
@@ -314,6 +316,17 @@ mod tests {
         assert!(!output.contains("INLINESECRET"));
         assert!(!output.contains("SPACEDSECRET"));
         assert!(!output.contains("OTHERSECRET"));
+    }
+
+    #[test]
+    fn redacts_oci_request_ids_after_markers() {
+        let output = redact_sensitive_text(
+            r#"TransientServiceError: { "opc-request-id": "ABCDEF/123456", "opc-work-request-id": "WORKREQUEST" }"#,
+        );
+
+        assert!(!output.contains("ABCDEF"));
+        assert!(!output.contains("123456"));
+        assert!(!output.contains("WORKREQUEST"));
     }
 
     #[test]
