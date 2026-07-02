@@ -14,6 +14,7 @@ fn stdio_initializes_and_lists_tools() {
             "oci_email_monitoring_snapshot_artifact",
             "oci_email_send_readiness",
             "oci_email_status",
+            "oci_email_suppression_delta",
             "oci_email_suppressions",
             "oci_email_trace_message",
             "oci_email_traceability_audit",
@@ -35,7 +36,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list array");
-    assert_eq!(tools.len(), 12);
+    assert_eq!(tools.len(), 13);
 
     for tool in tools {
         let name = tool["name"].as_str().expect("tool name");
@@ -108,6 +109,20 @@ fn stdio_tools_list_includes_input_schemas() {
         .as_object()
         .expect("watch properties")
         .contains_key("source_domain"));
+
+    let suppression_delta = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_suppression_delta")
+        .expect("suppression-delta tool");
+    assert_eq!(
+        suppression_delta["inputSchema"]["required"],
+        json!(["start_time", "end_time"])
+    );
+    let suppression_delta_properties = suppression_delta["inputSchema"]["properties"]
+        .as_object()
+        .expect("suppression-delta properties");
+    assert!(suppression_delta_properties.contains_key("limit"));
+    assert!(suppression_delta_properties.contains_key("compartment_id"));
 
     let send_readiness = tools
         .iter()

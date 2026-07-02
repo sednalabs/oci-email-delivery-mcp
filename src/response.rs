@@ -80,6 +80,14 @@ pub struct SuppressionsRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct SuppressionDeltaRequest {
+    pub start_time: String,
+    pub end_time: String,
+    pub limit: Option<u32>,
+    pub compartment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct WatchWindowRequest {
     pub start_time: String,
     pub end_time: String,
@@ -441,6 +449,11 @@ pub struct SuppressionsReport {
     pub status: String,
     pub limit: u32,
     pub returned: usize,
+    pub total_matched: usize,
+    pub rows_capped: bool,
+    pub count_state: String,
+    pub oldest_time_created: Option<String>,
+    pub newest_time_created: Option<String>,
     pub totals: SuppressionTotals,
     pub suppressions: Vec<SuppressionSummary>,
     pub findings: Vec<ReadinessFinding>,
@@ -452,6 +465,7 @@ pub struct SuppressionTotals {
     pub hard_bounce: usize,
     pub by_reason: Vec<SuppressionCount>,
     pub by_recipient_domain: Vec<SuppressionCount>,
+    pub by_recipient_domain_omitted: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -468,6 +482,40 @@ pub struct SuppressionSummary {
     pub recipient_domain: Option<String>,
     pub recipient_hash: Option<String>,
     pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SuppressionDeltaReport {
+    pub status: String,
+    pub decision: String,
+    pub send_authorized: bool,
+    pub start_time: String,
+    pub end_time: String,
+    pub summary: SuppressionDeltaSummary,
+    pub components: SuppressionDeltaComponents,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SuppressionDeltaSummary {
+    pub post_active_total: usize,
+    pub post_active_count_state: String,
+    pub active_outside_window_total: Option<usize>,
+    pub window_new_active: usize,
+    pub window_new_count_state: String,
+    pub window_new_hard_bounce: usize,
+    pub window_new_complaint: usize,
+    pub window_new_other: usize,
+    pub newest_active_time_created: Option<String>,
+    pub newest_window_time_created: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SuppressionDeltaComponents {
+    pub post_active: ToolCallOutcome<SuppressionsReport>,
+    pub window_new: ToolCallOutcome<SuppressionsReport>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

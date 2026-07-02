@@ -10,13 +10,14 @@ use crate::{
         MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding,
         RedactedIdentifier, SendReadinessComponents, SendReadinessReport, SendReadinessRequest,
         SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest, StopThresholds,
-        SuppressionCount, SuppressionSummary, SuppressionTotals, SuppressionsReport,
-        SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
-        TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
-        TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
-        WatchWindowRequest, DEFAULT_EVENT_LIMIT, DEFAULT_LOGGING_STATUS_LIMIT,
-        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_LOGGING_STATUS_LIMIT,
-        HARD_SUPPRESSION_LIMIT,
+        SuppressionCount, SuppressionDeltaComponents, SuppressionDeltaReport,
+        SuppressionDeltaRequest, SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals,
+        SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
+        TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents,
+        TraceabilityAuditReport, TraceabilityAuditRequest, TraceabilitySummary,
+        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
+        DEFAULT_LOGGING_STATUS_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT,
+        HARD_LOGGING_STATUS_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -27,6 +28,7 @@ use std::{
 };
 
 const NAMESPACE: &str = "oci_emaildelivery";
+const SUPPRESSION_DOMAIN_BUCKET_LIMIT: usize = 50;
 
 const STANDARD_METRICS: &[(&str, &str)] = &[
     ("accepted", "EmailsAccepted"),
@@ -70,6 +72,14 @@ pub trait OciEmailBackend: Send + Sync {
         &self,
         request: &SuppressionsRequest,
     ) -> Result<SuppressionsReport, OciEmailError>;
+
+    fn suppression_delta(
+        &self,
+        request: &SuppressionDeltaRequest,
+    ) -> Result<SuppressionDeltaReport, OciEmailError> {
+        validate_utc_window(&request.start_time, &request.end_time)?;
+        Ok(compose_suppression_delta(self, request))
+    }
 
     fn watch_window(
         &self,
@@ -798,7 +808,8 @@ impl OciEmailBackend for LiveOciEmailBackend {
             "list".to_string(),
             "--compartment-id".to_string(),
             compartment_id,
-            "--limit".to_string(),
+            "--all".to_string(),
+            "--page-size".to_string(),
             limit.to_string(),
         ];
         if let Some(value) = request.time_created_greater_than_or_equal_to.as_deref() {
@@ -810,12 +821,17 @@ impl OciEmailBackend for LiveOciEmailBackend {
             args.push(value.to_string());
         }
         let value = self.runner.run_optional_json(&args)?;
-        let suppressions = json_items(&value)
+        let all_suppressions = json_items(&value)
             .into_iter()
             .map(suppression_summary)
             .collect::<Vec<_>>();
+        let suppressions = all_suppressions
+            .iter()
+            .take(limit as usize)
+            .cloned()
+            .collect::<Vec<_>>();
         let mut findings = Vec::new();
-        let rows_capped = rows_may_be_capped(suppressions.len(), limit);
+        let rows_capped = all_suppressions.len() > suppressions.len();
         if value.is_null() {
             findings.push(finding(
                 "warning",
@@ -823,14 +839,9 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 "OCI CLI returned empty stdout for suppression list; treat as no sample, not as a full absence proof.",
             ));
         }
-        if rows_capped {
-            findings.push(finding(
-                "warning",
-                "suppression_results_capped",
-                "Suppression list returned the requested limit; narrow the time window or raise the limit before treating the result set as complete.",
-            ));
-        }
-        let totals = suppression_totals(&suppressions);
+        let count_state = suppression_count_state(value.is_null(), false);
+        let (oldest_time_created, newest_time_created) = suppression_time_bounds(&all_suppressions);
+        let totals = suppression_totals(&all_suppressions);
         Ok(SuppressionsReport {
             status: if findings.is_empty() {
                 "ok".to_string()
@@ -839,6 +850,11 @@ impl OciEmailBackend for LiveOciEmailBackend {
             },
             limit,
             returned: suppressions.len(),
+            total_matched: all_suppressions.len(),
+            rows_capped,
+            count_state,
+            oldest_time_created,
+            newest_time_created,
             totals,
             suppressions,
             findings,
@@ -1451,6 +1467,192 @@ fn compose_watch_window<B: OciEmailBackend + ?Sized>(
         evidence,
         raw_payload_returned: false,
     }
+}
+
+fn compose_suppression_delta<B: OciEmailBackend + ?Sized>(
+    backend: &B,
+    request: &SuppressionDeltaRequest,
+) -> SuppressionDeltaReport {
+    let mut findings = Vec::new();
+    let mut evidence = Vec::new();
+
+    let post_active = match backend.suppressions(&SuppressionsRequest {
+        time_created_greater_than_or_equal_to: None,
+        time_created_less_than: None,
+        limit: request.limit,
+        compartment_id: request.compartment_id.clone(),
+    }) {
+        Ok(report) => {
+            findings.extend(report.findings.clone());
+            evidence.extend(report.evidence.clone());
+            ToolCallOutcome::ok(report.status.clone(), report)
+        }
+        Err(error) => component_blocked(
+            &mut findings,
+            "suppression_delta_post_active_read_blocked",
+            "Full active suppression read failed; post-window active suppression state is not proven.",
+            error,
+        ),
+    };
+
+    let window_new = match backend.suppressions(&SuppressionsRequest {
+        time_created_greater_than_or_equal_to: Some(request.start_time.clone()),
+        time_created_less_than: Some(request.end_time.clone()),
+        limit: request.limit,
+        compartment_id: request.compartment_id.clone(),
+    }) {
+        Ok(report) => {
+            findings.extend(report.findings.clone());
+            evidence.extend(report.evidence.clone());
+            ToolCallOutcome::ok(report.status.clone(), report)
+        }
+        Err(error) => component_blocked(
+            &mut findings,
+            "suppression_delta_window_read_blocked",
+            "Bounded suppression delta read failed; new active suppressions for this window are not proven.",
+            error,
+        ),
+    };
+
+    let summary =
+        suppression_delta_summary(post_active.report.as_ref(), window_new.report.as_ref());
+    add_suppression_delta_findings(&mut findings, &summary, &post_active, &window_new);
+    let status = suppression_delta_status(&findings, &post_active, &window_new);
+    let decision = match status.as_str() {
+        "blocked" => "suppression_delta_blocked".to_string(),
+        "degraded" => "suppression_delta_incomplete_no_clean_proof".to_string(),
+        _ => "suppression_delta_clean_no_send_authorization".to_string(),
+    };
+
+    SuppressionDeltaReport {
+        status,
+        decision,
+        send_authorized: false,
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        summary,
+        components: SuppressionDeltaComponents {
+            post_active,
+            window_new,
+        },
+        findings,
+        evidence,
+        raw_payload_returned: false,
+    }
+}
+
+fn suppression_delta_summary(
+    post_active: Option<&SuppressionsReport>,
+    window_new: Option<&SuppressionsReport>,
+) -> SuppressionDeltaSummary {
+    let post_active_total = post_active.map(|report| report.total_matched).unwrap_or(0);
+    let window_new_active = window_new.map(|report| report.total_matched).unwrap_or(0);
+    let post_active_complete = post_active
+        .map(|report| report.count_state == "complete")
+        .unwrap_or(false);
+    let window_new_complete = window_new
+        .map(|report| report.count_state == "complete")
+        .unwrap_or(false);
+    let active_outside_window_total = (post_active_complete && window_new_complete)
+        .then(|| post_active_total.saturating_sub(window_new_active));
+    let window_new_hard_bounce = window_new
+        .map(|report| report.totals.hard_bounce)
+        .unwrap_or(0);
+    let window_new_complaint = window_new
+        .map(|report| suppression_reason_count(&report.totals, "complaint"))
+        .unwrap_or(0);
+    let window_new_other =
+        window_new_active.saturating_sub(window_new_hard_bounce + window_new_complaint);
+
+    SuppressionDeltaSummary {
+        post_active_total,
+        post_active_count_state: post_active
+            .map(|report| report.count_state.clone())
+            .unwrap_or_else(|| "unavailable".to_string()),
+        active_outside_window_total,
+        window_new_active,
+        window_new_count_state: window_new
+            .map(|report| report.count_state.clone())
+            .unwrap_or_else(|| "unavailable".to_string()),
+        window_new_hard_bounce,
+        window_new_complaint,
+        window_new_other,
+        newest_active_time_created: post_active
+            .and_then(|report| report.newest_time_created.clone()),
+        newest_window_time_created: window_new
+            .and_then(|report| report.newest_time_created.clone()),
+    }
+}
+
+fn add_suppression_delta_findings(
+    findings: &mut Vec<ReadinessFinding>,
+    summary: &SuppressionDeltaSummary,
+    post_active: &ToolCallOutcome<SuppressionsReport>,
+    window_new: &ToolCallOutcome<SuppressionsReport>,
+) {
+    if summary.window_new_hard_bounce > 0 {
+        findings.push(finding(
+            "blocker",
+            "suppression_delta_new_hard_bounce",
+            "New active hard-bounce suppressions were created in this window; clean-audience reconciliation is not proven.",
+        ));
+    }
+    if summary.window_new_complaint > 0 {
+        findings.push(finding(
+            "blocker",
+            "suppression_delta_new_complaint",
+            "New active complaint suppressions were created in this window; clean-audience reconciliation is not proven.",
+        ));
+    }
+    if summary.window_new_other > 0 {
+        findings.push(finding(
+            "warning",
+            "suppression_delta_new_other",
+            "New active suppressions with non-hard-bounce and non-complaint reasons were created in this window; operator review is required before treating the audience as clean.",
+        ));
+    }
+    if post_active
+        .report
+        .as_ref()
+        .is_some_and(|report| report.count_state != "complete")
+    {
+        findings.push(finding(
+            "warning",
+            "suppression_delta_post_active_incomplete",
+            "Full active suppression read was capped or degraded; total active suppression state is a lower bound or unavailable.",
+        ));
+    }
+    if window_new
+        .report
+        .as_ref()
+        .is_some_and(|report| report.count_state != "complete")
+    {
+        findings.push(finding(
+            "warning",
+            "suppression_delta_window_incomplete",
+            "Bounded suppression read was capped or degraded; absence of new suppressions is not proven for this window.",
+        ));
+    }
+}
+
+fn suppression_delta_status(
+    findings: &[ReadinessFinding],
+    post_active: &ToolCallOutcome<SuppressionsReport>,
+    window_new: &ToolCallOutcome<SuppressionsReport>,
+) -> String {
+    if findings.iter().any(|item| item.severity == "blocker")
+        || component_blocked_status(post_active)
+        || component_blocked_status(window_new)
+    {
+        return "blocked".to_string();
+    }
+    if !findings.is_empty()
+        || component_degraded_status(post_active)
+        || component_degraded_status(window_new)
+    {
+        return "degraded".to_string();
+    }
+    "ok".to_string()
 }
 
 fn compose_send_readiness<B: OciEmailBackend + ?Sized>(
@@ -2427,11 +2629,47 @@ fn suppression_totals(suppressions: &[SuppressionSummary]) -> SuppressionTotals 
             *by_recipient_domain.entry(domain).or_default() += 1;
         }
     }
+    let (by_recipient_domain, by_recipient_domain_omitted) =
+        capped_counts_from_map(by_recipient_domain, SUPPRESSION_DOMAIN_BUCKET_LIMIT);
     SuppressionTotals {
         hard_bounce,
         by_reason: counts_from_map(by_reason),
-        by_recipient_domain: counts_from_map(by_recipient_domain),
+        by_recipient_domain,
+        by_recipient_domain_omitted,
     }
+}
+
+fn suppression_count_state(empty_stdout: bool, rows_capped: bool) -> String {
+    if empty_stdout {
+        "no_sample".to_string()
+    } else if rows_capped {
+        "lower_bound".to_string()
+    } else {
+        "complete".to_string()
+    }
+}
+
+fn suppression_time_bounds(
+    suppressions: &[SuppressionSummary],
+) -> (Option<String>, Option<String>) {
+    let mut times = suppressions
+        .iter()
+        .filter_map(|suppression| suppression.time_created.as_deref())
+        .collect::<Vec<_>>();
+    times.sort_unstable();
+    (
+        times.first().map(|value| (*value).to_string()),
+        times.last().map(|value| (*value).to_string()),
+    )
+}
+
+fn suppression_reason_count(totals: &SuppressionTotals, reason: &str) -> usize {
+    totals
+        .by_reason
+        .iter()
+        .find(|item| item.key == reason)
+        .map(|item| item.count)
+        .unwrap_or(0)
 }
 
 fn normalize_summary_key(value: &str) -> Option<String> {
@@ -2460,6 +2698,23 @@ fn counts_from_map(map: BTreeMap<String, usize>) -> Vec<SuppressionCount> {
     map.into_iter()
         .map(|(key, count)| SuppressionCount { key, count })
         .collect()
+}
+
+fn capped_counts_from_map(
+    map: BTreeMap<String, usize>,
+    limit: usize,
+) -> (Vec<SuppressionCount>, usize) {
+    let total_buckets = map.len();
+    let mut counts = counts_from_map(map);
+    counts.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    let omitted = total_buckets.saturating_sub(limit);
+    counts.truncate(limit);
+    (counts, omitted)
 }
 
 fn email_event_summary(value: &Value) -> EmailEventSummary {
@@ -2677,6 +2932,132 @@ fn validate_time(value: &str, label: &str) -> Result<(), OciEmailError> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ParsedUtcTime {
+    year: u32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanos: u32,
+}
+
+fn validate_utc_window(start_time: &str, end_time: &str) -> Result<(), OciEmailError> {
+    let start = parse_strict_utc_time(start_time, "start_time")?;
+    let end = parse_strict_utc_time(end_time, "end_time")?;
+    if start < end {
+        Ok(())
+    } else {
+        Err(OciEmailError::InvalidInput(
+            "start_time must be before end_time".to_string(),
+        ))
+    }
+}
+
+fn parse_strict_utc_time(value: &str, label: &str) -> Result<ParsedUtcTime, OciEmailError> {
+    validate_time(value, label)?;
+    let Some(without_z) = value.strip_suffix('Z') else {
+        return Err(OciEmailError::InvalidInput(format!(
+            "{label} must use a UTC Z offset"
+        )));
+    };
+    let Some((date, time)) = without_z.split_once('T') else {
+        return Err(OciEmailError::InvalidInput(format!(
+            "{label} must contain a T separator"
+        )));
+    };
+    let date_parts = date.split('-').collect::<Vec<_>>();
+    if date_parts.len() != 3
+        || date_parts[0].len() != 4
+        || date_parts[1].len() != 2
+        || date_parts[2].len() != 2
+    {
+        return Err(OciEmailError::InvalidInput(format!(
+            "{label} must use YYYY-MM-DDTHH:MM:SSZ"
+        )));
+    }
+    let time_parts = time.split(':').collect::<Vec<_>>();
+    if time_parts.len() != 3 || time_parts[0].len() != 2 || time_parts[1].len() != 2 {
+        return Err(OciEmailError::InvalidInput(format!(
+            "{label} must use YYYY-MM-DDTHH:MM:SSZ"
+        )));
+    }
+    let (seconds, nanos) = parse_seconds_fraction(time_parts[2], label)?;
+    let year = parse_fixed_u32(date_parts[0], label)?;
+    let month = parse_fixed_u32(date_parts[1], label)?;
+    let day = parse_fixed_u32(date_parts[2], label)?;
+    let hour = parse_fixed_u32(time_parts[0], label)?;
+    let minute = parse_fixed_u32(time_parts[1], label)?;
+    if month == 0
+        || month > 12
+        || day == 0
+        || day > days_in_month(year, month)
+        || hour > 23
+        || minute > 59
+        || seconds > 59
+    {
+        return Err(OciEmailError::InvalidInput(format!(
+            "{label} must be a valid UTC timestamp"
+        )));
+    }
+    Ok(ParsedUtcTime {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second: seconds,
+        nanos,
+    })
+}
+
+fn parse_seconds_fraction(value: &str, label: &str) -> Result<(u32, u32), OciEmailError> {
+    let Some((seconds, fraction)) = value.split_once('.') else {
+        return Ok((parse_fixed_u32(value, label)?, 0));
+    };
+    if seconds.len() != 2
+        || fraction.is_empty()
+        || fraction.len() > 9
+        || !fraction.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Err(OciEmailError::InvalidInput(format!(
+            "{label} must use a valid fractional second"
+        )));
+    }
+    let seconds = parse_fixed_u32(seconds, label)?;
+    let mut nanos = parse_fixed_u32(fraction, label)?;
+    for _ in fraction.len()..9 {
+        nanos *= 10;
+    }
+    Ok((seconds, nanos))
+}
+
+fn parse_fixed_u32(value: &str, label: &str) -> Result<u32, OciEmailError> {
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(OciEmailError::InvalidInput(format!(
+            "{label} must contain numeric date and time fields"
+        )));
+    }
+    value.parse::<u32>().map_err(|_| {
+        OciEmailError::InvalidInput(format!("{label} must contain valid date and time fields"))
+    })
+}
+
+fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: u32) -> bool {
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+}
+
 fn safe_query_value(value: &str) -> Result<String, OciEmailError> {
     let valid = !value.is_empty()
         && value.len() <= 256
@@ -2823,6 +3204,67 @@ mod tests {
             .by_recipient_domain
             .iter()
             .any(|item| item.key == "example.net" && item.count == 1));
+        assert_eq!(totals.by_recipient_domain_omitted, 0);
+    }
+
+    #[test]
+    fn suppressions_fetch_all_pages_and_return_bounded_sample() {
+        let backend =
+            LiveOciEmailBackend::with_runner(test_config(), Arc::new(FixtureSuppressionRunner));
+        let report = backend
+            .suppressions(&SuppressionsRequest {
+                time_created_greater_than_or_equal_to: None,
+                time_created_less_than: None,
+                limit: Some(2),
+                compartment_id: None,
+            })
+            .expect("suppression report");
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.limit, 2);
+        assert_eq!(report.returned, 2);
+        assert_eq!(report.total_matched, 3);
+        assert!(report.rows_capped);
+        assert_eq!(report.count_state, "complete");
+        assert_eq!(report.totals.hard_bounce, 2);
+        assert_eq!(
+            report.newest_time_created,
+            Some("2026-06-30T00:02:00Z".to_string())
+        );
+        assert_eq!(report.suppressions.len(), 2);
+        assert!(report.evidence.iter().any(|item| item.rows_capped));
+    }
+
+    #[test]
+    fn suppression_domain_buckets_are_bounded_even_when_counts_are_complete() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(HighCardinalitySuppressionRunner),
+        );
+        let report = backend
+            .suppressions(&SuppressionsRequest {
+                time_created_greater_than_or_equal_to: None,
+                time_created_less_than: None,
+                limit: Some(5),
+                compartment_id: None,
+            })
+            .expect("suppression report");
+
+        assert_eq!(report.total_matched, 55);
+        assert_eq!(report.returned, 5);
+        assert_eq!(report.count_state, "complete");
+        assert_eq!(report.totals.by_recipient_domain.len(), 50);
+        assert_eq!(report.totals.by_recipient_domain_omitted, 5);
+        assert!(report
+            .totals
+            .by_recipient_domain
+            .iter()
+            .any(|item| item.key == "domain00.example" && item.count == 1));
+        assert!(!report
+            .totals
+            .by_recipient_domain
+            .iter()
+            .any(|item| item.key == "domain50.example"));
     }
 
     #[test]
@@ -3304,6 +3746,65 @@ mod tests {
             .findings
             .iter()
             .any(|finding| finding.code == "logging_plan_resource_id_missing"));
+    }
+
+    struct FixtureSuppressionRunner;
+
+    impl OciCliRunner for FixtureSuppressionRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            match command_label(args).as_str() {
+                "email suppression list" => {
+                    assert!(args.iter().any(|arg| arg == "--all"));
+                    assert!(!args.iter().any(|arg| arg == "--limit"));
+                    assert!(args
+                        .windows(2)
+                        .any(|window| { window == ["--page-size".to_string(), "2".to_string()] }));
+                    Ok(serde_json::json!({
+                        "data": [
+                            {
+                                "time-created": "2026-06-30T00:00:00Z",
+                                "reason": "HARDBOUNCE",
+                                "email-address": "one@example.com"
+                            },
+                            {
+                                "time-created": "2026-06-30T00:01:00Z",
+                                "reason": "COMPLAINT",
+                                "email-address": "two@example.net"
+                            },
+                            {
+                                "time-created": "2026-06-30T00:02:00Z",
+                                "reason": "hard bounce",
+                                "email-address": "three@example.org"
+                            }
+                        ]
+                    }))
+                }
+                other => panic!("unexpected OCI command: {other}"),
+            }
+        }
+    }
+
+    struct HighCardinalitySuppressionRunner;
+
+    impl OciCliRunner for HighCardinalitySuppressionRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            match command_label(args).as_str() {
+                "email suppression list" => {
+                    assert!(args.iter().any(|arg| arg == "--all"));
+                    let data = (0..55)
+                        .map(|index| {
+                            serde_json::json!({
+                                "time-created": "2026-06-30T00:00:00Z",
+                                "reason": "HARDBOUNCE",
+                                "email-address": format!("user{index}@domain{index:02}.example")
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    Ok(serde_json::json!({ "data": data }))
+                }
+                other => panic!("unexpected OCI command: {other}"),
+            }
+        }
     }
 
     struct FixtureLoggingRunner {

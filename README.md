@@ -5,7 +5,7 @@ read-only; the only local write surface is a configured private artifact tool
 for redacted monitoring snapshots. The first operator goal is to let agents
 query OCI programmatically before production or cohort sends go live.
 
-The server exposes twelve curated intent tools:
+The server exposes thirteen curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -17,6 +17,7 @@ The server exposes twelve curated intent tools:
 | `oci_email_logging_enablement_plan` | Build a read-only operator plan for enabling Email Delivery service-log visibility and post-enable proof. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
 | `oci_email_suppressions` | Summarize OCI suppressions with reason/domain totals and no raw recipient addresses. |
+| `oci_email_suppression_delta` | Compare full active suppressions with a bounded window and classify clean, incomplete, or blocked evidence. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, logging configuration, metrics, logs, optional trace, and suppressions. |
 | `oci_email_send_readiness` | Build one read-only send-window receipt that combines watch-window evidence with local send-ledger proof and expected row-count gates. |
 | `oci_email_traceability_audit` | Audit whether one UTC window proves exact message/recipient traceability across OCI logs and the local send ledger, or only aggregate delivery pressure. |
@@ -72,8 +73,10 @@ contract tests with an OCI profile configured. The live smoke must not use
 - Raw OCI JSON is not returned by tools.
 - Recipient addresses are reduced to domain plus a short stable hash.
 - Suppression reports include aggregate `totals` by reason and recipient
-  domain, plus a canonical hard-bounce count, so stop-gate reviews do not need
-  raw rows.
+  domain, `total_matched`, count confidence, timestamp bounds, plus a
+  canonical hard-bounce count, so stop-gate reviews do not need raw rows.
+  High-cardinality recipient-domain totals are capped and report an omitted
+  bucket count.
 - OCIDs are reduced to kind plus a short stable hash.
 - `EmailsRelayed` means recipient-domain acceptance only. It is not inbox
   placement proof.
@@ -109,6 +112,15 @@ contract tests with an OCI profile configured. The live smoke must not use
   events from post-summary source-domain mismatch without returning raw events.
   When no `source_domain` is requested, `source_domain_matched` equals the
   returned event count.
+- `oci_email_suppressions` fetches all pages for totals and timestamp bounds
+  while returning only a bounded redacted sample in `suppressions`. Use
+  `total_matched` and `count_state` for counts; use `returned` for sample rows.
+  Use `totals.by_recipient_domain_omitted` to detect omitted domain buckets.
+- `oci_email_suppression_delta` compares a full active suppression read with a
+  bounded UTC window. It reports a clean decision only when both reads have
+  complete count state and the window has no new active suppressions. New
+  hard-bounce or complaint suppressions block; other new suppression reasons or
+  no-sample/lower-bound reads degrade the receipt for operator review.
 - Local send-ledger reads are disabled unless `OCI_MCP_LEDGER_PATH` is set.
   The ledger tool summarizes JSONL rows with hashes and domains only.
 - Private monitoring snapshot artifacts are disabled unless

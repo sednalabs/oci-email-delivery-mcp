@@ -59,9 +59,10 @@ pub use response::{
     MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
     ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
     SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, SnapshotArtifactSummary,
-    StatusRequest, StopThresholds, SuppressionCount, SuppressionSummary, SuppressionTotals,
-    SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
-    TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
+    StatusRequest, StopThresholds, SuppressionCount, SuppressionDeltaComponents,
+    SuppressionDeltaReport, SuppressionDeltaRequest, SuppressionDeltaSummary, SuppressionSummary,
+    SuppressionTotals, SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
+    TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
     TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
     WatchWindowRequest,
 };
@@ -117,6 +118,11 @@ impl OciEmailMcpServer {
                     "oci_email_trace_message",
                     "Trace one message id or correlation header through OCI Email Delivery logs.",
                     ["oci", "email", "trace", "message"],
+                ),
+                read_capability(
+                    "oci_email_suppression_delta",
+                    "Compare active OCI Email Delivery suppressions with a bounded window without raw recipients.",
+                    ["oci", "email", "suppressions", "delta"],
                 ),
                 read_capability(
                     "oci_email_suppressions",
@@ -238,6 +244,16 @@ impl OciEmailMcpServer {
     }
 
     #[tool(
+        description = "Build a read-only OCI Email Delivery active-suppression delta receipt without raw recipients."
+    )]
+    fn oci_email_suppression_delta(
+        &self,
+        Parameters(request): Parameters<SuppressionDeltaRequest>,
+    ) -> String {
+        response::tool_json(self.backend.suppression_delta(&request))
+    }
+
+    #[tool(
         description = "Build one read-only OCI Email Delivery monitoring receipt for an explicit UTC window."
     )]
     fn oci_email_watch_window(
@@ -312,6 +328,7 @@ mod tests {
                 "oci_email_monitoring_snapshot_artifact",
                 "oci_email_send_readiness",
                 "oci_email_status",
+                "oci_email_suppression_delta",
                 "oci_email_suppressions",
                 "oci_email_trace_message",
                 "oci_email_traceability_audit",
@@ -524,6 +541,11 @@ pub mod tests_support {
                 status: "ok".to_string(),
                 limit: 20,
                 returned: 2,
+                total_matched: 2,
+                rows_capped: false,
+                count_state: "complete".to_string(),
+                oldest_time_created: Some("2026-06-30T00:00:00Z".to_string()),
+                newest_time_created: Some("2026-06-30T00:05:00Z".to_string()),
                 totals: SuppressionTotals {
                     hard_bounce: 1,
                     by_reason: vec![
@@ -546,6 +568,7 @@ pub mod tests_support {
                             count: 1,
                         },
                     ],
+                    by_recipient_domain_omitted: 0,
                 },
                 suppressions: vec![
                     SuppressionSummary {

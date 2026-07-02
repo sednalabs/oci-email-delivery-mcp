@@ -460,6 +460,40 @@
       "name": "oci_email_status"
     },
     {
+      "description": "Build a read-only OCI Email Delivery active-suppression delta receipt without raw recipients.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_time",
+          "end_time"
+        ],
+        "type": "object"
+      },
+      "name": "oci_email_suppression_delta"
+    },
+    {
       "description": "Summarize OCI Email Delivery suppressions without raw recipients.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
