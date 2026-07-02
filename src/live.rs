@@ -1726,6 +1726,8 @@ fn compose_send_readiness<B: OciEmailBackend + ?Sized>(
             sender_domain: Some(sender_domain_value),
             campaign_id,
             batch_id,
+            message_id: request.message_id.clone(),
+            correlation_id: request.header_value.clone(),
             limit: request.limit,
         }) {
             Ok(report) => {
@@ -1830,6 +1832,8 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
             sender_domain: Some(sender_domain),
             campaign_id,
             batch_id,
+            message_id: request.message_id.clone(),
+            correlation_id: request.header_value.clone(),
             limit: request.limit,
         }) {
             Ok(report) => {

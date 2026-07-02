@@ -96,6 +96,14 @@ fn stdio_tools_list_includes_input_schemas() {
         .as_object()
         .expect("ledger properties")
         .contains_key("sender_domain"));
+    assert!(ledger["inputSchema"]["properties"]
+        .as_object()
+        .expect("ledger properties")
+        .contains_key("message_id"));
+    assert!(ledger["inputSchema"]["properties"]
+        .as_object()
+        .expect("ledger properties")
+        .contains_key("correlation_id"));
 
     let watch = tools
         .iter()

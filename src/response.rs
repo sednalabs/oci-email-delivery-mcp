@@ -168,6 +168,8 @@ pub struct LedgerWindowRequest {
     pub sender_domain: Option<String>,
     pub campaign_id: Option<String>,
     pub batch_id: Option<String>,
+    pub message_id: Option<String>,
+    pub correlation_id: Option<String>,
     pub limit: Option<u32>,
 }
 
@@ -676,6 +678,8 @@ pub struct LedgerWindowFilters {
     pub sender_domain: Option<String>,
     pub campaign_hash: Option<String>,
     pub batch_hash: Option<String>,
+    pub message_id_hash: Option<String>,
+    pub correlation_id_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

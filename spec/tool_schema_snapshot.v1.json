@@ -88,6 +88,12 @@
               "null"
             ]
           },
+          "correlation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "end_time": {
             "type": "string"
           },
@@ -96,6 +102,12 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": [
+              "string",
               "null"
             ]
           },

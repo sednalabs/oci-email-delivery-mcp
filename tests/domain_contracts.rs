@@ -388,6 +388,8 @@ fn ledger_window_contract_uses_hashes_and_domains_only() {
             sender_domain: Some("example.com".to_string()),
             campaign_id: Some("campaign-private".to_string()),
             batch_id: Some("batch-private".to_string()),
+            message_id: None,
+            correlation_id: None,
             limit: Some(20),
         })
         .unwrap_or_else(|err| panic!("fixture ledger: {err}"));
@@ -509,6 +511,15 @@ fn send_readiness_contract_requires_monitoring_and_ledger_without_authorizing_se
             .as_ref()
             .map(|ledger| ledger.totals.matched_rows),
         Some(1)
+    );
+    assert_eq!(
+        report
+            .components
+            .ledger
+            .report
+            .as_ref()
+            .and_then(|ledger| ledger.filters.message_id_hash.as_deref()),
+        Some("fixture")
     );
     assert!(report
         .findings
@@ -670,6 +681,15 @@ fn traceability_audit_distinguishes_exact_overlap_from_aggregate_pressure() {
     assert!(report.summary.recipient_hash_overlap);
     assert!(report.summary.single_ledger_row_overlap);
     assert_eq!(report.components.ledger.status, "ok");
+    assert_eq!(
+        report
+            .components
+            .ledger
+            .report
+            .as_ref()
+            .and_then(|ledger| ledger.filters.message_id_hash.as_deref()),
+        Some("fixture")
+    );
     assert!(!report
         .findings
         .iter()
@@ -1134,6 +1154,11 @@ impl OciEmailBackend for AggregateOnlyBackend {
                 sender_domain: request.sender_domain.clone(),
                 campaign_hash: None,
                 batch_hash: None,
+                message_id_hash: request.message_id.as_ref().map(|_| "unmatched".to_string()),
+                correlation_id_hash: request
+                    .correlation_id
+                    .as_ref()
+                    .map(|_| "unmatched".to_string()),
             },
             limit: request.limit.unwrap_or(20),
             totals: LedgerWindowTotals {
@@ -1299,6 +1324,11 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
                 sender_domain: request.sender_domain.clone(),
                 campaign_hash: None,
                 batch_hash: None,
+                message_id_hash: request.message_id.as_ref().map(|_| "fixture".to_string()),
+                correlation_id_hash: request
+                    .correlation_id
+                    .as_ref()
+                    .map(|_| "fixture".to_string()),
             },
             limit: request.limit.unwrap_or(20),
             totals: LedgerWindowTotals {
