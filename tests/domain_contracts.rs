@@ -3,8 +3,9 @@ use oci_email_delivery_mcp::{
     LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals,
     LoggingEnablementPlanRequest, LoggingStatusRequest, MetricsReport, MetricsRequest,
     OciEmailBackend, OciEmailError, OciEmailStatusReport, SendReadinessRequest, StatusRequest,
-    SuppressionsReport, SuppressionsRequest, TraceCriteria, TraceMessageReport,
-    TraceMessageRequest, TraceabilityAuditRequest, WatchWindowRequest,
+    SuppressionDeltaRequest, SuppressionTotals, SuppressionsReport, SuppressionsRequest,
+    TraceCriteria, TraceMessageReport, TraceMessageRequest, TraceabilityAuditRequest,
+    WatchWindowRequest,
 };
 
 #[test]
@@ -230,6 +231,17 @@ fn suppressions_contract_uses_hash_and_domain_only() {
         Some("fixture".to_string())
     );
     assert_eq!(report.returned, 2);
+    assert_eq!(report.total_matched, 2);
+    assert!(!report.rows_capped);
+    assert_eq!(report.count_state, "complete");
+    assert_eq!(
+        report.oldest_time_created,
+        Some("2026-06-30T00:00:00Z".to_string())
+    );
+    assert_eq!(
+        report.newest_time_created,
+        Some("2026-06-30T00:05:00Z".to_string())
+    );
     assert_eq!(report.totals.hard_bounce, 1);
     assert!(report
         .totals
@@ -251,8 +263,119 @@ fn suppressions_contract_uses_hash_and_domain_only() {
         .by_recipient_domain
         .iter()
         .any(|item| item.key == "example.net" && item.count == 1));
+    assert_eq!(report.totals.by_recipient_domain_omitted, 0);
     assert!(!payload.contains("person@example.com"));
     assert!(!payload.contains("person@example.net"));
+}
+
+#[test]
+fn suppression_delta_blocks_visible_stop_gate_suppressions() {
+    let backend = FixtureBackend;
+    let report = backend
+        .suppression_delta(&SuppressionDeltaRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture suppression delta: {err}"));
+    let payload = serde_json::to_string(&report)
+        .unwrap_or_else(|err| panic!("serialize suppression delta: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "suppression_delta_blocked");
+    assert!(!report.send_authorized);
+    assert_eq!(report.summary.window_new_active, 2);
+    assert_eq!(report.summary.window_new_hard_bounce, 1);
+    assert_eq!(report.summary.window_new_complaint, 1);
+    assert_eq!(report.summary.active_outside_window_total, Some(0));
+    assert_eq!(report.components.post_active.status, "ok");
+    assert_eq!(report.components.window_new.status, "ok");
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "suppression_delta_new_hard_bounce"));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "suppression_delta_new_complaint"));
+    assert!(!payload.contains("person@example.com"));
+    assert!(!payload.contains("person@example.net"));
+}
+
+#[test]
+fn suppression_delta_reports_clean_when_window_has_no_new_rows() {
+    let backend = WindowEmptySuppressionBackend {
+        capped_post_active: false,
+    };
+    let report = backend
+        .suppression_delta(&SuppressionDeltaRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("clean suppression delta: {err}"));
+
+    assert_eq!(report.status, "ok");
+    assert_eq!(
+        report.decision,
+        "suppression_delta_clean_no_send_authorization"
+    );
+    assert!(!report.send_authorized);
+    assert_eq!(report.summary.post_active_total, 2);
+    assert_eq!(report.summary.active_outside_window_total, Some(2));
+    assert_eq!(report.summary.window_new_active, 0);
+    assert!(report.findings.is_empty());
+}
+
+#[test]
+fn suppression_delta_degrades_when_full_active_count_is_lower_bound() {
+    let backend = WindowEmptySuppressionBackend {
+        capped_post_active: true,
+    };
+    let report = backend
+        .suppression_delta(&SuppressionDeltaRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("lower-bound suppression delta: {err}"));
+
+    assert_eq!(report.status, "degraded");
+    assert_eq!(
+        report.decision,
+        "suppression_delta_incomplete_no_clean_proof"
+    );
+    assert_eq!(report.summary.post_active_count_state, "lower_bound");
+    assert_eq!(report.summary.window_new_count_state, "complete");
+    assert_eq!(report.summary.active_outside_window_total, None);
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "suppression_delta_post_active_incomplete"));
+}
+
+#[test]
+fn suppression_delta_rejects_invalid_or_inverted_windows() {
+    let backend = FixtureBackend;
+    for (start_time, end_time) in [
+        ("2026-02-30T00:00:00Z", "2026-03-01T00:00:00Z"),
+        ("2026-06-30T00:00:5Z", "2026-06-30T00:01:00Z"),
+        ("2026-06-30T01:00:00Z", "2026-06-30T00:00:00Z"),
+        ("2026-06-30T00:00:00Z", "2026-06-30T00:00:00Z"),
+    ] {
+        let error = backend
+            .suppression_delta(&SuppressionDeltaRequest {
+                start_time: start_time.to_string(),
+                end_time: end_time.to_string(),
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .expect_err("invalid suppression delta window should block");
+        assert!(matches!(error, OciEmailError::InvalidInput(_)));
+    }
 }
 
 #[test]
@@ -887,6 +1010,60 @@ impl OciEmailBackend for EchoIntervalBackend {
         request: &SuppressionsRequest,
     ) -> Result<SuppressionsReport, OciEmailError> {
         FixtureBackend.suppressions(request)
+    }
+}
+
+struct WindowEmptySuppressionBackend {
+    capped_post_active: bool,
+}
+
+impl OciEmailBackend for WindowEmptySuppressionBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        FixtureBackend.trace_message(request)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        let mut report = FixtureBackend.suppressions(request)?;
+        if request.time_created_greater_than_or_equal_to.is_some()
+            || request.time_created_less_than.is_some()
+        {
+            report.returned = 0;
+            report.total_matched = 0;
+            report.suppressions.clear();
+            report.totals = SuppressionTotals::default();
+            report.oldest_time_created = None;
+            report.newest_time_created = None;
+        } else if self.capped_post_active {
+            report.status = "degraded".to_string();
+            report.rows_capped = true;
+            report.count_state = "lower_bound".to_string();
+        }
+        Ok(report)
     }
 }
 

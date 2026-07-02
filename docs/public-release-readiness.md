@@ -55,6 +55,10 @@ explain its core value.
   degraded logging-status receipt turns into a generic, redacted operator plan
   for service-log categories, approval boundaries, and post-enable proof
   without authorizing the OCI mutation.
+- The adapter includes `oci_email_suppression_delta` so operators can compare
+  full active suppressions with a bounded UTC window and distinguish clean,
+  lower-bound, no-sample, and stop-gate suppression evidence without exposing
+  raw recipients.
 - The adapter includes `oci_email_traceability_audit` so operators can ask the
   narrower question: does this window prove exact message and recipient
   overlap across OCI logs and the same configured local ledger row, or only

@@ -22,6 +22,9 @@ green.
   window before cohort expansion.
 - `oci_email_suppressions` is callable and returns either a normal empty list
   or redacted suppression summaries with aggregate reason/domain totals.
+- `oci_email_suppression_delta` compares the full active suppression set with
+  a bounded UTC window and returns a clean, degraded, or blocked receipt
+  without raw recipients.
 - `oci_email_ledger_window` is configured with the private local send-ledger
   JSONL path before any seed/proof send. It returns only hashes, domains, and
   aggregate counts.
@@ -54,6 +57,9 @@ Pause the pilot or keep it paused when any of these are true:
 - log search returns no events for a send window that should have accepted or
   relayed mail;
 - suppression readback is blocked;
+- `oci_email_suppression_delta` reports new active hard-bounce or complaint
+  suppressions, or reports no-sample/lower-bound evidence when clean suppression
+  proof is required;
 - local send-ledger readback is blocked, capped, or missing message/correlation
   keys for rows that should be traceable;
 - `oci_email_send_readiness` returns `ledger_expected_rows_mismatch`,
@@ -305,8 +311,33 @@ visible, suppression query is `ok`, and `send_authorized` is `false`.
 
 Expected: `status` is `ok` or explicitly `degraded` with a documented reason;
 no raw recipient address is returned. Use `totals.hard_bounce`,
-`totals.by_reason`, and `totals.by_recipient_domain` for stop-gate and
-clean-audience reconciliation before inspecting redacted sample rows.
+`totals.by_reason`, `totals.by_recipient_domain`, `total_matched`,
+`count_state`, `oldest_time_created`, and `newest_time_created` for stop-gate
+and clean-audience reconciliation before inspecting redacted sample rows.
+`returned` is the number of redacted sample rows included in the response, not
+the full count when `rows_capped=true`. Treat `count_state=lower_bound` or
+`count_state=no_sample` as incomplete evidence. If
+`totals.by_recipient_domain_omitted` is non-zero, the domain-bucket list is a
+bounded top bucket view, not a complete domain inventory.
+
+`oci_email_suppression_delta` for a bounded post-window reconciliation:
+
+```json
+{
+  "start_time": "YYYY-MM-DDTHH:00:00Z",
+  "end_time": "YYYY-MM-DDTHH:00:00Z",
+  "limit": 50
+}
+```
+
+Expected: `send_authorized=false`; `decision` is
+`suppression_delta_clean_no_send_authorization`,
+`suppression_delta_incomplete_no_clean_proof`, or
+`suppression_delta_blocked`. A clean receipt requires complete full-active and
+bounded-window reads plus zero new active suppressions in the window. New
+hard-bounce or complaint suppressions block. Other new suppression reasons,
+lower-bound reads, or empty/no-sample stdout degrade and require operator
+review before the audience is treated as clean.
 
 `oci_email_metrics` for the approved sender/resource domain:
 
@@ -389,8 +420,8 @@ Check:
 - recipient values are domains and hashes only;
 - raw provider payload is not returned;
 - zero rows in an active send window pauses expansion until logging is proven.
-- `returned == limit` or `rows_capped=true` means the evidence is incomplete
-  until the window is narrowed or filtered and rerun.
+- for event searches, `returned == limit` or `rows_capped=true` means the
+  evidence is incomplete until the window is narrowed or filtered and rerun.
 
 For separate publication lanes, run separate queries. Each publication or brand
 window must have its own source/resource-domain filter and private receipt.
@@ -427,8 +458,8 @@ Record a private receipt containing:
 - stop-threshold evaluation;
 - unresolved proof gaps;
 - explicit decision: remain paused, continue seed-only, expand cohort, or stop.
-- suppression baseline and post-window delta, reconciled back to the local send
-  ledger without exposing raw recipients in public docs or tickets.
+- suppression active-set and post-window delta evidence, reconciled back to the
+  local send ledger without exposing raw recipients in public docs or tickets.
 
 Prefer `oci_email_monitoring_snapshot_artifact` for that private receipt so the
 same redacted JSON can be hashed, retained, and re-opened later without
