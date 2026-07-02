@@ -29,6 +29,8 @@ use std::{
 
 const NAMESPACE: &str = "oci_emaildelivery";
 const SUPPRESSION_DOMAIN_BUCKET_LIMIT: usize = 50;
+const SUPPRESSION_FETCH_PAGE_SIZE: u32 = 1000;
+const SMTP_STATUS_MAX_CHARS: usize = 240;
 
 const STANDARD_METRICS: &[(&str, &str)] = &[
     ("accepted", "EmailsAccepted"),
@@ -810,7 +812,7 @@ impl OciEmailBackend for LiveOciEmailBackend {
             compartment_id,
             "--all".to_string(),
             "--page-size".to_string(),
-            limit.to_string(),
+            SUPPRESSION_FETCH_PAGE_SIZE.to_string(),
         ];
         if let Some(value) = request.time_created_greater_than_or_equal_to.as_deref() {
             args.push("--time-created-greater-than-or-equal-to".to_string());
@@ -2751,9 +2753,41 @@ fn email_event_summary(value: &Value) -> EmailEventSummary {
         message_id_hash: message_id.map(short_hash),
         error_type: nested_string(data, &["errorType"]).map(redact_sensitive_text),
         bounce_category: nested_string(data, &["bounceCategory"]).map(redact_sensitive_text),
-        smtp_status: nested_string(data, &["smtpStatus"]).map(redact_sensitive_text),
+        smtp_status: nested_string(data, &["smtpStatus"]).map(summarize_smtp_status),
         raw_payload_returned: false,
     }
+}
+
+fn summarize_smtp_status(value: &str) -> String {
+    let redacted = redact_sensitive_text(value);
+    let without_diagnostic = redacted
+        .to_ascii_lowercase()
+        .find("[begindiagnosticdata]")
+        .map(|index| {
+            format!(
+                "{} [diagnostic-data-redacted]",
+                redacted[..index].trim_end()
+            )
+        })
+        .unwrap_or(redacted);
+    truncate_summary(
+        &collapse_whitespace(&without_diagnostic),
+        SMTP_STATUS_MAX_CHARS,
+    )
+}
+
+fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_summary(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let suffix = " ...[truncated]";
+    let prefix_len = max_chars.saturating_sub(suffix.chars().count());
+    let prefix = value.chars().take(prefix_len).collect::<String>();
+    format!("{prefix}{suffix}")
 }
 
 fn event_record(value: &Value) -> &Value {
@@ -3363,6 +3397,46 @@ mod tests {
     }
 
     #[test]
+    fn event_summary_caps_smtp_diagnostic_blobs() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "data": {
+                        "action": "bounce",
+                        "recipient": "person@example.com",
+                        "smtpStatus": format!(
+                            "554 5.2.2 mailbox full; [BeginDiagnosticData]{}[EndDiagnosticData]",
+                            "X".repeat(800)
+                        )
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value);
+        let smtp_status = summary.smtp_status.expect("smtp status");
+
+        assert!(smtp_status.starts_with("554 5.2.2 mailbox full;"));
+        assert!(smtp_status.contains("[diagnostic-data-redacted]"));
+        assert!(!smtp_status.contains("[BeginDiagnosticData]"));
+        assert!(!smtp_status.contains("[EndDiagnosticData]"));
+        assert!(smtp_status.chars().count() <= SMTP_STATUS_MAX_CHARS);
+    }
+
+    #[test]
+    fn event_summary_caps_lowercase_smtp_diagnostic_marker() {
+        let status = summarize_smtp_status(
+            "554 mailbox full; [begindiagnosticdata]lowercase diagnostic[enddiagnosticdata]",
+        );
+
+        assert_eq!(
+            status,
+            "554 mailbox full; [diagnostic-data-redacted]".to_string()
+        );
+    }
+
+    #[test]
     fn event_search_keeps_source_domain_out_of_provider_query() {
         let query = build_search_query(
             "ocid1.tenancy.oc1.example",
@@ -3770,9 +3844,9 @@ mod tests {
                 "email suppression list" => {
                     assert!(args.iter().any(|arg| arg == "--all"));
                     assert!(!args.iter().any(|arg| arg == "--limit"));
-                    assert!(args
-                        .windows(2)
-                        .any(|window| { window == ["--page-size".to_string(), "2".to_string()] }));
+                    assert!(args.windows(2).any(|window| {
+                        window == ["--page-size".to_string(), "1000".to_string()]
+                    }));
                     Ok(serde_json::json!({
                         "data": [
                             {
