@@ -401,6 +401,7 @@ pub struct EventsReport {
     pub provider_returned: usize,
     pub source_domain_matched: usize,
     pub returned: usize,
+    pub counts: EventCounts,
     pub events: Vec<EmailEventSummary>,
     pub findings: Vec<ReadinessFinding>,
     pub evidence: Vec<Evidence>,
@@ -430,6 +431,29 @@ pub struct EmailEventSummary {
     pub bounce_category: Option<String>,
     pub smtp_status: Option<String>,
     pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct EventCounts {
+    pub by_action: Vec<EventCount>,
+    pub events_with_recipient_hash: usize,
+    pub distinct_recipient_hashes: usize,
+    pub duplicate_recipient_hash_events: usize,
+    pub events_with_message_id_hash: usize,
+    pub distinct_message_id_hashes: usize,
+    pub duplicate_message_id_hash_events: usize,
+    pub events_with_recipient_message_pair: usize,
+    pub distinct_recipient_message_pairs: usize,
+    pub duplicate_recipient_message_pair_events: usize,
+    pub events_with_action_recipient_message_key: usize,
+    pub distinct_action_recipient_message_keys: usize,
+    pub duplicate_action_recipient_message_key_events: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct EventCount {
+    pub key: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

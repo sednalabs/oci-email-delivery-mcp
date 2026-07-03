@@ -52,19 +52,19 @@ use mcp_toolkit_core::{
     tool_inventory::{ToolCapability, ToolDiscoveryMetadata, ToolInventory, ToolInventoryError},
 };
 pub use response::{
-    EmailDeliveryLogSummary, EmailEventSummary, EventFilters, EventsReport, EventsRequest,
-    Evidence, LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest,
-    LedgerWindowTotals, LogGroupSummary, LoggingEnablementPlanReport, LoggingEnablementPlanRequest,
-    LoggingStatusReport, LoggingStatusRequest, MetricRates, MetricResult, MetricTotals,
-    MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
-    ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
-    SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, SnapshotArtifactSummary,
-    StatusRequest, StopThresholds, SuppressionCount, SuppressionDeltaComponents,
-    SuppressionDeltaReport, SuppressionDeltaRequest, SuppressionDeltaSummary, SuppressionSummary,
-    SuppressionTotals, SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
-    TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
-    TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
-    WatchWindowRequest,
+    EmailDeliveryLogSummary, EmailEventSummary, EventCount, EventCounts, EventFilters,
+    EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowFilters,
+    LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals, LogGroupSummary,
+    LoggingEnablementPlanReport, LoggingEnablementPlanRequest, LoggingStatusReport,
+    LoggingStatusRequest, MetricRates, MetricResult, MetricTotals, MetricsFilters, MetricsReport,
+    MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
+    SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
+    SnapshotArtifactRequest, SnapshotArtifactSummary, StatusRequest, StopThresholds,
+    SuppressionCount, SuppressionDeltaComponents, SuppressionDeltaReport, SuppressionDeltaRequest,
+    SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals, SuppressionsReport,
+    SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
+    TraceabilityAuditComponents, TraceabilityAuditReport, TraceabilityAuditRequest,
+    TraceabilitySummary, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
 };
 
 #[derive(Clone)]
@@ -666,6 +666,24 @@ pub mod tests_support {
             provider_returned: 1,
             source_domain_matched: 1,
             returned: 1,
+            counts: EventCounts {
+                by_action: vec![EventCount {
+                    key: "relay".to_string(),
+                    count: 1,
+                }],
+                events_with_recipient_hash: 1,
+                distinct_recipient_hashes: 1,
+                duplicate_recipient_hash_events: 0,
+                events_with_message_id_hash: 1,
+                distinct_message_id_hashes: 1,
+                duplicate_message_id_hash_events: 0,
+                events_with_recipient_message_pair: 1,
+                distinct_recipient_message_pairs: 1,
+                duplicate_recipient_message_pair_events: 0,
+                events_with_action_recipient_message_key: 1,
+                distinct_action_recipient_message_keys: 1,
+                duplicate_action_recipient_message_key_events: 0,
+            },
             events: vec![EmailEventSummary {
                 datetime: Some("2026-06-30T00:10:00Z".to_string()),
                 log_type: Some(

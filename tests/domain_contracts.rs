@@ -1,11 +1,11 @@
 use oci_email_delivery_mcp::{
-    tests_support::FixtureBackend, EventFilters, EventsReport, EventsRequest, LedgerRowSummary,
-    LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals,
-    LoggingEnablementPlanRequest, LoggingStatusRequest, MetricsReport, MetricsRequest,
-    OciEmailBackend, OciEmailError, OciEmailStatusReport, SendReadinessRequest, StatusRequest,
-    SuppressionDeltaRequest, SuppressionTotals, SuppressionsReport, SuppressionsRequest,
-    TraceCriteria, TraceMessageReport, TraceMessageRequest, TraceabilityAuditRequest,
-    WatchWindowRequest,
+    tests_support::FixtureBackend, EventCounts, EventFilters, EventsReport, EventsRequest,
+    LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest,
+    LedgerWindowTotals, LoggingEnablementPlanRequest, LoggingStatusRequest, MetricsReport,
+    MetricsRequest, OciEmailBackend, OciEmailError, OciEmailStatusReport, SendReadinessRequest,
+    StatusRequest, SuppressionDeltaRequest, SuppressionTotals, SuppressionsReport,
+    SuppressionsRequest, TraceCriteria, TraceMessageReport, TraceMessageRequest,
+    TraceabilityAuditRequest, WatchWindowRequest,
 };
 
 #[test]
@@ -1399,6 +1399,7 @@ fn empty_events(start_time: &str, end_time: &str, source_domain: Option<String>)
         provider_returned: 0,
         source_domain_matched: 0,
         returned: 0,
+        counts: EventCounts::default(),
         events: Vec::new(),
         findings: Vec::new(),
         evidence: Vec::new(),

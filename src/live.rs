@@ -3,21 +3,22 @@ use crate::{
     error::OciEmailError,
     redact::{email_domain, is_host_token, redact_email, redact_sensitive_text, short_hash},
     response::{
-        EmailDeliveryLogSummary, EmailEventSummary, EventFilters, EventsReport, EventsRequest,
-        Evidence, LedgerRowSummary, LedgerWindowReport, LedgerWindowRequest, LogGroupSummary,
-        LoggingEnablementPlanReport, LoggingEnablementPlanRequest, LoggingStatusReport,
-        LoggingStatusRequest, MetricRates, MetricResult, MetricTotals, MetricsFilters,
-        MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding,
-        RedactedIdentifier, SendReadinessComponents, SendReadinessReport, SendReadinessRequest,
-        SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest, StopThresholds,
-        SuppressionCount, SuppressionDeltaComponents, SuppressionDeltaReport,
-        SuppressionDeltaRequest, SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals,
-        SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
-        TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents,
-        TraceabilityAuditReport, TraceabilityAuditRequest, TraceabilitySummary,
-        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
-        DEFAULT_LOGGING_STATUS_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT,
-        HARD_LOGGING_STATUS_LIMIT, HARD_SUPPRESSION_LIMIT,
+        EmailDeliveryLogSummary, EmailEventSummary, EventCount, EventCounts, EventFilters,
+        EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowReport,
+        LedgerWindowRequest, LogGroupSummary, LoggingEnablementPlanReport,
+        LoggingEnablementPlanRequest, LoggingStatusReport, LoggingStatusRequest, MetricRates,
+        MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
+        OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
+        SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
+        SnapshotArtifactRequest, StatusRequest, StopThresholds, SuppressionCount,
+        SuppressionDeltaComponents, SuppressionDeltaReport, SuppressionDeltaRequest,
+        SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals, SuppressionsReport,
+        SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
+        TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
+        TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
+        WatchWindowRequest, DEFAULT_EVENT_LIMIT, DEFAULT_LOGGING_STATUS_LIMIT,
+        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_LOGGING_STATUS_LIMIT,
+        HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -938,6 +939,7 @@ impl LiveOciEmailBackend {
             .filter(|event| event_matches_source_domain(event, request.source_domain.as_deref()))
             .collect::<Vec<_>>();
         let source_domain_matched = events.len();
+        let counts = event_counts(&events);
         let mut findings = Vec::new();
         if events.is_empty() {
             findings.push(finding(
@@ -980,6 +982,7 @@ impl LiveOciEmailBackend {
             provider_returned,
             source_domain_matched,
             returned: events.len(),
+            counts,
             events,
             findings,
             evidence: vec![Evidence::new(
@@ -2762,6 +2765,72 @@ fn email_event_summary(value: &Value) -> EmailEventSummary {
     }
 }
 
+fn event_counts(events: &[EmailEventSummary]) -> EventCounts {
+    let mut by_action = BTreeMap::<&str, usize>::new();
+    let mut recipient_hashes = BTreeSet::<&str>::new();
+    let mut message_id_hashes = BTreeSet::<&str>::new();
+    let mut recipient_message_pairs = BTreeSet::<(&str, &str)>::new();
+    let mut action_recipient_message_keys = BTreeSet::<(&str, &str, &str)>::new();
+    let mut events_with_recipient_hash = 0;
+    let mut events_with_message_id_hash = 0;
+    let mut events_with_recipient_message_pair = 0;
+    let mut events_with_action_recipient_message_key = 0;
+
+    for event in events {
+        let action = event.action.as_deref().unwrap_or("unknown");
+        *by_action.entry(action).or_default() += 1;
+
+        if let Some(recipient_hash) = event.recipient_hash.as_deref() {
+            events_with_recipient_hash += 1;
+            recipient_hashes.insert(recipient_hash);
+        }
+        if let Some(message_id_hash) = event.message_id_hash.as_deref() {
+            events_with_message_id_hash += 1;
+            message_id_hashes.insert(message_id_hash);
+        }
+        if let (Some(recipient_hash), Some(message_id_hash)) = (
+            event.recipient_hash.as_deref(),
+            event.message_id_hash.as_deref(),
+        ) {
+            events_with_recipient_message_pair += 1;
+            recipient_message_pairs.insert((recipient_hash, message_id_hash));
+            events_with_action_recipient_message_key += 1;
+            action_recipient_message_keys.insert((action, recipient_hash, message_id_hash));
+        }
+    }
+
+    let distinct_recipient_hashes = recipient_hashes.len();
+    let distinct_message_id_hashes = message_id_hashes.len();
+    let distinct_recipient_message_pairs = recipient_message_pairs.len();
+    let distinct_action_recipient_message_keys = action_recipient_message_keys.len();
+
+    EventCounts {
+        by_action: by_action
+            .into_iter()
+            .map(|(key, count)| EventCount {
+                key: key.to_string(),
+                count,
+            })
+            .collect(),
+        events_with_recipient_hash,
+        distinct_recipient_hashes,
+        duplicate_recipient_hash_events: events_with_recipient_hash
+            .saturating_sub(distinct_recipient_hashes),
+        events_with_message_id_hash,
+        distinct_message_id_hashes,
+        duplicate_message_id_hash_events: events_with_message_id_hash
+            .saturating_sub(distinct_message_id_hashes),
+        events_with_recipient_message_pair,
+        distinct_recipient_message_pairs,
+        duplicate_recipient_message_pair_events: events_with_recipient_message_pair
+            .saturating_sub(distinct_recipient_message_pairs),
+        events_with_action_recipient_message_key,
+        distinct_action_recipient_message_keys,
+        duplicate_action_recipient_message_key_events: events_with_action_recipient_message_key
+            .saturating_sub(distinct_action_recipient_message_keys),
+    }
+}
+
 fn summarize_smtp_status(value: &str) -> String {
     let redacted = redact_sensitive_text(value);
     let without_diagnostic = redacted
@@ -3489,6 +3558,12 @@ mod tests {
         assert_eq!(report.provider_returned, 2);
         assert_eq!(report.source_domain_matched, 1);
         assert_eq!(report.returned, 1);
+        assert_eq!(report.counts.events_with_recipient_hash, 1);
+        assert_eq!(report.counts.distinct_recipient_hashes, 1);
+        assert_eq!(report.counts.events_with_message_id_hash, 1);
+        assert_eq!(report.counts.distinct_message_id_hashes, 1);
+        assert_eq!(report.counts.events_with_action_recipient_message_key, 1);
+        assert_eq!(report.counts.distinct_action_recipient_message_keys, 1);
         assert_eq!(
             report.events[0].source_domain.as_deref(),
             Some("sender.example")
@@ -3500,6 +3575,91 @@ mod tests {
         assert!(!payload.contains("person@recipient.example"));
         assert!(!payload.contains("sender@sender.example"));
         assert!(!payload.contains("other@other.example"));
+    }
+
+    #[test]
+    fn event_search_reports_distinct_and_duplicate_redacted_event_keys() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureDuplicateComplaintEventSearchRunner),
+        );
+
+        let report = backend
+            .events(&EventsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                action: Some("complaint".to_string()),
+                message_id: None,
+                header_name: None,
+                header_value: None,
+                receiving_domain: None,
+                source_domain: Some("sender.example".to_string()),
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .expect("events");
+        let payload = serde_json::to_string(&report).expect("serialize events");
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.provider_returned, 3);
+        assert_eq!(report.source_domain_matched, 3);
+        assert_eq!(report.returned, 3);
+        assert_eq!(report.counts.by_action.len(), 1);
+        assert_eq!(report.counts.by_action[0].key, "complaint");
+        assert_eq!(report.counts.by_action[0].count, 3);
+        assert_eq!(report.counts.events_with_recipient_hash, 3);
+        assert_eq!(report.counts.distinct_recipient_hashes, 2);
+        assert_eq!(report.counts.duplicate_recipient_hash_events, 1);
+        assert_eq!(report.counts.events_with_message_id_hash, 3);
+        assert_eq!(report.counts.distinct_message_id_hashes, 2);
+        assert_eq!(report.counts.duplicate_message_id_hash_events, 1);
+        assert_eq!(report.counts.events_with_recipient_message_pair, 3);
+        assert_eq!(report.counts.distinct_recipient_message_pairs, 2);
+        assert_eq!(report.counts.duplicate_recipient_message_pair_events, 1);
+        assert_eq!(report.counts.events_with_action_recipient_message_key, 3);
+        assert_eq!(report.counts.distinct_action_recipient_message_keys, 2);
+        assert_eq!(
+            report.counts.duplicate_action_recipient_message_key_events,
+            1
+        );
+        assert!(!payload.contains("first@recipient.example"));
+        assert!(!payload.contains("second@recipient.example"));
+        assert!(!payload.contains("message-one"));
+        assert!(!payload.contains("message-two"));
+    }
+
+    #[test]
+    fn event_counts_keep_mixed_actions_separate_for_same_recipient_message() {
+        let base_event = EmailEventSummary {
+            datetime: None,
+            log_type: None,
+            action: Some("accept".to_string()),
+            source_domain: None,
+            receiving_domain: None,
+            recipient_domain: Some("recipient.example".to_string()),
+            recipient_hash: Some("recipient-hash".to_string()),
+            message_id_hash: Some("message-hash".to_string()),
+            error_type: None,
+            bounce_category: None,
+            smtp_status: None,
+            raw_payload_returned: false,
+        };
+        let mut relay_event = base_event.clone();
+        relay_event.action = Some("relay".to_string());
+
+        let counts = event_counts(&[base_event, relay_event.clone(), relay_event]);
+
+        assert_eq!(counts.by_action.len(), 2);
+        assert_eq!(counts.by_action[0].key, "accept");
+        assert_eq!(counts.by_action[0].count, 1);
+        assert_eq!(counts.by_action[1].key, "relay");
+        assert_eq!(counts.by_action[1].count, 2);
+        assert_eq!(counts.events_with_recipient_message_pair, 3);
+        assert_eq!(counts.distinct_recipient_message_pairs, 1);
+        assert_eq!(counts.duplicate_recipient_message_pair_events, 2);
+        assert_eq!(counts.events_with_action_recipient_message_key, 3);
+        assert_eq!(counts.distinct_action_recipient_message_keys, 2);
+        assert_eq!(counts.duplicate_action_recipient_message_key_events, 1);
     }
 
     #[test]
@@ -4057,6 +4217,71 @@ mod tests {
                                             "action": "accept",
                                             "sender": "other@other.example",
                                             "recipient": "other-person@recipient.example",
+                                            "messageId": "message-two"
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }));
+            }
+            panic!("unexpected OCI command: {label}")
+        }
+    }
+
+    struct FixtureDuplicateComplaintEventSearchRunner;
+
+    impl OciCliRunner for FixtureDuplicateComplaintEventSearchRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            let label = command_label(args);
+            if label.starts_with("logging-search search-logs") {
+                return Ok(serde_json::json!({
+                    "data": {
+                        "results": [
+                            {
+                                "datetime": "2026-06-30T00:10:00Z",
+                                "data": {
+                                    "logContent": {
+                                        "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                        "source": "oci.emaildelivery",
+                                        "time": "2026-06-30T00:10:00Z",
+                                        "data": {
+                                            "action": "complaint",
+                                            "sender": "sender@sender.example",
+                                            "recipient": "first@recipient.example",
+                                            "messageId": "message-one"
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                "datetime": "2026-06-30T00:11:00Z",
+                                "data": {
+                                    "logContent": {
+                                        "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                        "source": "oci.emaildelivery",
+                                        "time": "2026-06-30T00:11:00Z",
+                                        "data": {
+                                            "action": "complaint",
+                                            "sender": "sender@sender.example",
+                                            "recipient": "first@recipient.example",
+                                            "messageId": "message-one"
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                "datetime": "2026-06-30T00:12:00Z",
+                                "data": {
+                                    "logContent": {
+                                        "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                        "source": "oci.emaildelivery",
+                                        "time": "2026-06-30T00:12:00Z",
+                                        "data": {
+                                            "action": "complaint",
+                                            "sender": "sender@sender.example",
+                                            "recipient": "second@recipient.example",
                                             "messageId": "message-two"
                                         }
                                     }
