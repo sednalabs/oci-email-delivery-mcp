@@ -429,6 +429,14 @@ Check:
 - compare `provider_returned`, `source_domain_matched`, and `returned` to
   separate no provider rows from source-domain post-filter mismatch; when no
   `source_domain` is requested, `source_domain_matched` equals `returned`.
+- use `counts.by_action` for event totals by action, then compare
+  `counts.distinct_recipient_hashes`,
+  `counts.distinct_message_id_hashes`,
+  `counts.distinct_recipient_message_pairs`, and
+  `counts.distinct_action_recipient_message_keys` against `returned` before
+  describing distinct recipient or message outcomes. Duplicate counts mean
+  repeated log records were seen for an already-observed redacted key, not
+  necessarily additional recipients.
 - recipient values are domains and hashes only;
 - raw provider payload is not returned;
 - zero rows in an active send window pauses expansion until logging is proven.

@@ -113,6 +113,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   When no `source_domain` is requested, `source_domain_matched` equals the
   returned event count. SMTP diagnostic blobs are summarized and capped so
   receipts keep bounce context without returning verbose provider diagnostics.
+  The `counts` object summarizes returned events by action and reports
+  distinct versus duplicate redacted recipient, message, recipient/message, and
+  action/recipient/message keys. Use those counts to avoid treating repeated
+  log records for the same recipient/message as distinct recipient outcomes.
 - `oci_email_suppressions` fetches all pages for totals and timestamp bounds
   with a provider-friendly page size while returning only a bounded redacted
   sample in `suppressions`. Use `total_matched` and `count_state` for counts;
