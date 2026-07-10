@@ -44,12 +44,23 @@ promotion gate after the reviewed commit is selected.
 1. Dispatch or tag-trigger `release-artifact` for the reviewed commit.
 2. Wait for the run to finish successfully.
 3. Download `oci-email-delivery-mcp-linux-x86_64`.
-4. Confirm the artifact contains the Linux archive, binary SHA-256 sidecar,
+4. Confirm the artifact contains the Linux archive, archive SHA-256 sidecar,
    and `oci-email-delivery-mcp-linux-x86_64.cdx.json` CycloneDX SBOM.
-5. Verify the SHA-256 sidecar against the binary extracted from the archive.
+5. Verify the SHA-256 sidecar against the downloaded archive before extracting
+   the binary.
 6. For a manual dispatch from `main`, verify both the provenance and SBOM
-   attestations for the Linux archive with `gh attestation verify`. Tag builds
-   intentionally remain unattested.
+   attestations for the Linux archive. Tag builds intentionally remain
+   unattested:
+
+   ```bash
+   gh attestation verify \
+     oci-email-delivery-mcp-linux-x86_64.tar.gz \
+     --repo sednalabs/oci-email-delivery-mcp
+   gh attestation verify \
+     oci-email-delivery-mcp-linux-x86_64.tar.gz \
+     --repo sednalabs/oci-email-delivery-mcp \
+     --predicate-type https://cyclonedx.org/bom
+   ```
 7. Install the binary to the intended local MCP binary path.
 8. Configure the MCP alias with the intended OCI profile, region, compartment,
    hard-bounce thresholds, private snapshot root, and private ledger path if

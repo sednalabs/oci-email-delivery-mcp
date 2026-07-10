@@ -45,10 +45,10 @@ jobs:
           cp target/release/oci-email-delivery-mcp dist/oci-email-delivery-mcp-linux-x86_64
           (
             cd dist
-            sha256sum oci-email-delivery-mcp-linux-x86_64 > oci-email-delivery-mcp-linux-x86_64.sha256
             tar -czf oci-email-delivery-mcp-linux-x86_64.tar.gz \
-              oci-email-delivery-mcp-linux-x86_64 \
-              oci-email-delivery-mcp-linux-x86_64.sha256
+              oci-email-delivery-mcp-linux-x86_64
+            sha256sum oci-email-delivery-mcp-linux-x86_64.tar.gz \
+              > oci-email-delivery-mcp-linux-x86_64.tar.gz.sha256
           )
 
       - name: Generate Linux archive SBOM
@@ -67,18 +67,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          (
+            cd dist
+            sha256sum --check oci-email-delivery-mcp-linux-x86_64.tar.gz.sha256
+          )
           printf '%s\n' \
             oci-email-delivery-mcp-linux-x86_64 \
-            oci-email-delivery-mcp-linux-x86_64.sha256 \
             | sort > expected-archive-files.txt
           tar -tzf dist/oci-email-delivery-mcp-linux-x86_64.tar.gz \
             | sort > actual-archive-files.txt
           diff -u expected-archive-files.txt actual-archive-files.txt
 
-          (
-            cd dist
-            sha256sum --check oci-email-delivery-mcp-linux-x86_64.sha256
-          )
           jq -e '.bomFormat == "CycloneDX"' \
             dist/oci-email-delivery-mcp-linux-x86_64.cdx.json >/dev/null
 
@@ -91,7 +90,7 @@ jobs:
           retention-days: 14
           path: |
             dist/oci-email-delivery-mcp-linux-x86_64.tar.gz
-            dist/oci-email-delivery-mcp-linux-x86_64.sha256
+            dist/oci-email-delivery-mcp-linux-x86_64.tar.gz.sha256
             dist/oci-email-delivery-mcp-linux-x86_64.cdx.json
 
   attest-main-dispatch:
@@ -120,16 +119,19 @@ jobs:
 
           printf '%s\n' \
             oci-email-delivery-mcp-linux-x86_64.cdx.json \
-            oci-email-delivery-mcp-linux-x86_64.sha256 \
             oci-email-delivery-mcp-linux-x86_64.tar.gz \
+            oci-email-delivery-mcp-linux-x86_64.tar.gz.sha256 \
             | sort > expected-artifact-files.txt
           find dist -maxdepth 1 -type f -printf '%f\n' \
             | sort > actual-artifact-files.txt
           diff -u expected-artifact-files.txt actual-artifact-files.txt
 
+          (
+            cd dist
+            sha256sum --check oci-email-delivery-mcp-linux-x86_64.tar.gz.sha256
+          )
           printf '%s\n' \
             oci-email-delivery-mcp-linux-x86_64 \
-            oci-email-delivery-mcp-linux-x86_64.sha256 \
             | sort > expected-archive-files.txt
           tar -tzf dist/oci-email-delivery-mcp-linux-x86_64.tar.gz \
             | sort > actual-archive-files.txt
@@ -137,13 +139,6 @@ jobs:
 
           mkdir extracted
           tar -xzf dist/oci-email-delivery-mcp-linux-x86_64.tar.gz -C extracted
-          cmp \
-            dist/oci-email-delivery-mcp-linux-x86_64.sha256 \
-            extracted/oci-email-delivery-mcp-linux-x86_64.sha256
-          (
-            cd extracted
-            sha256sum --check oci-email-delivery-mcp-linux-x86_64.sha256
-          )
           jq -e '.bomFormat == "CycloneDX"' \
             dist/oci-email-delivery-mcp-linux-x86_64.cdx.json >/dev/null
 
