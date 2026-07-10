@@ -30,12 +30,8 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Download Syft
-        id: syft
-        # anchore/sbom-action/download-syft v0.24.0
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
-        with:
-          syft-version: v1.42.3
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked --version 0.5.9 cargo-cyclonedx
 
       - name: Package artifact
         shell: bash
@@ -51,16 +47,20 @@ jobs:
               > oci-email-delivery-mcp-linux-x86_64.tar.gz.sha256
           )
 
-      - name: Generate Linux archive SBOM
+      - name: Generate Linux dependency SBOM
         shell: bash
         run: |
           set -euo pipefail
 
-          "${{ steps.syft.outputs.cmd }}" \
-            dist/oci-email-delivery-mcp-linux-x86_64.tar.gz \
-            --source-name oci-email-delivery-mcp-linux-x86_64 \
-            --source-version "${GITHUB_SHA}" \
-            -o cyclonedx-json=dist/oci-email-delivery-mcp-linux-x86_64.cdx.json
+          cargo cyclonedx \
+            --format json \
+            --spec-version 1.5 \
+            --describe binaries \
+            --no-build-deps \
+            --target x86_64-unknown-linux-gnu
+          mv \
+            oci-email-delivery-mcp_bin.cdx.json \
+            dist/oci-email-delivery-mcp-linux-x86_64.cdx.json
 
       - name: Verify release artifact set
         shell: bash
@@ -78,8 +78,31 @@ jobs:
             | sort > actual-archive-files.txt
           diff -u expected-archive-files.txt actual-archive-files.txt
 
-          jq -e '.bomFormat == "CycloneDX"' \
-            dist/oci-email-delivery-mcp-linux-x86_64.cdx.json >/dev/null
+          sbom_path=dist/oci-email-delivery-mcp-linux-x86_64.cdx.json
+          jq -e '
+            .bomFormat == "CycloneDX"
+            and .specVersion == "1.5"
+            and (.components | type == "array" and length > 0)
+            and (.dependencies | type == "array" and length > 0)
+            and (
+              .metadata.component["bom-ref"] as $root
+              | ($root | type == "string" and length > 0)
+              and any(
+                .dependencies[];
+                .ref == $root
+                and (.dependsOn | type == "array" and length > 0)
+              )
+            )
+          ' "$sbom_path" >/dev/null
+          jq -r '
+            .metadata.component["bom-ref"] as $root
+            | "SBOM components=\(.components | length) "
+              + "dependencies=\(.dependencies | length) "
+              + "root_dependencies=\(
+                  [.dependencies[] | select(.ref == $root) | .dependsOn[]]
+                  | length
+                )"
+          ' "$sbom_path"
 
       - name: Upload release artifact
         # actions/upload-artifact v4
@@ -139,8 +162,22 @@ jobs:
 
           mkdir extracted
           tar -xzf dist/oci-email-delivery-mcp-linux-x86_64.tar.gz -C extracted
-          jq -e '.bomFormat == "CycloneDX"' \
-            dist/oci-email-delivery-mcp-linux-x86_64.cdx.json >/dev/null
+          sbom_path=dist/oci-email-delivery-mcp-linux-x86_64.cdx.json
+          jq -e '
+            .bomFormat == "CycloneDX"
+            and .specVersion == "1.5"
+            and (.components | type == "array" and length > 0)
+            and (.dependencies | type == "array" and length > 0)
+            and (
+              .metadata.component["bom-ref"] as $root
+              | ($root | type == "string" and length > 0)
+              and any(
+                .dependencies[];
+                .ref == $root
+                and (.dependsOn | type == "array" and length > 0)
+              )
+            )
+          ' "$sbom_path" >/dev/null
 
       - name: Attest release provenance
         # actions/attest v4.1.1
