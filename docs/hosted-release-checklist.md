@@ -45,7 +45,10 @@ promotion gate after the reviewed commit is selected.
 2. Wait for the run to finish successfully.
 3. Download `oci-email-delivery-mcp-linux-x86_64`.
 4. Confirm the artifact contains the Linux archive, archive SHA-256 sidecar,
-   and `oci-email-delivery-mcp-linux-x86_64.cdx.json` CycloneDX SBOM.
+   and `oci-email-delivery-mcp-linux-x86_64.cdx.json` CycloneDX 1.5 Cargo
+   dependency SBOM for the Linux binary target. The release workflow rejects
+   empty component lists and disconnected root dependency graphs before
+   upload or attestation.
 5. Verify the SHA-256 sidecar against the downloaded archive before extracting
    the binary.
 6. For a manual dispatch from `main`, verify both the provenance and SBOM
