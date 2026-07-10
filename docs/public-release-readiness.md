@@ -37,9 +37,12 @@ explain its core value.
   scanning, and Dependabot update configuration. The coverage upload is
   intentionally fail-closed until GitHub Code Quality is enabled for the
   repository or organization.
-- A workflow-dispatch release artifact lane exists for a Linux x86_64 binary
-  tarball plus SHA-256 sidecar. Operational installs must use that hosted
-  artifact after checksum verification, not a local EC2 build.
+- A release artifact lane produces a Linux x86_64 binary tarball, archive
+  SHA-256 sidecar, and archive-scanned CycloneDX SBOM. Manual dispatches from
+  `main` also produce provenance and SBOM attestations for the tarball; tag
+  builds intentionally remain unattested. Operational installs must use the
+  hosted artifact after checksum and applicable attestation verification, not
+  a local EC2 build.
 - The adapter includes composed `oci_email_watch_window` and
   `oci_email_send_readiness` receipts so operators can inspect one UTC window
   with resource-scoped logging-status proof and, when a seed/cohort has
@@ -108,4 +111,6 @@ explain its core value.
 - `DevSkim` and `OSV-Scanner`: upload SARIF/dependency vulnerability evidence
   to GitHub code scanning.
 - `release-artifact`: `cargo build --release --locked`, packaged Linux x86_64
-  binary, and SHA-256 sidecar artifact.
+  binary, archive SHA-256 sidecar, and archive-scanned CycloneDX SBOM. A
+  separate job attests provenance and the SBOM only for manual dispatches from
+  `main`.
