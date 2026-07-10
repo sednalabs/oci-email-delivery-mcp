@@ -44,13 +44,18 @@ promotion gate after the reviewed commit is selected.
 1. Dispatch or tag-trigger `release-artifact` for the reviewed commit.
 2. Wait for the run to finish successfully.
 3. Download `oci-email-delivery-mcp-linux-x86_64`.
-4. Verify the SHA-256 sidecar against the downloaded binary.
-5. Install the binary to the intended local MCP binary path.
-6. Configure the MCP alias with the intended OCI profile, region, compartment,
+4. Confirm the artifact contains the Linux archive, binary SHA-256 sidecar,
+   and `oci-email-delivery-mcp-linux-x86_64.cdx.json` CycloneDX SBOM.
+5. Verify the SHA-256 sidecar against the binary extracted from the archive.
+6. For a manual dispatch from `main`, verify both the provenance and SBOM
+   attestations for the Linux archive with `gh attestation verify`. Tag builds
+   intentionally remain unattested.
+7. Install the binary to the intended local MCP binary path.
+8. Configure the MCP alias with the intended OCI profile, region, compartment,
    hard-bounce thresholds, private snapshot root, and private ledger path if
    send-ledger reconciliation is required on that host.
-7. Restart the MCP client process after changing the binary or environment.
-8. Verify the configured alias initializes and lists exactly:
+9. Restart the MCP client process after changing the binary or environment.
+10. Verify the configured alias initializes and lists exactly:
    `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`,
    `oci_email_events`, `oci_email_logging_status`,
    `oci_email_logging_enablement_plan`, `oci_email_trace_message`,
@@ -59,8 +64,8 @@ promotion gate after the reviewed commit is selected.
    `oci_email_send_readiness`, `oci_email_traceability_audit`, and
    `oci_email_monitoring_snapshot_artifact`.
 
-Do not call the adapter released until the hosted artifact checksum and
-configured alias startup proof are both recorded.
+Do not call the adapter released until the hosted artifact checksum, applicable
+main-dispatch attestations, and configured alias startup proof are recorded.
 
 ## GitHub Repository Settings
 
