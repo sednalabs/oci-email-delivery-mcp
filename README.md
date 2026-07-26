@@ -112,9 +112,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   evidence and blocks the component rather than being reshaped as an empty
   result. Every returned row must contain a recognized OutboundAccepted or
   OutboundRelayed record with an object payload, non-empty action, and valid
-  UTC timestamp; an unrecognized row makes the event read unavailable instead
-  of contributing synthetic evidence. Forward-compatible unknown actions are
-  summarized as `unknown` rather than copied from the provider payload.
+  UTC timestamp inside the requested half-open window; an unrecognized or
+  out-of-window row makes the event read unavailable instead of contributing
+  synthetic evidence. Forward-compatible unknown actions are summarized as
+  `unknown` rather than copied from the provider payload, and make the event
+  evidence partial so they cannot authorize exact traceability.
   `provider_returned` and `source_domain_matched` distinguish no provider
   events from post-summary source-domain mismatch without returning raw events.
   When no `source_domain` is requested, `source_domain_matched` equals the

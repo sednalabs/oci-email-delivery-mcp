@@ -462,10 +462,12 @@ Check:
 - expected accepted/relayed/bounce/suppression event types appear;
 - every provider result was recognized as an OutboundAccepted or
   OutboundRelayed record with an object payload, non-empty action, and valid UTC
-  timestamp; one unrecognized or filter-mismatching result makes the component
-  unavailable rather than contributing to event counts;
+  timestamp inside the requested half-open window; one unrecognized,
+  out-of-window, or filter-mismatching result makes the component unavailable
+  rather than contributing to event counts;
 - forward-compatible unknown provider actions appear only as `unknown`; no raw
-  action text is copied into the receipt;
+  action text is copied into the receipt, and their presence makes event
+  evidence partial so it cannot support exact traceability;
 - `source_domain` is matched after the MCP parses redacted event summaries,
   so an empty result means no matching summarized event evidence was found; it
   does not prove the provider emitted no events for the broader compartment.

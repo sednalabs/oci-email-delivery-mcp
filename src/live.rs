@@ -908,8 +908,7 @@ impl LiveOciEmailBackend {
     }
 
     fn events_inner(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
-        validate_time(&request.start_time, "start_time")?;
-        validate_time(&request.end_time, "end_time")?;
+        validate_utc_window(&request.start_time, &request.end_time)?;
         validate_event_request(request)?;
         let compartment_id = self.compartment_id(request.compartment_id.as_deref())?;
         let limit = cap_limit(
@@ -957,6 +956,16 @@ impl LiveOciEmailBackend {
                 "warning",
                 "no_log_events_returned",
                 "No Email Delivery log events matched this window/filter; this does not prove logging is enabled.",
+            ));
+        }
+        if events
+            .iter()
+            .any(|event| event.action.as_deref() == Some("unknown"))
+        {
+            findings.push(finding(
+                "warning",
+                "unknown_event_action",
+                "One or more Email Delivery events used a forward-compatible action outside the recognized summary set; the action was redacted and exact traceability is not proven.",
             ));
         }
         if provider_returned > 0 && request.source_domain.is_some() && source_domain_matched == 0 {
@@ -2179,10 +2188,12 @@ fn events_evidence_state(component: &ToolCallOutcome<EventsReport>) -> String {
         Some(report)
             if component.status == "blocked"
                 || report.evidence.iter().any(|item| item.rows_capped)
-                || report
-                    .findings
-                    .iter()
-                    .any(|finding| finding.code == "event_results_capped") =>
+                || report.findings.iter().any(|finding| {
+                    matches!(
+                        finding.code.as_str(),
+                        "event_results_capped" | "unknown_event_action"
+                    )
+                }) =>
         {
             "partial".to_string()
         }
@@ -2198,11 +2209,12 @@ fn trace_evidence_state(watch_report: &WatchWindowReport) -> String {
             Some(report)
                 if trace.status == "blocked"
                     || report.events.evidence.iter().any(|item| item.rows_capped)
-                    || report
-                        .events
-                        .findings
-                        .iter()
-                        .any(|finding| finding.code == "event_results_capped") =>
+                    || report.events.findings.iter().any(|finding| {
+                        matches!(
+                            finding.code.as_str(),
+                            "event_results_capped" | "unknown_event_action"
+                        )
+                    }) =>
             {
                 "partial".to_string()
             }
@@ -3106,6 +3118,24 @@ fn validate_returned_event_matches_request(
     event: &EmailEventSummary,
     request: &EventsRequest,
 ) -> Result<(), OciEmailError> {
+    let event_time = event
+        .datetime
+        .as_deref()
+        .and_then(|value| parse_strict_utc_time(value, "event datetime").ok())
+        .ok_or_else(|| {
+            OciEmailError::Config(
+                "OCI Logging Search returned an Email Delivery event without a valid timestamp; event evidence is unavailable."
+                    .to_string(),
+            )
+        })?;
+    let start_time = parse_strict_utc_time(&request.start_time, "start_time")?;
+    let end_time = parse_strict_utc_time(&request.end_time, "end_time")?;
+    if event_time < start_time || event_time >= end_time {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned an Email Delivery event outside the requested UTC window; event evidence is unavailable."
+                .to_string(),
+        ));
+    }
     let matches = request
         .action
         .as_ref()
@@ -4072,6 +4102,104 @@ mod tests {
 
         assert_eq!(error.code(), "configuration_error");
         assert!(error.to_string().contains("did not match"));
+    }
+
+    #[test]
+    fn event_search_rejects_out_of_window_provider_events() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T01:00:00Z",
+                        "data": {
+                            "logContent": {
+                                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                "source": "sender.example",
+                                "time": "2026-06-30T01:00:00Z",
+                                "data": {
+                                    "action": "accept",
+                                    "recipient": "person@recipient.example",
+                                    "messageId": "Trace-AbC"
+                                }
+                            }
+                        }
+                    }]
+                }
+            }))),
+        );
+
+        let error = backend
+            .events(&EventsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                action: None,
+                message_id: None,
+                header_name: None,
+                header_value: None,
+                receiving_domain: None,
+                source_domain: None,
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .expect_err("half-open event window must reject the end boundary");
+
+        assert_eq!(error.code(), "configuration_error");
+        assert!(error
+            .to_string()
+            .contains("outside the requested UTC window"));
+    }
+
+    #[test]
+    fn unknown_event_actions_are_safe_partial_evidence() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": {
+                            "logContent": {
+                                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                                "source": "sender.example",
+                                "time": "2026-06-30T00:10:00Z",
+                                "data": {
+                                    "action": "person@example.test",
+                                    "recipient": "person@recipient.example",
+                                    "messageId": "Trace-AbC"
+                                }
+                            }
+                        }
+                    }]
+                }
+            }))),
+        );
+
+        let report = backend
+            .events(&EventsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                action: None,
+                message_id: None,
+                header_name: None,
+                header_value: None,
+                receiving_domain: None,
+                source_domain: None,
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .expect("forward-compatible unknown action event report");
+        let outcome = ToolCallOutcome::ok(report.status.clone(), report.clone());
+        let payload = serde_json::to_string(&report).expect("serialize event report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.events[0].action.as_deref(), Some("unknown"));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "unknown_event_action"));
+        assert_eq!(events_evidence_state(&outcome), "partial");
+        assert!(!payload.contains("person@example.test"));
     }
 
     #[test]
