@@ -227,9 +227,12 @@ are `complete`, `partial`, or `unavailable`; `trace_evidence_state` also has
 `not_requested`. `log_events_returned` is populated only for complete combined
 general-event plus requested-trace evidence; a successful uncapped empty read
 is `0` even when the nested report carries the expected no-events warning, but
-capped, partial, or unavailable combined evidence is `null`. Ledger counts/caps/overlap
-scalars are `null` when the ledger is unavailable and otherwise retain the
-observed `0`/`false`/`true` value. Treat unavailable or partial evidence codes,
+capped, partial, or unavailable combined evidence is `null`. A successfully
+read, uncapped, valid zero-row ledger is `complete` with zero/false summary
+values despite its expected no-rows warning; capped, invalid, malformed, or
+missing-key ledger evidence is `partial`. Ledger counts/caps/overlap scalars
+are `null` when the ledger is unavailable and otherwise retain the observed
+`0`/`false`/`true` value. Treat unavailable or partial evidence codes,
 including `traceability_provider_evidence_unavailable`, as stop codes rather
 than successful empty provider results.
 

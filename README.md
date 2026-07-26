@@ -106,8 +106,11 @@ contract tests with an OCI profile configured. The live smoke must not use
 - `oci_email_events` keeps the provider query scoped to Email Delivery event
   types plus exact action/message/header/recipient-domain filters, then applies
   `source_domain` after redacted event summaries are parsed. This avoids hiding
-  valid events if OCI varies the top-level log `source` field; an empty result
-  with `source_domain` is still missing event evidence, not proof of no sends.
+  valid events if OCI varies the top-level log `source` field; a successful
+  JSON empty result with `source_domain` is still missing event evidence, not
+  proof of no sends. Blank or JSON-null Logging Search output is unavailable
+  evidence and blocks the component rather than being reshaped as an empty
+  result.
   `provider_returned` and `source_domain_matched` distinguish no provider
   events from post-summary source-domain mismatch without returning raw events.
   When no `source_domain` is requested, `source_domain_matched` equals the

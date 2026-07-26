@@ -928,6 +928,12 @@ impl LiveOciEmailBackend {
             limit.to_string(),
         ];
         let value = self.runner.run_optional_json(&args)?;
+        if value.is_null() {
+            return Err(OciEmailError::Config(
+                "OCI Logging Search returned empty or null output; event evidence is unavailable."
+                    .to_string(),
+            ));
+        }
         let raw_events = log_results(&value)
             .into_iter()
             .map(email_event_summary)
@@ -2206,7 +2212,19 @@ fn trace_evidence_state(watch_report: &WatchWindowReport) -> String {
 }
 
 fn ledger_evidence_state(ledger: &ToolCallOutcome<LedgerWindowReport>) -> String {
-    component_evidence_state(ledger)
+    match ledger.report.as_ref() {
+        None => "unavailable".to_string(),
+        Some(report)
+            if ledger.status == "blocked"
+                || report.totals.invalid_rows > 0
+                || report.totals.rows_capped
+                || report.totals.missing_trace_key_count > 0
+                || report.totals.missing_recipient_key_count > 0 =>
+        {
+            "partial".to_string()
+        }
+        Some(_) => "complete".to_string(),
+    }
 }
 
 fn log_evidence_state(watch_report: &WatchWindowReport) -> String {
@@ -3386,6 +3404,7 @@ fn rows_may_be_capped(returned: usize, limit: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, path::PathBuf};
 
     #[test]
     fn metric_query_filters_dimensions() {
@@ -3756,6 +3775,99 @@ mod tests {
         assert!(!payload.contains("person@recipient.example"));
         assert!(!payload.contains("sender@sender.example"));
         assert!(!payload.contains("other@other.example"));
+    }
+
+    #[test]
+    fn event_search_treats_null_output_as_unavailable_but_json_empty_as_complete() {
+        let request = EventsRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            action: None,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            receiving_domain: None,
+            source_domain: Some("sender.example".to_string()),
+            limit: Some(20),
+            compartment_id: None,
+        };
+        let unavailable = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(Value::Null)),
+        )
+        .events(&request)
+        .expect_err("null provider output must not become an empty event report");
+        assert_eq!(unavailable.code(), "configuration_error");
+
+        let empty = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": { "results": [] }
+            }))),
+        )
+        .events(&request)
+        .expect("a successful JSON empty result is an event report");
+        assert_eq!(empty.status, "degraded");
+        assert_eq!(empty.returned, 0);
+        assert!(empty
+            .findings
+            .iter()
+            .any(|finding| finding.code == "no_log_events_returned"));
+        assert_eq!(
+            events_evidence_state(&ToolCallOutcome::ok(empty.status.clone(), empty)),
+            "complete"
+        );
+    }
+
+    #[test]
+    fn ledger_evidence_state_uses_real_uncapped_ledger_semantics() {
+        let path = PathBuf::from("target/oci-email-live-tests/evidence-state.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        let config = OciEmailConfig {
+            ledger_path: Some(path.clone()),
+            ..test_config()
+        };
+        let request = LedgerWindowRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            sender_domain: None,
+            campaign_id: None,
+            batch_id: None,
+            message_id: None,
+            correlation_id: None,
+            limit: Some(1),
+        };
+        let state_for = |contents: &str| {
+            fs::write(&path, contents).expect("write ledger fixture");
+            let report =
+                crate::ledger::ledger_window(&config, &request).expect("real ledger report");
+            let status = report.status.clone();
+            ledger_evidence_state(&ToolCallOutcome::ok(status, report))
+        };
+
+        let empty_state = state_for(
+            "{\"submitted_at\":\"2026-06-29T00:10:00Z\",\"recipient\":\"old@example.net\",\"message_id\":\"old-message\"}\n",
+        );
+        assert_eq!(empty_state, "complete");
+        assert_eq!(state_for("not-json\n"), "partial");
+        assert_eq!(
+            state_for(
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"sender_domain\":\"example.com\"}\n",
+            ),
+            "partial"
+        );
+        assert_eq!(
+            state_for(
+                concat!(
+                    "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"recipient\":\"one@example.net\",\"message_id\":\"one\"}\n",
+                    "{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"two@example.net\",\"message_id\":\"two\"}\n"
+                ),
+            ),
+            "partial"
+        );
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -4406,6 +4518,18 @@ mod tests {
                         ]
                     }
                 }));
+            }
+            panic!("unexpected OCI command: {label}")
+        }
+    }
+
+    struct FixtureEventOutputRunner(Value);
+
+    impl OciCliRunner for FixtureEventOutputRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            let label = command_label(args);
+            if label.starts_with("logging-search search-logs") {
+                return Ok(self.0.clone());
             }
             panic!("unexpected OCI command: {label}")
         }
