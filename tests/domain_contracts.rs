@@ -1223,6 +1223,97 @@ fn traceability_audit_requires_same_ledger_row_for_trace_and_recipient_overlap()
 }
 
 #[test]
+fn traceability_audit_requires_exactly_one_matching_ledger_row() {
+    for expected_ledger_rows in [None, Some(1), Some(2)] {
+        let backend = CardinalityBackend {
+            duplicate_ledger_row: true,
+        };
+        let report = backend
+            .traceability_audit(&TraceabilityAuditRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                interval: Some("1h".to_string()),
+                resource_domain: Some("example.com".to_string()),
+                source_domain: Some("example.com".to_string()),
+                resource_id: None,
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: None,
+                batch_id: None,
+                expected_ledger_rows,
+                message_id: Some("message-token-789".to_string()),
+                header_name: None,
+                header_value: None,
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .unwrap_or_else(|err| panic!("duplicate ledger-row audit: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.decision, "remain_paused");
+        assert!(!report.exact_message_traceable);
+        assert!(report.aggregate_only);
+        assert_eq!(report.summary.ledger_rows_matched, Some(2));
+        assert_eq!(report.summary.single_ledger_row_overlap, Some(true));
+        assert_eq!(
+            report
+                .components
+                .watch_window
+                .report
+                .as_ref()
+                .and_then(|watch| watch.components.trace.as_ref())
+                .and_then(|trace| trace.report.as_ref())
+                .map(|trace| trace.events.returned),
+            Some(2)
+        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "traceability_multiple_ledger_rows"));
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "traceability_expected_ledger_rows_mismatch"),
+            expected_ledger_rows == Some(1)
+        );
+    }
+}
+
+#[test]
+fn traceability_audit_allows_multiple_provider_events_for_one_ledger_row() {
+    let backend = CardinalityBackend {
+        duplicate_ledger_row: false,
+    };
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("multiple provider-event audit: {err}"));
+
+    assert!(report.exact_message_traceable);
+    assert_eq!(report.summary.ledger_rows_matched, Some(1));
+    assert_eq!(report.summary.single_ledger_row_overlap, Some(true));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_multiple_ledger_rows"));
+}
+
+#[test]
 fn traceability_audit_does_not_let_recipient_id_override_address_evidence() {
     let backend = ConflictingRecipientAliasBackend;
     let report = backend
@@ -2120,6 +2211,89 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
             evidence: Vec::new(),
             raw_payload_returned: false,
         })
+    }
+}
+
+struct CardinalityBackend {
+    duplicate_ledger_row: bool,
+}
+
+impl OciEmailBackend for CardinalityBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        let mut report = FixtureBackend.trace_message(request)?;
+        let duplicate = report
+            .events
+            .events
+            .first()
+            .cloned()
+            .ok_or_else(|| OciEmailError::Config("fixture trace event missing".to_string()))?;
+        report.events.events.push(duplicate);
+        report.events.provider_returned = 2;
+        report.events.source_domain_matched = 2;
+        report.events.returned = 2;
+        report.events.counts.by_action[0].count = 2;
+        report.events.counts.events_with_recipient_hash = 2;
+        report.events.counts.duplicate_recipient_hash_events = 1;
+        report.events.counts.events_with_message_id_hash = 2;
+        report.events.counts.duplicate_message_id_hash_events = 1;
+        report.events.counts.events_with_recipient_message_pair = 2;
+        report.events.counts.duplicate_recipient_message_pair_events = 1;
+        report
+            .events
+            .counts
+            .events_with_action_recipient_message_key = 2;
+        report
+            .events
+            .counts
+            .duplicate_action_recipient_message_key_events = 1;
+        Ok(report)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        let mut report = FixtureBackend.ledger_window(request)?;
+        if self.duplicate_ledger_row {
+            let duplicate =
+                report.rows.first().cloned().ok_or_else(|| {
+                    OciEmailError::Config("fixture ledger row missing".to_string())
+                })?;
+            report.rows.push(duplicate);
+            report.totals.scanned_rows = 2;
+            report.totals.matched_rows = 2;
+            report.totals.returned_rows = 2;
+        }
+        Ok(report)
     }
 }
 

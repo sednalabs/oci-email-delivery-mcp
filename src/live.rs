@@ -1904,6 +1904,13 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
                 "No local send-ledger rows matched this audit window and filters; exact message traceability is not proven.",
             ));
         }
+        if report.totals.matched_rows > 1 {
+            findings.push(finding(
+                "blocker",
+                "traceability_multiple_ledger_rows",
+                "Multiple local send-ledger rows matched this one-message audit; exact message traceability requires exactly one matching ledger row.",
+            ));
+        }
         if report.totals.invalid_rows > 0 {
             findings.push(finding(
                 "blocker",
@@ -1952,7 +1959,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
     });
     let ledger_exact_ready = ledger_evidence_state == "complete"
         && ledger.report.as_ref().is_some_and(|report| {
-            report.totals.matched_rows > 0
+            report.totals.matched_rows == 1
                 && report.totals.invalid_rows == 0
                 && !report.totals.rows_capped
                 && report.totals.missing_trace_key_count == 0

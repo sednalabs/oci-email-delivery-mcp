@@ -214,12 +214,14 @@ Expected: `send_authorized=false`. Branch on
 `schema="oci-email-delivery.traceability-audit.v2"` and the evidence-state
 fields before reading a summary scalar. `exact_message_traceable=true` only when a
 message/header trace returned OCI log events, the configured local ledger has
-matching rows for the window, the ledger is uncapped and valid, and one ledger
-row overlaps both the trace identity and recipient hash on the same returned
-OCI event. For a message-id trace, the returned event message-id hash must
-match. For a header trace, the returned value hash for the requested header
-name must match; matching only the request criterion is insufficient. Message
-ids and header/correlation values are opaque case-sensitive identities, so
+exactly one matching row for the window, the ledger is uncapped and valid, and
+that row overlaps both the trace identity and recipient hash on the same
+returned OCI event. Multiple provider lifecycle events may relate to that one
+row. Multiple matching ledger rows are a blocker even when
+`expected_ledger_rows` equals the observed count. For a message-id trace, the
+returned event message-id hash must match. For a header trace, the returned
+value hash for the requested header name must match; matching only the request
+criterion is insufficient. Message ids and header/correlation values are opaque case-sensitive identities, so
 case-distinct values must produce different hashes and must not overlap. The
 provider parser checks every present recipient and message-id alias: each must
 be a non-empty string and all aliases for one identity must agree. Null,
@@ -230,10 +232,11 @@ Malformed, null, or conflicting timestamp residue makes event evidence
 unavailable before window proof.
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
-`single_ledger_row_overlap` is the same-row gate. Without exact proof, the
-response is blocked or degraded. `aggregate_only=true` means provider metric
-datapoints or log events were actually observed but are not per-recipient
-proof. `provider_evidence_available=false` means acceptance, relay, and exact
+`single_ledger_row_overlap` is the same-row overlap gate, not a cardinality
+claim; exact proof separately requires `ledger_rows_matched=1`. Without exact
+proof, the response is blocked or degraded. `aggregate_only=true` means provider
+metric datapoints or log events were actually observed but are not
+per-recipient proof. `provider_evidence_available=false` means acceptance, relay, and exact
 traceability are unproven. `log_evidence_state` and `ledger_evidence_state`
 are `complete`, `partial`, or `unavailable`; `trace_evidence_state` also has
 `not_requested`. `log_events_returned` is populated only for complete combined

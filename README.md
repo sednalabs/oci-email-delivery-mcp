@@ -201,12 +201,15 @@ contract tests with an OCI profile configured. The live smoke must not use
   traceability claim. `aggregate_only=true` means observed provider evidence
   lacks an exact message-to-recipient overlap, and
   `exact_message_traceable=true` additionally requires complete requested log
-  evidence, equality with a supplied positive `expected_ledger_rows`, and one
-  uncapped local ledger row overlapping both the trace identity and recipient
-  hash on the same returned event. A message-id trace uses the returned event's
-  message-id hash. A correlation-header trace uses only the requested header
-  name's returned value hash; the request criterion by itself is not event
-  identity. These opaque trace-key hashes preserve case and exact bytes; they
+  evidence, exactly one matching valid and uncapped local ledger row, equality
+  with a supplied positive `expected_ledger_rows`, and that one row overlapping
+  both the trace identity and recipient hash on the same returned event.
+  Multiple provider lifecycle events may relate to that one ledger row, but
+  multiple matching ledger rows block exact proof even when the supplied
+  expected count equals the observed count. A message-id trace uses the
+  returned event's message-id hash. A correlation-header trace uses only the
+  requested header name's returned value hash; the request criterion by itself
+  is not event identity. These opaque trace-key hashes preserve case and exact bytes; they
   deliberately do not use the case-folded address/domain hash contract. Every
   present provider-event recipient or message-id alias must be a non-empty
   string, and all aliases for that identity must agree under its field-specific
