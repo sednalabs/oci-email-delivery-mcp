@@ -157,6 +157,12 @@ contract tests with an OCI profile configured. The live smoke must not use
   Every present ledger timestamp alias must be a UTC string and all aliases
   must represent the same instant. Null, malformed, or conflicting timestamp
   residue is retained as `invalid_rows` evidence before trace filtering.
+  Sender, campaign, and batch selector aliases are reconciled before any row is
+  narrowed away. All present aliases for one selector must normalize to the
+  same domain or redacted identifier, and raw/prehashed campaign or batch forms
+  must agree. A malformed or contradictory row that claims the requested scope
+  is retained as `invalid_rows`, so it cannot hide behind selector ordering and
+  weaken exact one-row proof.
   Recipient address and recipient-id raw/prehashed pairs follow the same
   custody rule. A
   contradictory pair invalidates all recipient proof from that ledger row, and

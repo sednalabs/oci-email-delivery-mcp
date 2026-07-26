@@ -42,6 +42,22 @@ const CORRELATION_ID_HASH_KEYS: &[&str] = &[
     "x_campaign_correlation_id_hash",
     "xCampaignCorrelationIdHash",
 ];
+const SENDER_KEYS: &[&str] = &[
+    "sender_domain",
+    "senderDomain",
+    "sender",
+    "approved_sender",
+    "approvedSender",
+];
+const CAMPAIGN_RAW_KEYS: &[&str] = &["campaign_id", "campaignId"];
+const CAMPAIGN_HASH_KEYS: &[&str] = &[
+    "campaign_hash",
+    "campaignHash",
+    "campaign_id_hash",
+    "campaignIdHash",
+];
+const BATCH_RAW_KEYS: &[&str] = &["batch_id", "batchId"];
+const BATCH_HASH_KEYS: &[&str] = &["batch_hash", "batchHash", "batch_id_hash", "batchIdHash"];
 
 pub fn ledger_window(
     config: &OciEmailConfig,
@@ -128,39 +144,30 @@ pub fn ledger_window(
         if row_time_key < start_key || row_time_key >= end_key {
             continue;
         }
-        if !matches_optional_identifier(
+        let sender_claim = custodied_sender_domain(&value);
+        let campaign_claim =
+            custodied_redacted_hash_any(&value, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS);
+        let batch_claim = custodied_redacted_hash_any(&value, BATCH_RAW_KEYS, BATCH_HASH_KEYS);
+        if !sender_claim_matches_filter(&value, &sender_claim, sender_filter.as_deref()) {
+            continue;
+        }
+        if !identifier_claim_matches_filter(
+            &value,
+            CAMPAIGN_RAW_KEYS,
+            CAMPAIGN_HASH_KEYS,
+            &campaign_claim,
             campaign_filter,
-            string_any(&value, &["campaign_id", "campaignId"]),
-            string_any(
-                &value,
-                &[
-                    "campaign_hash",
-                    "campaignHash",
-                    "campaign_id_hash",
-                    "campaignIdHash",
-                ],
-            ),
         ) {
             continue;
         }
-        if !matches_optional_identifier(
+        if !identifier_claim_matches_filter(
+            &value,
+            BATCH_RAW_KEYS,
+            BATCH_HASH_KEYS,
+            &batch_claim,
             batch_filter,
-            string_any(&value, &["batch_id", "batchId"]),
-            string_any(
-                &value,
-                &["batch_hash", "batchHash", "batch_id_hash", "batchIdHash"],
-            ),
         ) {
             continue;
-        }
-        let Some(row) = ledger_row_summary(&value) else {
-            invalid_rows += 1;
-            continue;
-        };
-        if let Some(filter) = sender_filter.as_deref() {
-            if row.sender_domain.as_deref() != Some(filter) {
-                continue;
-            }
         }
         if !opaque_claim_matches_filter(
             &value,
@@ -178,6 +185,14 @@ pub fn ledger_window(
         ) {
             continue;
         }
+        if sender_claim.is_invalid() || campaign_claim.is_invalid() || batch_claim.is_invalid() {
+            invalid_rows += 1;
+            continue;
+        }
+        let Some(row) = ledger_row_summary(&value) else {
+            invalid_rows += 1;
+            continue;
+        };
         let (message_claim, correlation_claim) = ledger_trace_claims(&value);
         if message_claim.is_invalid() || correlation_claim.is_invalid() {
             invalid_rows += 1;
@@ -218,7 +233,7 @@ pub fn ledger_window(
         findings.push(finding(
             "warning",
             "ledger_invalid_rows",
-            "One or more relevant local send-ledger rows were invalid JSON objects, lacked a valid UTC timestamp, or contained malformed or contradictory trace identity claims.",
+            "One or more relevant local send-ledger rows were invalid JSON objects, lacked a valid UTC timestamp, or contained malformed or contradictory selector, trace, or recipient identity claims.",
         ));
     }
     if rows_capped {
@@ -289,12 +304,7 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     }
     let submitted_at = string_any(value, &["submitted_at", "submittedAt", "time", "timestamp"])
         .map(ToString::to_string);
-    let sender_domain = string_any(value, &["sender_domain", "senderDomain"])
-        .and_then(domain_from_address_or_domain)
-        .or_else(|| {
-            string_any(value, &["sender", "approved_sender", "approvedSender"])
-                .and_then(email_domain)
-        });
+    let sender_domain = custodied_sender_domain(value).into_option();
     let recipient_email = string_any(
         value,
         &[
@@ -354,21 +364,10 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     Some(LedgerRowSummary {
         submitted_at,
         provider_hash: redacted_hash_any(value, &["provider"], &["provider_hash", "providerHash"]),
-        campaign_hash: redacted_hash_any(
-            value,
-            &["campaign_id", "campaignId"],
-            &[
-                "campaign_hash",
-                "campaignHash",
-                "campaign_id_hash",
-                "campaignIdHash",
-            ],
-        ),
-        batch_hash: redacted_hash_any(
-            value,
-            &["batch_id", "batchId"],
-            &["batch_hash", "batchHash", "batch_id_hash", "batchIdHash"],
-        ),
+        campaign_hash: custodied_redacted_hash_any(value, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS)
+            .into_option(),
+        batch_hash: custodied_redacted_hash_any(value, BATCH_RAW_KEYS, BATCH_HASH_KEYS)
+            .into_option(),
         sender_domain,
         recipient_domain,
         recipient_address_hash,
@@ -383,22 +382,6 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
         subject_hash: redacted_hash_any(value, &["subject"], &["subject_hash", "subjectHash"]),
         raw_recipient_returned: false,
     })
-}
-
-fn matches_optional_identifier(
-    filter: Option<&str>,
-    raw_value: Option<&str>,
-    hash_value: Option<&str>,
-) -> bool {
-    match filter {
-        Some(filter) => {
-            raw_value == Some(filter)
-                || hash_value
-                    .map(redacted_hash)
-                    .is_some_and(|value| value == redacted_hash(filter))
-        }
-        None => true,
-    }
 }
 
 fn string_any<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -422,6 +405,18 @@ fn domain_from_address_or_domain(value: &str) -> Option<String> {
         return email_domain(value);
     }
     is_host_token(value).then(|| value.to_ascii_lowercase())
+}
+
+fn normalize_sender_domain(value: &str) -> String {
+    domain_from_address_or_domain(value).unwrap_or_default()
+}
+
+fn selector_hash(value: &str) -> String {
+    if value.trim().is_empty() {
+        String::new()
+    } else {
+        short_hash(value)
+    }
 }
 
 fn validated_domain_any(value: &Value, keys: &[&str]) -> Option<String> {
@@ -460,6 +455,70 @@ fn custodied_recipient_hash_any(
     hash_keys: &[&str],
 ) -> CustodiedHash {
     custodied_hash_any(value, raw_keys, hash_keys, short_hash)
+}
+
+fn custodied_sender_domain(value: &Value) -> CustodiedHash {
+    match consistent_claim(value, SENDER_KEYS, normalize_sender_domain) {
+        Err(()) => CustodiedHash::Invalid,
+        Ok(None) => CustodiedHash::Absent,
+        Ok(Some(domain)) => CustodiedHash::Valid(domain),
+    }
+}
+
+fn custodied_redacted_hash_any(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+) -> CustodiedHash {
+    custodied_hash_any(value, raw_keys, hash_keys, selector_hash)
+}
+
+fn sender_claim_matches_filter(value: &Value, claim: &CustodiedHash, filter: Option<&str>) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    match claim {
+        CustodiedHash::Valid(domain) => domain == filter,
+        CustodiedHash::Invalid => SENDER_KEYS.iter().any(|key| {
+            value
+                .get(*key)
+                .and_then(Value::as_str)
+                .and_then(domain_from_address_or_domain)
+                .as_deref()
+                == Some(filter)
+        }),
+        CustodiedHash::Absent => false,
+    }
+}
+
+fn identifier_claim_matches_filter(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+    claim: &CustodiedHash,
+    filter: Option<&str>,
+) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    let filter_hash = redacted_hash(filter);
+    match claim {
+        CustodiedHash::Valid(hash) => hash == &filter_hash,
+        CustodiedHash::Invalid => {
+            raw_keys.iter().any(|key| {
+                value
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|raw| selector_hash(raw) == filter_hash)
+            }) || hash_keys.iter().any(|key| {
+                value
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|hash| valid_prehash(hash) == filter_hash)
+            })
+        }
+        CustodiedHash::Absent => false,
+    }
 }
 
 #[cfg(test)]
@@ -1198,6 +1257,217 @@ mod tests {
             ),
             Some(opaque_hash("Trace-AbC"))
         );
+    }
+
+    #[test]
+    fn ledger_selector_claims_reconcile_every_alias() {
+        let campaign_hash = short_hash("campaign-target");
+        let agreeing = serde_json::json!({
+            "sender_domain": "example.com",
+            "senderDomain": "EXAMPLE.COM",
+            "sender": "news@example.com",
+            "campaign_id": "campaign-target",
+            "campaignId": "CAMPAIGN-TARGET",
+            "campaign_hash": campaign_hash.to_ascii_uppercase()
+        });
+        let conflicting_sender = serde_json::json!({
+            "sender_domain": "example.com",
+            "senderDomain": "other.example"
+        });
+        let conflicting_campaign = serde_json::json!({
+            "campaign_id": "campaign-target",
+            "campaignId": "campaign-other"
+        });
+        let malformed_campaign = serde_json::json!({
+            "campaign_id": "campaign-target",
+            "campaignHash": null
+        });
+
+        assert_eq!(
+            custodied_sender_domain(&agreeing),
+            CustodiedHash::Valid("example.com".to_string())
+        );
+        assert_eq!(
+            custodied_redacted_hash_any(&agreeing, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS),
+            CustodiedHash::Valid(campaign_hash)
+        );
+        assert_eq!(
+            custodied_sender_domain(&conflicting_sender),
+            CustodiedHash::Invalid
+        );
+        assert_eq!(
+            custodied_redacted_hash_any(
+                &conflicting_campaign,
+                CAMPAIGN_RAW_KEYS,
+                CAMPAIGN_HASH_KEYS
+            ),
+            CustodiedHash::Invalid
+        );
+        assert_eq!(
+            custodied_redacted_hash_any(&malformed_campaign, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS),
+            CustodiedHash::Invalid
+        );
+    }
+
+    #[test]
+    fn ledger_window_retains_filtered_selector_contradictions_as_invalid_evidence() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/selector-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        let campaign_hash = short_hash("campaign-target");
+        let batch_hash = short_hash("batch-target");
+        let rows = vec![
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:10:00Z",
+                "sender_domain": "example.com",
+                "senderDomain": "EXAMPLE.COM",
+                "sender": "news@example.com",
+                "campaign_id": "campaign-target",
+                "campaignId": "CAMPAIGN-TARGET",
+                "campaign_hash": campaign_hash.to_ascii_uppercase(),
+                "batch_id": "batch-target",
+                "batchId": "BATCH-TARGET",
+                "batch_hash": batch_hash.to_ascii_uppercase(),
+                "recipient": "good@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:11:00Z",
+                "sender_domain": "example.com",
+                "senderDomain": "other.example",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "sender-first@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:12:00Z",
+                "sender_domain": "other.example",
+                "senderDomain": "example.com",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "sender-second@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:13:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "campaignId": "campaign-other",
+                "batch_id": "batch-target",
+                "recipient": "campaign-first@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:14:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-other",
+                "campaignId": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "campaign-second@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:15:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "campaign_hash": short_hash("campaign-other"),
+                "batch_id": "batch-target",
+                "recipient": "campaign-hash@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:16:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "batchId": "batch-other",
+                "recipient": "batch-first@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:17:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-other",
+                "batchId": "batch-target",
+                "recipient": "batch-second@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:18:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "batch_hash": null,
+                "recipient": "batch-null@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:19:00Z",
+                "sender_domain": "example.com",
+                "senderDomain": null,
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "sender-null@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:20:00Z",
+                "sender_domain": "unrelated.example",
+                "senderDomain": "other.example",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "unrelated@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:21:00Z",
+                "sender_domain": "example.com",
+                "senderDomain": "other.example",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "other-message@example.net",
+                "message_id": "message-other"
+            }),
+        ];
+        let payload = rows
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize selector fixture row"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{payload}\n")).expect("write selector-custody fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: Some("campaign-target".to_string()),
+                batch_id: Some("batch-target".to_string()),
+                message_id: Some("message-target".to_string()),
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("selector-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.scanned_rows, 12);
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 9);
+        assert_eq!(report.totals.returned_rows, 1);
+        assert_eq!(report.rows[0].sender_domain.as_deref(), Some("example.com"));
+        assert_eq!(report.rows[0].campaign_hash, Some(campaign_hash));
+        assert_eq!(report.rows[0].batch_hash, Some(batch_hash));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ledger_invalid_rows"));
+
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

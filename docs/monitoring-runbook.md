@@ -358,6 +358,12 @@ recipient-id hashes are present, provider-recipient overlap uses the address
 hash; the alternate id cannot override contradictory address evidence. Every
 present identity alias must be a string, and duplicate raw or prehashed aliases
 must agree. Nulls, other JSON types, and conflicting aliases fail closed.
+Sender, campaign, and batch selectors are also reconciled before filtering.
+All present aliases must agree on one normalized sender domain or redacted
+campaign/batch identifier, including raw/prehashed agreement. If any alias
+claims the requested scope, malformed or contradictory selector residue is
+retained in `invalid_rows` and blocks completeness instead of disappearing
+before exact row-count evaluation.
 `ledger_no_rows_matched`,
 `ledger_results_capped`,
 `ledger_missing_trace_keys`, or `ledger_missing_recipient_keys` keeps the lane
