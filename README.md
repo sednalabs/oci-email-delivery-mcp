@@ -110,7 +110,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   JSON empty result with `source_domain` is still missing event evidence, not
   proof of no sends. Blank or JSON-null Logging Search output is unavailable
   evidence and blocks the component rather than being reshaped as an empty
-  result.
+  result. Every returned row must contain a recognized OutboundAccepted or
+  OutboundRelayed record with an object payload and non-empty action; an
+  unrecognized row makes the event read unavailable instead of contributing
+  synthetic evidence.
   `provider_returned` and `source_domain_matched` distinguish no provider
   events from post-summary source-domain mismatch without returning raw events.
   When no `source_domain` is requested, `source_domain_matched` equals the
@@ -175,8 +178,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   lacks an exact message-to-recipient overlap, and
   `exact_message_traceable=true` additionally requires complete requested log
   evidence, equality with a supplied positive `expected_ledger_rows`, and one
-  uncapped local ledger row overlapping both the requested trace key and event
-  recipient hash. Omitting the optional expected count skips only that count
+  uncapped local ledger row overlapping both the trace identity and recipient
+  hash on the same returned event. A message-id trace uses the returned event's
+  message-id hash. A correlation-header trace uses only the requested header
+  name's returned value hash; the request criterion by itself is not event
+  identity. Omitting the optional expected count skips only that count
   comparison. Because this flag is scoped to one message trace, it may be true
   while the overall receipt remains blocked by an orthogonal profile, metric,
   logging-status, or suppression finding; neither state authorizes a send. The

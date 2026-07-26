@@ -427,6 +427,7 @@ pub struct EmailEventSummary {
     pub recipient_domain: Option<String>,
     pub recipient_hash: Option<String>,
     pub message_id_hash: Option<String>,
+    pub trace_header_value_hash: Option<String>,
     pub error_type: Option<String>,
     pub bounce_category: Option<String>,
     pub smtp_status: Option<String>,

@@ -936,8 +936,8 @@ impl LiveOciEmailBackend {
         }
         let raw_events = log_results(&value)?
             .into_iter()
-            .map(email_event_summary)
-            .collect::<Vec<_>>();
+            .map(|value| email_event_summary(value, request.header_name.as_deref()))
+            .collect::<Result<Vec<_>, _>>()?;
         let rows_capped = rows_may_be_capped(raw_events.len(), limit);
         let provider_returned = raw_events.len();
         let events = raw_events
@@ -2311,9 +2311,29 @@ fn single_ledger_row_overlap(
     let Some(ledger_report) = ledger_report else {
         return false;
     };
-    ledger_report.rows.iter().any(|row| {
-        ledger_row_trace_key_overlap(row, watch_report)
-            && ledger_row_recipient_hash_overlap(row, watch_report)
+    let trace = watch_report
+        .components
+        .trace
+        .as_ref()
+        .and_then(|trace| trace.report.as_ref());
+    ledger_report.rows.iter().any(|row| match trace {
+        Some(trace) => trace.events.events.iter().any(|event| {
+            event_trace_keys_overlap_row(event, row, &trace.criteria)
+                && event_recipient_hash_overlaps_row(event, row)
+        }),
+        None => watch_report
+            .components
+            .events
+            .report
+            .as_ref()
+            .is_some_and(|events| {
+                events.events.iter().any(|event| {
+                    row.message_id_hash
+                        .as_ref()
+                        .is_some_and(|hash| event.message_id_hash.as_ref() == Some(hash))
+                        && event_recipient_hash_overlaps_row(event, row)
+                })
+            }),
     })
 }
 
@@ -2324,14 +2344,11 @@ fn ledger_row_trace_key_overlap(row: &LedgerRowSummary, watch_report: &WatchWind
         .as_ref()
         .and_then(|trace| trace.report.as_ref());
     if let Some(trace) = trace {
-        return row
-            .message_id_hash
-            .as_ref()
-            .is_some_and(|hash| trace.criteria.message_id_hash.as_ref() == Some(hash))
-            || row
-                .correlation_id_hash
-                .as_ref()
-                .is_some_and(|hash| trace.criteria.header_value_hash.as_ref() == Some(hash));
+        return trace
+            .events
+            .events
+            .iter()
+            .any(|event| event_trace_keys_overlap_row(event, row, &trace.criteria));
     }
     watch_report
         .components
@@ -2345,6 +2362,44 @@ fn ledger_row_trace_key_overlap(row: &LedgerRowSummary, watch_report: &WatchWind
                     .is_some_and(|hash| event.message_id_hash.as_ref() == Some(hash))
             })
         })
+}
+
+fn event_trace_keys_overlap_row(
+    event: &EmailEventSummary,
+    row: &LedgerRowSummary,
+    criteria: &TraceCriteria,
+) -> bool {
+    let mut trace_key_requested = false;
+
+    if let Some(requested_hash) = criteria.message_id_hash.as_ref() {
+        trace_key_requested = true;
+        if row.message_id_hash.as_ref() != Some(requested_hash)
+            || event.message_id_hash.as_ref() != Some(requested_hash)
+        {
+            return false;
+        }
+    }
+
+    if let Some(requested_hash) = criteria.header_value_hash.as_ref() {
+        trace_key_requested = true;
+        if row.correlation_id_hash.as_ref() != Some(requested_hash)
+            || event.trace_header_value_hash.as_ref() != Some(requested_hash)
+        {
+            return false;
+        }
+    }
+
+    trace_key_requested
+}
+
+fn event_recipient_hash_overlaps_row(event: &EmailEventSummary, row: &LedgerRowSummary) -> bool {
+    [
+        row.recipient_address_hash.as_ref(),
+        row.recipient_id_hash.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|hash| event.recipient_hash.as_ref() == Some(hash))
 }
 
 fn ledger_row_recipient_hash_overlap(
@@ -2928,23 +2983,45 @@ fn capped_counts_from_map(
     (counts, omitted)
 }
 
-fn email_event_summary(value: &Value) -> EmailEventSummary {
+fn email_event_summary(
+    value: &Value,
+    trace_header_name: Option<&str>,
+) -> Result<EmailEventSummary, OciEmailError> {
     let record = event_record(value);
-    let data = record.get("data").unwrap_or(record);
-    let log_type = string_field(record, "type").map(ToString::to_string);
+    let log_type = string_field(record, "type").filter(|value| {
+        matches!(
+            *value,
+            "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted"
+                | "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed"
+        )
+    });
+    let data = record.get("data").filter(|value| value.is_object());
+    let action = data
+        .and_then(|data| string_field(data, "action"))
+        .filter(|value| !value.trim().is_empty());
+    let (Some(log_type), Some(data), Some(action)) = (log_type, data, action) else {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned an unrecognized Email Delivery event record; event evidence is unavailable."
+                .to_string(),
+        ));
+    };
     let email = nested_string(data, &["recipient"])
         .or_else(|| nested_string(data, &["recipientAddress"]))
         .or_else(|| nested_string(data, &["emailAddress"]));
     let message_id = nested_string(data, &["messageId"])
         .or_else(|| nested_string(data, &["message-id"]))
         .or_else(|| nested_string(value, &["messageId"]));
-    EmailEventSummary {
+    let trace_header_value_hash = trace_header_name
+        .map(|name| email_event_header_value_hash(data, name))
+        .transpose()?
+        .flatten();
+    Ok(EmailEventSummary {
         datetime: string_field(value, "datetime")
             .or_else(|| string_field(record, "datetime"))
             .or_else(|| string_field(record, "time"))
             .map(ToString::to_string),
-        log_type,
-        action: string_field(data, "action").map(ToString::to_string),
+        log_type: Some(log_type.to_string()),
+        action: Some(action.to_string()),
         source_domain: email_event_source_domain(record, data),
         receiving_domain: string_field(data, "receivingDomain")
             .filter(|value| is_host_token(value))
@@ -2952,11 +3029,47 @@ fn email_event_summary(value: &Value) -> EmailEventSummary {
         recipient_domain: email.and_then(email_domain),
         recipient_hash: email.map(short_hash),
         message_id_hash: message_id.map(short_hash),
+        trace_header_value_hash,
         error_type: nested_string(data, &["errorType"]).map(redact_sensitive_text),
         bounce_category: nested_string(data, &["bounceCategory"]).map(redact_sensitive_text),
         smtp_status: nested_string(data, &["smtpStatus"]).map(summarize_smtp_status),
         raw_payload_returned: false,
+    })
+}
+
+fn email_event_header_value_hash(
+    data: &Value,
+    header_name: &str,
+) -> Result<Option<String>, OciEmailError> {
+    let Some(headers) = data.get("headers") else {
+        return Ok(None);
+    };
+    let Some(headers) = headers.as_object() else {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned an invalid Email Delivery header map; event evidence is unavailable."
+                .to_string(),
+        ));
+    };
+    let mut matching_values = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(header_name))
+        .map(|(_, value)| value);
+    let Some(value) = matching_values.next() else {
+        return Ok(None);
+    };
+    if matching_values.next().is_some() {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned ambiguous Email Delivery trace headers; event evidence is unavailable."
+                .to_string(),
+        ));
     }
+    let Some(value) = value.as_str().filter(|value| !value.is_empty()) else {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned an invalid Email Delivery trace header value; event evidence is unavailable."
+                .to_string(),
+        ));
+    };
+    Ok(Some(short_hash(value)))
 }
 
 fn event_counts(events: &[EmailEventSummary]) -> EventCounts {
@@ -3604,7 +3717,7 @@ mod tests {
             }
         });
 
-        let summary = email_event_summary(&value);
+        let summary = email_event_summary(&value, None).expect("recognized event");
         let payload = serde_json::to_string(&summary).expect("serialize summary");
 
         assert_eq!(summary.action.as_deref(), Some("unsubscribe"));
@@ -3613,6 +3726,7 @@ mod tests {
         assert_eq!(summary.recipient_domain.as_deref(), Some("example.net"));
         assert!(summary.recipient_hash.is_some());
         assert!(summary.message_id_hash.is_some());
+        assert!(summary.trace_header_value_hash.is_none());
         assert!(!summary.raw_payload_returned);
         assert!(!payload.contains("person@example.net"));
         assert!(!payload.contains("message@example.com"));
@@ -3637,7 +3751,7 @@ mod tests {
             }
         });
 
-        let summary = email_event_summary(&value);
+        let summary = email_event_summary(&value, None).expect("recognized event");
 
         assert_eq!(summary.source_domain.as_deref(), Some("envelope.example"));
     }
@@ -3659,9 +3773,41 @@ mod tests {
             }
         });
 
-        let summary = email_event_summary(&value);
+        let summary = email_event_summary(&value, None).expect("recognized event");
 
         assert_eq!(summary.source_domain.as_deref(), Some("source.example"));
+    }
+
+    #[test]
+    fn event_summary_hashes_only_the_requested_returned_header_value() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "source": "sender.example",
+                    "data": {
+                        "action": "relay",
+                        "messageId": "message-one",
+                        "recipient": "person@recipient.example",
+                        "headers": {
+                            "X-Trace-Example": "returned-trace-value",
+                            "X-Unrelated": "unrelated-private-value"
+                        }
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value, Some("x-trace-example"))
+            .expect("recognized event with requested header");
+        let payload = serde_json::to_string(&summary).expect("serialize event summary");
+
+        assert_eq!(
+            summary.trace_header_value_hash,
+            Some(short_hash("returned-trace-value"))
+        );
+        assert!(!payload.contains("returned-trace-value"));
+        assert!(!payload.contains("unrelated-private-value"));
     }
 
     #[test]
@@ -3682,7 +3828,7 @@ mod tests {
             }
         });
 
-        let summary = email_event_summary(&value);
+        let summary = email_event_summary(&value, None).expect("recognized event");
         let smtp_status = summary.smtp_status.expect("smtp status");
 
         assert!(smtp_status.starts_with("554 5.2.2 mailbox full;"));
@@ -3803,6 +3949,33 @@ mod tests {
         .events(&request)
         .expect_err("malformed provider output must not become an empty event report");
         assert_eq!(malformed.code(), "configuration_error");
+
+        let malformed_record = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": {
+                            "logContent": {
+                                "source": "sender.example",
+                                "data": {
+                                    "sender": "sender@sender.example",
+                                    "recipient": "person@recipient.example",
+                                    "messageId": "message-one"
+                                }
+                            }
+                        }
+                    }]
+                }
+            }))),
+        )
+        .events(&request)
+        .expect_err("unrecognized result records must not become event evidence");
+        assert_eq!(malformed_record.code(), "configuration_error");
+        assert!(malformed_record
+            .to_string()
+            .contains("unrecognized Email Delivery event record"));
 
         let empty = LiveOciEmailBackend::with_runner(
             test_config(),
@@ -3937,6 +4110,7 @@ mod tests {
             recipient_domain: Some("recipient.example".to_string()),
             recipient_hash: Some("recipient-hash".to_string()),
             message_id_hash: Some("message-hash".to_string()),
+            trace_header_value_hash: None,
             error_type: None,
             bounce_category: None,
             smtp_status: None,

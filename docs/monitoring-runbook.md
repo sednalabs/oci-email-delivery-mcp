@@ -215,7 +215,10 @@ Expected: `send_authorized=false`. Branch on
 fields before reading a summary scalar. `exact_message_traceable=true` only when a
 message/header trace returned OCI log events, the configured local ledger has
 matching rows for the window, the ledger is uncapped and valid, and one ledger
-row overlaps both the requested trace key and OCI event recipient hash. The
+row overlaps both the trace identity and recipient hash on the same returned
+OCI event. For a message-id trace, the returned event message-id hash must
+match. For a header trace, the returned value hash for the requested header
+name must match; matching only the request criterion is insufficient. The
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
 `single_ledger_row_overlap` is the same-row gate. Without exact proof, the
@@ -450,6 +453,10 @@ Check:
 Check:
 
 - expected accepted/relayed/bounce/suppression event types appear;
+- every provider result was recognized as an OutboundAccepted or
+  OutboundRelayed record with an object payload and non-empty action; one
+  unrecognized result makes the component unavailable rather than contributing
+  to event counts;
 - `source_domain` is matched after the MCP parses redacted event summaries,
   so an empty result means no matching summarized event evidence was found; it
   does not prove the provider emitted no events for the broader compartment.

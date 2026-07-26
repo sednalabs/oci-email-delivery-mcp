@@ -1136,6 +1136,57 @@ fn traceability_audit_requires_requested_trace_key_overlap() {
 }
 
 #[test]
+fn traceability_audit_binds_header_trace_to_returned_event_identity() {
+    let exact = FixtureBackend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: None,
+            header_name: Some("X-Trace-Example".to_string()),
+            header_value: Some("trace-token-example".to_string()),
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("matching returned header trace audit: {err}"));
+    assert!(exact.exact_message_traceable);
+
+    let mismatch = MismatchedTraceKeyBackend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: None,
+            header_name: Some("X-Trace-Example".to_string()),
+            header_value: Some("trace-token-example".to_string()),
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("mismatched returned header trace audit: {err}"));
+    assert_eq!(mismatch.status, "blocked");
+    assert!(!mismatch.exact_message_traceable);
+    assert_eq!(mismatch.summary.ledger_trace_key_overlap, Some(false));
+    assert!(mismatch
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_ledger_trace_key_overlap"));
+}
+
+#[test]
 fn traceability_audit_requires_same_ledger_row_for_trace_and_recipient_overlap() {
     let backend = SplitLedgerOverlapBackend;
     let report = backend
@@ -1906,8 +1957,14 @@ impl OciEmailBackend for MismatchedTraceKeyBackend {
         request: &TraceMessageRequest,
     ) -> Result<TraceMessageReport, OciEmailError> {
         let mut report = FixtureBackend.trace_message(request)?;
-        report.criteria.message_id_hash = Some("trace-key-only".to_string());
-        report.criteria.header_value_hash = None;
+        for event in &mut report.events.events {
+            if request.message_id.is_some() {
+                event.message_id_hash = Some("returned-message-id-mismatch".to_string());
+            }
+            if request.header_value.is_some() {
+                event.trace_header_value_hash = Some("returned-header-value-mismatch".to_string());
+            }
+        }
         Ok(report)
     }
 
