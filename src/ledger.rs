@@ -52,11 +52,9 @@ const SENDER_KEYS: &[&str] = &[
 const PROVIDER_RAW_KEYS: &[&str] = &["provider"];
 const PROVIDER_HASH_KEYS: &[&str] = &["provider_hash", "providerHash"];
 const OCI_EMAIL_DELIVERY_PROVIDER_IDENTITIES: &[&str] = &[
-    "oci",
     "oci-email-delivery",
     "oci_email_delivery",
     "oci email delivery",
-    "oracle cloud infrastructure",
     "oracle-cloud-infrastructure-email-delivery",
     "oracle cloud infrastructure email delivery",
 ];
@@ -1663,6 +1661,9 @@ mod tests {
             report.rows[0].provider_hash,
             Some(short_hash("oci-email-delivery"))
         );
+        let generic_oci_row =
+            ledger_row_summary(&serde_json::json!({"provider": "oci"})).expect("object row");
+        assert!(!ledger_row_has_oci_provider_authority(&generic_oci_row));
 
         let filtered = ledger_window(
             &config,

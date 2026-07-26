@@ -1420,6 +1420,10 @@ fn traceability_audit_requires_explicit_oci_ledger_provider_authority() {
             Some("00000000000000000000"),
             "traceability_ledger_provider_authority_mismatch",
         ),
+        (
+            Some("7e887edb52b723997076"),
+            "traceability_ledger_provider_authority_mismatch",
+        ),
     ] {
         let backend = ProviderAuthorityBackend { provider_hash };
         let report = backend
