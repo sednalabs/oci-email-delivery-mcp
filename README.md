@@ -154,6 +154,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   A contradictory row that claims the requested message or correlation filter
   is retained in `invalid_rows` and blocks completeness; it cannot disappear
   before expected-row or exact-proof evaluation.
+  Every present ledger timestamp alias must be a UTC string and all aliases
+  must represent the same instant. Null, malformed, or conflicting timestamp
+  residue is retained as `invalid_rows` evidence before trace filtering.
   Recipient address and recipient-id raw/prehashed pairs follow the same
   custody rule. A
   contradictory pair invalidates all recipient proof from that ledger row, and

@@ -121,7 +121,7 @@ pub fn ledger_window(
             invalid_rows += 1;
             continue;
         };
-        let Some(row_time_key) = ledger_time_sort_key(&value) else {
+        let Ok(Some(row_time_key)) = ledger_time_sort_key(&value) else {
             invalid_rows += 1;
             continue;
         };
@@ -593,9 +593,23 @@ fn cap_limit(value: u32, hard_limit: u32) -> u32 {
     value.clamp(1, hard_limit)
 }
 
-fn ledger_time_sort_key(value: &Value) -> Option<String> {
-    string_any(value, &["submitted_at", "submittedAt", "time", "timestamp"])
-        .and_then(utc_timestamp_key)
+fn ledger_time_sort_key(value: &Value) -> Result<Option<String>, ()> {
+    let mut timestamp_key = None;
+    for key in ["submitted_at", "submittedAt", "time", "timestamp"] {
+        let Some(claim) = value.get(key) else {
+            continue;
+        };
+        let raw = claim.as_str().ok_or(())?;
+        let normalized = utc_timestamp_key(raw).ok_or(())?;
+        if timestamp_key
+            .as_ref()
+            .is_some_and(|existing| existing != &normalized)
+        {
+            return Err(());
+        }
+        timestamp_key = Some(normalized);
+    }
+    Ok(timestamp_key)
 }
 
 fn utc_timestamp_key(value: &str) -> Option<String> {
@@ -785,6 +799,55 @@ mod tests {
             .findings
             .iter()
             .any(|finding| finding.code == "ledger_missing_trace_keys"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_window_reconciles_every_timestamp_alias() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/timestamp-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            concat!(
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"submittedAt\":\"2026-06-30T00:10:00.000Z\",\"time\":\"2026-06-30T00:10:00.0Z\",\"recipient\":\"good@example.net\",\"message_id\":\"message-good\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\"2026-06-30T02:10:00Z\",\"recipient\":\"conflict@example.net\",\"message_id\":\"message-good\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"time\":null,\"recipient\":\"null@example.net\",\"message_id\":\"message-good\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\"not-a-time\",\"recipient\":\"malformed@example.net\",\"message_id\":\"message-good\"}\n"
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some("message-good".to_string()),
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("timestamp-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.scanned_rows, 4);
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 3);
+        assert_eq!(report.totals.returned_rows, 1);
+        assert_eq!(
+            report.rows[0].submitted_at.as_deref(),
+            Some("2026-06-30T00:10:00Z")
+        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ledger_invalid_rows"));
 
         let _ = fs::remove_file(&path);
     }

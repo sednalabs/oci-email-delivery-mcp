@@ -342,7 +342,10 @@ contradictory message or correlation claim invalidates all trace proof from
 that row; the other trace key cannot preserve exact proof. If a raw or valid
 prehashed alias claims the requested filter, the contradictory row remains
 visible in `invalid_rows` and blocks completeness instead of disappearing
-before row-count evaluation. Recipient address
+before row-count evaluation. Every present ledger timestamp alias must be a
+strict UTC string and all aliases must normalize to the same instant. Null,
+malformed, or conflicting timestamp residue is counted in `invalid_rows`
+before trace filters can discard it. Recipient address
 and recipient-id raw/prehashed pairs must also agree. A contradiction in either
 pair invalidates all recipient proof from that row. When both valid address and
 recipient-id hashes are present, provider-recipient overlap uses the address
