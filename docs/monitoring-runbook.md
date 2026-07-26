@@ -363,7 +363,11 @@ All present aliases must agree on one normalized sender domain or redacted
 campaign/batch identifier, including raw/prehashed agreement. If any alias
 claims the requested scope, malformed or contradictory selector residue is
 retained in `invalid_rows` and blocks completeness instead of disappearing
-before exact row-count evaluation.
+before exact row-count evaluation. Because a legitimate raw identifier may
+itself be 20 hexadecimal characters, a hash-shaped campaign or batch filter is
+matched as both a raw identifier and a valid prehash; downstream proof must use
+the returned redacted row identities rather than infer which representation
+the caller intended.
 `ledger_no_rows_matched`,
 `ledger_results_capped`,
 `ledger_missing_trace_keys`, or `ledger_missing_recipient_keys` keeps the lane

@@ -501,20 +501,25 @@ fn identifier_claim_matches_filter(
     let Some(filter) = filter else {
         return true;
     };
-    let filter_hash = redacted_hash(filter);
+    let raw_filter_hash = selector_hash(filter);
+    let prehashed_filter = valid_prehash(filter);
+    let matches_filter = |hash: &str| {
+        hash == raw_filter_hash
+            || (!prehashed_filter.is_empty() && hash.eq_ignore_ascii_case(&prehashed_filter))
+    };
     match claim {
-        CustodiedHash::Valid(hash) => hash == &filter_hash,
+        CustodiedHash::Valid(hash) => matches_filter(hash),
         CustodiedHash::Invalid => {
             raw_keys.iter().any(|key| {
                 value
                     .get(*key)
                     .and_then(Value::as_str)
-                    .is_some_and(|raw| selector_hash(raw) == filter_hash)
+                    .is_some_and(|raw| matches_filter(&selector_hash(raw)))
             }) || hash_keys.iter().any(|key| {
                 value
                     .get(*key)
                     .and_then(Value::as_str)
-                    .is_some_and(|hash| valid_prehash(hash) == filter_hash)
+                    .is_some_and(|hash| matches_filter(&valid_prehash(hash)))
             })
         }
         CustodiedHash::Absent => false,
@@ -1466,6 +1471,87 @@ mod tests {
             .findings
             .iter()
             .any(|finding| finding.code == "ledger_invalid_rows"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_window_preserves_hash_shaped_raw_selector_ids() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/hash-shaped-selectors.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        let campaign_filter = "0123456789abcdef0123";
+        let batch_filter = "fedcba9876543210fedc";
+        let rows = [
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:10:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": campaign_filter,
+                "batch_id": batch_filter,
+                "recipient": "raw@example.net",
+                "message_id": "message-raw"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:11:00Z",
+                "sender_domain": "example.com",
+                "campaign_hash": campaign_filter.to_ascii_uppercase(),
+                "batch_hash": batch_filter.to_ascii_uppercase(),
+                "recipient": "prehashed@example.net",
+                "message_id": "message-prehashed"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:12:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": campaign_filter,
+                "campaignId": "campaign-other",
+                "batch_id": batch_filter,
+                "recipient": "conflicting@example.net",
+                "message_id": "message-conflicting"
+            }),
+        ];
+        let payload = rows
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize hash-shaped fixture row"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{payload}\n")).expect("write hash-shaped selector fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: Some(campaign_filter.to_string()),
+                batch_id: Some(batch_filter.to_string()),
+                message_id: None,
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("hash-shaped selector report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.scanned_rows, 3);
+        assert_eq!(report.totals.matched_rows, 2);
+        assert_eq!(report.totals.invalid_rows, 1);
+        assert_eq!(report.totals.returned_rows, 2);
+        assert_eq!(
+            report.filters.campaign_hash.as_deref(),
+            Some(campaign_filter)
+        );
+        assert_eq!(report.filters.batch_hash.as_deref(), Some(batch_filter));
+        assert_eq!(
+            report.rows[0].campaign_hash,
+            Some(short_hash(campaign_filter))
+        );
+        assert_eq!(report.rows[0].batch_hash, Some(short_hash(batch_filter)));
+        assert_eq!(
+            report.rows[1].campaign_hash.as_deref(),
+            Some(campaign_filter)
+        );
+        assert_eq!(report.rows[1].batch_hash.as_deref(), Some(batch_filter));
 
         let _ = fs::remove_file(&path);
     }

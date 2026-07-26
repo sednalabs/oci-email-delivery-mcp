@@ -162,7 +162,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   same domain or redacted identifier, and raw/prehashed campaign or batch forms
   must agree. A malformed or contradictory row that claims the requested scope
   is retained as `invalid_rows`, so it cannot hide behind selector ordering and
-  weaken exact one-row proof.
+  weaken exact one-row proof. A 20-hex campaign or batch filter is deliberately
+  matched under both valid interpretations: a raw identifier with those exact
+  characters and an already-redacted hash.
   Recipient address and recipient-id raw/prehashed pairs follow the same
   custody rule. A
   contradictory pair invalidates all recipient proof from that ledger row, and
