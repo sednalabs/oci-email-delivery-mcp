@@ -30,10 +30,16 @@ commit:
 The custom Actions CodeQL query pack must compile in `codeql-query-tests`
 before its CodeQL analysis results are treated as meaningful.
 
-The `code-coverage` workflow is expected to fail closed with "Code quality is
-not enabled for this repository" until GitHub Code Quality is enabled in the
-repository or organization settings. Do not set `fail-on-error: false` to hide
-that blocker.
+The required `Rust Cobertura coverage` job always generates the XML report and
+uploads the `rust-cobertura-coverage` artifact with
+`if-no-files-found: error`. GitHub Code Quality is an optional reporting sink,
+not the coverage authority. Its separate upload job runs only when the
+repository variable `CODE_QUALITY_UPLOAD_ENABLED` is exactly `true`; leaving
+the variable unset or false keeps that unavailable feature skipped without
+weakening coverage generation or artifact retention. The reporting job also
+skips fork pull requests because their token cannot retain Code Quality write
+authority; the required coverage artifact remains the review evidence for
+those candidates. Do not add `continue-on-error` to either contract.
 
 `release-artifact` is not a normal pull-request branch-protection check because
 it runs only on `workflow_dispatch` and `v*` tags. Treat it as the artifact
@@ -86,12 +92,15 @@ main-dispatch attestations, and configured alias startup proof are recorded.
 After public repository creation, verify:
 
 - code scanning is enabled and accepting CodeQL, DevSkim, and OSV SARIF;
-- GitHub Code Quality is enabled and accepting the `code-coverage` Cobertura
-  upload;
+- when GitHub Code Quality is intentionally enabled,
+  `CODE_QUALITY_UPLOAD_ENABLED=true` and the optional upload job is accepting
+  the generated Cobertura report on eligible same-repository events;
 - Dependabot security updates are enabled;
 - secret scanning and push protection are enabled where available;
 - default branch protection requires the pull-request hosted validation gates
-  above, excluding the manual/tag-only `release-artifact` promotion gate;
+  above, including mandatory Cobertura generation/artifact retention but
+  excluding the optional Code Quality upload and manual/tag-only
+  `release-artifact` promotion gate;
 - the default branch does not require an outside reviewer when maintainer-only
   approval is the chosen policy;
 - pushes to the default branch remain limited to approved maintainers.

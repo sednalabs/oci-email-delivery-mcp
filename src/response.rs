@@ -427,6 +427,7 @@ pub struct EmailEventSummary {
     pub recipient_domain: Option<String>,
     pub recipient_hash: Option<String>,
     pub message_id_hash: Option<String>,
+    pub trace_header_value_hash: Option<String>,
     pub error_type: Option<String>,
     pub bounce_category: Option<String>,
     pub smtp_status: Option<String>,
@@ -656,6 +657,7 @@ pub struct SnapshotArtifactSummary {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TraceabilityAuditReport {
+    pub schema: String,
     pub status: String,
     pub decision: String,
     pub send_authorized: bool,
@@ -668,6 +670,7 @@ pub struct TraceabilityAuditReport {
     pub expected_ledger_rows: Option<u64>,
     pub trace_requested: bool,
     pub exact_message_traceable: bool,
+    pub provider_evidence_available: bool,
     pub aggregate_only: bool,
     pub summary: TraceabilitySummary,
     pub components: TraceabilityAuditComponents,
@@ -682,13 +685,16 @@ pub struct TraceabilitySummary {
     pub aggregate_relayed: Option<f64>,
     pub aggregate_hard_bounced: Option<f64>,
     pub aggregate_suppressed: Option<f64>,
-    pub log_events_returned: usize,
+    pub log_evidence_state: String,
+    pub log_events_returned: Option<usize>,
+    pub trace_evidence_state: String,
     pub trace_events_returned: Option<usize>,
-    pub ledger_rows_matched: usize,
-    pub ledger_rows_capped: bool,
-    pub ledger_trace_key_overlap: bool,
-    pub recipient_hash_overlap: bool,
-    pub single_ledger_row_overlap: bool,
+    pub ledger_evidence_state: String,
+    pub ledger_rows_matched: Option<usize>,
+    pub ledger_rows_capped: Option<bool>,
+    pub ledger_trace_key_overlap: Option<bool>,
+    pub recipient_hash_overlap: Option<bool>,
+    pub single_ledger_row_overlap: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

@@ -23,8 +23,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      code-quality: write
-      pull-requests: read
     steps:
       - name: Checkout repository
         # actions/checkout v4
@@ -57,14 +55,6 @@ jobs:
           cargo llvm-cov --all-targets --all-features \
             --cobertura --output-path coverage/oci-email-delivery-mcp.xml
 
-      - name: Upload coverage to GitHub Code Quality
-        # actions/upload-code-coverage v1
-        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3
-        with:
-          file: coverage/oci-email-delivery-mcp.xml
-          language: Rust
-          label: code-coverage/oci-email-delivery-mcp
-
       - name: Upload Cobertura report
         # actions/upload-artifact v4
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -72,3 +62,34 @@ jobs:
           name: rust-cobertura-coverage
           path: coverage/*.xml
           if-no-files-found: error
+
+  code-quality-upload:
+    name: GitHub Code Quality upload
+    if: >-
+      ${{
+        vars.CODE_QUALITY_UPLOAD_ENABLED == 'true' &&
+        (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository)
+      }}
+    needs: rust-coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      code-quality: write
+      pull-requests: read
+    steps:
+      - name: Download Cobertura report
+        # actions/download-artifact v4.3.0
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: rust-cobertura-coverage
+          path: coverage
+
+      - name: Upload coverage to GitHub Code Quality
+        # actions/upload-code-coverage v1
+        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3
+        with:
+          file: coverage/oci-email-delivery-mcp.xml
+          language: Rust
+          label: code-coverage/oci-email-delivery-mcp

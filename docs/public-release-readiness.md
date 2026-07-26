@@ -1,7 +1,9 @@
 # Public Release Readiness
 
 Status: public repository published at `sednalabs/oci-email-delivery-mcp`;
-hosted validation and Code Quality enablement are the current gates.
+the current PR-head candidate requires its own hosted validation receipts.
+GitHub Code Quality remains an optional reporting sink rather than a source,
+merge, release, install, or live-proof gate.
 
 ## Classification
 
@@ -33,10 +35,13 @@ explain its core value.
   action references, and explicit `ubuntu-24.04` hosted runners.
 - GitHub hosted quality coverage includes Rust baseline, CodeQL Advanced for
   Rust and Actions, a repository custom Actions CodeQL policy pack plus compile
-  gate, GitHub Code Quality coverage upload, DevSkim SARIF upload, OSV
-  scanning, and Dependabot update configuration. The coverage upload is
-  intentionally fail-closed until GitHub Code Quality is enabled for the
-  repository or organization.
+  gate, mandatory Cobertura generation and hosted artifact retention, optional
+  GitHub Code Quality reporting, DevSkim SARIF upload, OSV scanning, and
+  Dependabot update configuration. The optional reporting job is isolated
+  behind `CODE_QUALITY_UPLOAD_ENABLED=true` and a same-repository event guard;
+  fork pull requests skip it because their token is read-only. The required
+  coverage job does not depend on that external feature and retains no Code
+  Quality write permission.
 - A release artifact lane produces a Linux x86_64 binary tarball, archive
   SHA-256 sidecar, and target-specific CycloneDX 1.5 Cargo dependency SBOM.
   The workflow fails closed unless the SBOM contains components and a
@@ -63,11 +68,20 @@ explain its core value.
   full active suppressions with a bounded UTC window and distinguish clean,
   lower-bound, no-sample, and stop-gate suppression evidence without exposing
   raw recipients.
-- The adapter includes `oci_email_traceability_audit` so operators can ask the
+- The adapter includes v2 `oci_email_traceability_audit` so operators can ask the
   narrower question: does this window prove exact message and recipient
-  overlap across OCI logs and the same configured local ledger row, or only
-  aggregate delivery pressure? The audit is read-only, redacted, and returns
-  `aggregate_only=true` whenever exact overlap is missing.
+  overlap across provider logs and the same configured local ledger row, only
+  aggregate provider evidence, or no provider evidence? The audit is read-only
+  and redacted. It returns `aggregate_only=true` only when provider metric
+  datapoints or log events exist without exact overlap. Its schema discriminator
+  and evidence-state fields distinguish complete, partial, unavailable, and
+  not-requested reads; observed provider evidence is never acceptance, relay,
+  or exact proof. Exact proof additionally requires the selected local ledger
+  row to carry unambiguous OCI Email Delivery provider authority; missing,
+  non-OCI, malformed, or contradictory provider identity remains fail-closed.
+- `oci_email_send_readiness` applies the same service-specific provider
+  authority to every matched ledger row, so a missing, non-OCI, or mixed
+  provider cohort cannot be described as OCI-ready even when counts match.
 - The adapter includes `oci_email_monitoring_snapshot_artifact` so those
   redacted watch, readiness, or traceability receipts can be persisted
   privately for later replay without scraping MCP transcripts or exposing raw
@@ -82,9 +96,12 @@ explain its core value.
   `211c5687645b08e1beb81ad78891dd3214746fea`.
 - Final hosted validation must run on the commit that is published.
 - GitHub security settings must be verified on the published repository.
-- GitHub Code Quality must be enabled in repository or organization settings
-  before the `code-coverage` workflow can upload Cobertura coverage
-  successfully.
+- The `code-coverage` workflow must generate and retain its Cobertura artifact
+  on every candidate. If GitHub Code Quality is intentionally enabled, set
+  `CODE_QUALITY_UPLOAD_ENABLED=true` and require the separate optional upload
+  job to succeed on eligible same-repository events. Fork pull requests skip
+  the write-authorized reporting job; leaving the variable unset or false must
+  not bypass generation or artifact retention.
 - Before production monitoring use, the current hard-bounce blocker and
   degraded log-event proof must be resolved, `oci_email_logging_status` must
   prove active service-log visibility for the sender lane using a
@@ -105,10 +122,10 @@ explain its core value.
   Actions workflow security query pack.
 - `codeql-query-tests`: compiles the custom Actions query pack so branch
   protection can require query-pack health independently of analysis.
-- `code-coverage`: uploads Cobertura coverage to GitHub Code Quality and keeps
-  the XML report as a hosted artifact. A failure with "Code quality is not
-  enabled for this repository" means the repository setting is still blocking
-  the otherwise generated coverage report.
+- `code-coverage`: always generates Cobertura coverage and keeps the XML report
+  as a hosted artifact. A separate job uploads that artifact to GitHub Code
+  Quality only when `CODE_QUALITY_UPLOAD_ENABLED=true`; the required coverage
+  job remains authoritative when the optional feature is unavailable.
 - `DevSkim` and `OSV-Scanner`: upload SARIF/dependency vulnerability evidence
   to GitHub code scanning.
 - `release-artifact`: `cargo build --release --locked`, packaged Linux x86_64

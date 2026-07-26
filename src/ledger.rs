@@ -1,7 +1,7 @@
 use crate::{
     config::OciEmailConfig,
     error::OciEmailError,
-    redact::{email_domain, is_host_token, redact_sensitive_text, short_hash},
+    redact::{email_domain, is_host_token, opaque_hash, redact_sensitive_text, short_hash},
     response::{
         Evidence, LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest,
         LedgerWindowTotals, ReadinessFinding, DEFAULT_LEDGER_LIMIT, HARD_LEDGER_LIMIT,
@@ -13,6 +13,60 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
 };
+
+const MESSAGE_ID_RAW_KEYS: &[&str] = &[
+    "message_id",
+    "messageId",
+    "provider_message_id",
+    "providerMessageId",
+];
+const MESSAGE_ID_HASH_KEYS: &[&str] = &[
+    "message_id_hash",
+    "messageIdHash",
+    "provider_message_id_hash",
+    "providerMessageIdHash",
+];
+const CORRELATION_ID_RAW_KEYS: &[&str] = &[
+    "correlation_id",
+    "correlationId",
+    "header_value",
+    "headerValue",
+    "x_campaign_correlation_id",
+    "xCampaignCorrelationId",
+];
+const CORRELATION_ID_HASH_KEYS: &[&str] = &[
+    "correlation_id_hash",
+    "correlationIdHash",
+    "header_value_hash",
+    "headerValueHash",
+    "x_campaign_correlation_id_hash",
+    "xCampaignCorrelationIdHash",
+];
+const SENDER_KEYS: &[&str] = &[
+    "sender_domain",
+    "senderDomain",
+    "sender",
+    "approved_sender",
+    "approvedSender",
+];
+const PROVIDER_RAW_KEYS: &[&str] = &["provider"];
+const PROVIDER_HASH_KEYS: &[&str] = &["provider_hash", "providerHash"];
+const OCI_EMAIL_DELIVERY_PROVIDER_IDENTITIES: &[&str] = &[
+    "oci-email-delivery",
+    "oci_email_delivery",
+    "oci email delivery",
+    "oracle-cloud-infrastructure-email-delivery",
+    "oracle cloud infrastructure email delivery",
+];
+const CAMPAIGN_RAW_KEYS: &[&str] = &["campaign_id", "campaignId"];
+const CAMPAIGN_HASH_KEYS: &[&str] = &[
+    "campaign_hash",
+    "campaignHash",
+    "campaign_id_hash",
+    "campaignIdHash",
+];
+const BATCH_RAW_KEYS: &[&str] = &["batch_id", "batchId"];
+const BATCH_HASH_KEYS: &[&str] = &["batch_hash", "batchHash", "batch_id_hash", "batchIdHash"];
 
 pub fn ledger_window(
     config: &OciEmailConfig,
@@ -49,13 +103,15 @@ pub fn ledger_window(
     let message_filter_hash = request
         .message_id
         .as_deref()
-        .and_then(non_empty_string)
-        .map(redacted_hash);
+        .map(|value| validate_opaque_filter(value, "message_id"))
+        .transpose()?
+        .map(opaque_hash);
     let correlation_filter_hash = request
         .correlation_id
         .as_deref()
-        .and_then(non_empty_string)
-        .map(redacted_hash);
+        .map(|value| validate_opaque_filter(value, "correlation_id"))
+        .transpose()?
+        .map(opaque_hash);
     let sender_filter = request
         .sender_domain
         .as_deref()
@@ -90,55 +146,71 @@ pub fn ledger_window(
             invalid_rows += 1;
             continue;
         };
-        let Some(row_time_key) = ledger_time_sort_key(&value) else {
+        let Ok(Some(row_time_key)) = ledger_time_sort_key(&value) else {
             invalid_rows += 1;
             continue;
         };
         if row_time_key < start_key || row_time_key >= end_key {
             continue;
         }
-        if !matches_optional_identifier(
+        let sender_claim = custodied_sender_domain(&value);
+        let provider_claim =
+            custodied_redacted_hash_any(&value, PROVIDER_RAW_KEYS, PROVIDER_HASH_KEYS);
+        let campaign_claim =
+            custodied_redacted_hash_any(&value, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS);
+        let batch_claim = custodied_redacted_hash_any(&value, BATCH_RAW_KEYS, BATCH_HASH_KEYS);
+        if !sender_claim_matches_filter(&value, &sender_claim, sender_filter.as_deref()) {
+            continue;
+        }
+        if !identifier_claim_matches_filter(
+            &value,
+            CAMPAIGN_RAW_KEYS,
+            CAMPAIGN_HASH_KEYS,
+            &campaign_claim,
             campaign_filter,
-            string_any(&value, &["campaign_id", "campaignId"]),
-            string_any(
-                &value,
-                &[
-                    "campaign_hash",
-                    "campaignHash",
-                    "campaign_id_hash",
-                    "campaignIdHash",
-                ],
-            ),
         ) {
             continue;
         }
-        if !matches_optional_identifier(
+        if !identifier_claim_matches_filter(
+            &value,
+            BATCH_RAW_KEYS,
+            BATCH_HASH_KEYS,
+            &batch_claim,
             batch_filter,
-            string_any(&value, &["batch_id", "batchId"]),
-            string_any(
-                &value,
-                &["batch_hash", "batchHash", "batch_id_hash", "batchIdHash"],
-            ),
         ) {
+            continue;
+        }
+        if !opaque_claim_matches_filter(
+            &value,
+            MESSAGE_ID_RAW_KEYS,
+            MESSAGE_ID_HASH_KEYS,
+            message_filter_hash.as_deref(),
+        ) {
+            continue;
+        }
+        if !opaque_claim_matches_filter(
+            &value,
+            CORRELATION_ID_RAW_KEYS,
+            CORRELATION_ID_HASH_KEYS,
+            correlation_filter_hash.as_deref(),
+        ) {
+            continue;
+        }
+        if sender_claim.is_invalid()
+            || provider_claim.is_invalid()
+            || campaign_claim.is_invalid()
+            || batch_claim.is_invalid()
+        {
+            invalid_rows += 1;
             continue;
         }
         let Some(row) = ledger_row_summary(&value) else {
             invalid_rows += 1;
             continue;
         };
-        if let Some(filter) = sender_filter.as_deref() {
-            if row.sender_domain.as_deref() != Some(filter) {
-                continue;
-            }
-        }
-        if message_filter_hash.is_some()
-            && row.message_id_hash.as_deref() != message_filter_hash.as_deref()
-        {
-            continue;
-        }
-        if correlation_filter_hash.is_some()
-            && row.correlation_id_hash.as_deref() != correlation_filter_hash.as_deref()
-        {
+        let (message_claim, correlation_claim) = ledger_trace_claims(&value);
+        if message_claim.is_invalid() || correlation_claim.is_invalid() {
+            invalid_rows += 1;
             continue;
         }
 
@@ -176,7 +248,7 @@ pub fn ledger_window(
         findings.push(finding(
             "warning",
             "ledger_invalid_rows",
-            "One or more local send-ledger rows were not valid JSON objects or lacked a valid UTC submitted_at/timestamp value.",
+            "One or more relevant local send-ledger rows were invalid JSON objects, lacked a valid UTC timestamp, or contained malformed or contradictory selector, trace, or recipient identity claims.",
         ));
     }
     if rows_capped {
@@ -247,12 +319,7 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     }
     let submitted_at = string_any(value, &["submitted_at", "submittedAt", "time", "timestamp"])
         .map(ToString::to_string);
-    let sender_domain = string_any(value, &["sender_domain", "senderDomain"])
-        .and_then(domain_from_address_or_domain)
-        .or_else(|| {
-            string_any(value, &["sender", "approved_sender", "approvedSender"])
-                .and_then(email_domain)
-        });
+    let sender_domain = custodied_sender_domain(value).into_option();
     let recipient_email = string_any(
         value,
         &[
@@ -267,7 +334,7 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     let recipient_domain = recipient_email
         .and_then(email_domain)
         .or_else(|| validated_domain_any(value, &["recipient_domain", "recipientDomain"]));
-    let recipient_address_hash = redacted_hash_any(
+    let recipient_address_hash = custodied_recipient_hash_any(
         value,
         &[
             "recipient",
@@ -284,67 +351,45 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
             "recipientHash",
         ],
     );
-    let recipient_id_hash = redacted_hash_any(
+    let recipient_id_hash = custodied_recipient_hash_any(
         value,
         &["recipient_id", "recipientId"],
         &["recipient_id_hash", "recipientIdHash"],
     );
+    let recipient_identity_valid =
+        !recipient_address_hash.is_invalid() && !recipient_id_hash.is_invalid();
+    let (recipient_address_hash, recipient_id_hash) = if recipient_identity_valid {
+        (
+            recipient_address_hash.into_option(),
+            recipient_id_hash.into_option(),
+        )
+    } else {
+        (None, None)
+    };
+    let (message_id_hash, correlation_id_hash) = ledger_trace_claims(value);
+    let trace_identity_valid = !message_id_hash.is_invalid() && !correlation_id_hash.is_invalid();
+    let (message_id_hash, correlation_id_hash) = if trace_identity_valid {
+        (
+            message_id_hash.into_option(),
+            correlation_id_hash.into_option(),
+        )
+    } else {
+        (None, None)
+    };
     Some(LedgerRowSummary {
         submitted_at,
-        provider_hash: redacted_hash_any(value, &["provider"], &["provider_hash", "providerHash"]),
-        campaign_hash: redacted_hash_any(
-            value,
-            &["campaign_id", "campaignId"],
-            &[
-                "campaign_hash",
-                "campaignHash",
-                "campaign_id_hash",
-                "campaignIdHash",
-            ],
-        ),
-        batch_hash: redacted_hash_any(
-            value,
-            &["batch_id", "batchId"],
-            &["batch_hash", "batchHash", "batch_id_hash", "batchIdHash"],
-        ),
+        provider_hash: custodied_redacted_hash_any(value, PROVIDER_RAW_KEYS, PROVIDER_HASH_KEYS)
+            .into_option(),
+        campaign_hash: custodied_redacted_hash_any(value, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS)
+            .into_option(),
+        batch_hash: custodied_redacted_hash_any(value, BATCH_RAW_KEYS, BATCH_HASH_KEYS)
+            .into_option(),
         sender_domain,
         recipient_domain,
         recipient_address_hash,
         recipient_id_hash,
-        message_id_hash: redacted_hash_any(
-            value,
-            &[
-                "message_id",
-                "messageId",
-                "provider_message_id",
-                "providerMessageId",
-            ],
-            &[
-                "message_id_hash",
-                "messageIdHash",
-                "provider_message_id_hash",
-                "providerMessageIdHash",
-            ],
-        ),
-        correlation_id_hash: redacted_hash_any(
-            value,
-            &[
-                "correlation_id",
-                "correlationId",
-                "header_value",
-                "headerValue",
-                "x_campaign_correlation_id",
-                "xCampaignCorrelationId",
-            ],
-            &[
-                "correlation_id_hash",
-                "correlationIdHash",
-                "header_value_hash",
-                "headerValueHash",
-                "x_campaign_correlation_id_hash",
-                "xCampaignCorrelationIdHash",
-            ],
-        ),
+        message_id_hash,
+        correlation_id_hash,
         template_version_hash: redacted_hash_any(
             value,
             &["template_version", "templateVersion"],
@@ -355,20 +400,12 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     })
 }
 
-fn matches_optional_identifier(
-    filter: Option<&str>,
-    raw_value: Option<&str>,
-    hash_value: Option<&str>,
-) -> bool {
-    match filter {
-        Some(filter) => {
-            raw_value == Some(filter)
-                || hash_value
-                    .map(redacted_hash)
-                    .is_some_and(|value| value == redacted_hash(filter))
-        }
-        None => true,
-    }
+pub(crate) fn ledger_row_has_oci_provider_authority(row: &LedgerRowSummary) -> bool {
+    row.provider_hash.as_ref().is_some_and(|provider_hash| {
+        OCI_EMAIL_DELIVERY_PROVIDER_IDENTITIES
+            .iter()
+            .any(|identity| short_hash(identity) == *provider_hash)
+    })
 }
 
 fn string_any<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -376,9 +413,15 @@ fn string_any<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .find_map(|key| value.get(*key).and_then(Value::as_str))
 }
 
-fn non_empty_string(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then_some(trimmed)
+fn validate_opaque_filter<'a>(value: &'a str, label: &str) -> Result<&'a str, OciEmailError> {
+    if !value.is_empty() && value == value.trim() {
+        Ok(value)
+    } else {
+        Err(labelled_invalid_input_error(
+            label,
+            " must be non-empty and contain no leading or trailing whitespace",
+        ))
+    }
 }
 
 fn domain_from_address_or_domain(value: &str) -> Option<String> {
@@ -386,6 +429,18 @@ fn domain_from_address_or_domain(value: &str) -> Option<String> {
         return email_domain(value);
     }
     is_host_token(value).then(|| value.to_ascii_lowercase())
+}
+
+fn normalize_sender_domain(value: &str) -> String {
+    domain_from_address_or_domain(value).unwrap_or_default()
+}
+
+fn selector_hash(value: &str) -> String {
+    if value.trim().is_empty() {
+        String::new()
+    } else {
+        short_hash(value)
+    }
 }
 
 fn validated_domain_any(value: &Value, keys: &[&str]) -> Option<String> {
@@ -396,6 +451,196 @@ fn redacted_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Op
     string_any(value, hash_keys)
         .map(redacted_hash)
         .or_else(|| string_any(value, raw_keys).map(short_hash))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CustodiedHash {
+    Absent,
+    Valid(String),
+    Invalid,
+}
+
+impl CustodiedHash {
+    fn is_invalid(&self) -> bool {
+        matches!(self, Self::Invalid)
+    }
+
+    fn into_option(self) -> Option<String> {
+        match self {
+            Self::Valid(value) => Some(value),
+            Self::Absent | Self::Invalid => None,
+        }
+    }
+}
+
+fn custodied_recipient_hash_any(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+) -> CustodiedHash {
+    custodied_hash_any(value, raw_keys, hash_keys, short_hash)
+}
+
+fn custodied_sender_domain(value: &Value) -> CustodiedHash {
+    match consistent_claim(value, SENDER_KEYS, normalize_sender_domain) {
+        Err(()) => CustodiedHash::Invalid,
+        Ok(None) => CustodiedHash::Absent,
+        Ok(Some(domain)) => CustodiedHash::Valid(domain),
+    }
+}
+
+fn custodied_redacted_hash_any(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+) -> CustodiedHash {
+    custodied_hash_any(value, raw_keys, hash_keys, selector_hash)
+}
+
+fn sender_claim_matches_filter(value: &Value, claim: &CustodiedHash, filter: Option<&str>) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    match claim {
+        CustodiedHash::Valid(domain) => domain == filter,
+        CustodiedHash::Invalid => SENDER_KEYS.iter().any(|key| {
+            value
+                .get(*key)
+                .and_then(Value::as_str)
+                .and_then(domain_from_address_or_domain)
+                .as_deref()
+                == Some(filter)
+        }),
+        CustodiedHash::Absent => false,
+    }
+}
+
+fn identifier_claim_matches_filter(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+    claim: &CustodiedHash,
+    filter: Option<&str>,
+) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    let raw_filter_hash = selector_hash(filter);
+    let prehashed_filter = valid_prehash(filter);
+    let matches_filter = |hash: &str| {
+        hash == raw_filter_hash
+            || (!prehashed_filter.is_empty() && hash.eq_ignore_ascii_case(&prehashed_filter))
+    };
+    match claim {
+        CustodiedHash::Valid(hash) => matches_filter(hash),
+        CustodiedHash::Invalid => {
+            raw_keys.iter().any(|key| {
+                value
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|raw| matches_filter(&selector_hash(raw)))
+            }) || hash_keys.iter().any(|key| {
+                value
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|hash| matches_filter(&valid_prehash(hash)))
+            })
+        }
+        CustodiedHash::Absent => false,
+    }
+}
+
+#[cfg(test)]
+fn opaque_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Option<String> {
+    custodied_opaque_hash_any(value, raw_keys, hash_keys).into_option()
+}
+
+fn custodied_opaque_hash_any(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+) -> CustodiedHash {
+    custodied_hash_any(value, raw_keys, hash_keys, opaque_hash)
+}
+
+fn ledger_trace_claims(value: &Value) -> (CustodiedHash, CustodiedHash) {
+    (
+        custodied_opaque_hash_any(value, MESSAGE_ID_RAW_KEYS, MESSAGE_ID_HASH_KEYS),
+        custodied_opaque_hash_any(value, CORRELATION_ID_RAW_KEYS, CORRELATION_ID_HASH_KEYS),
+    )
+}
+
+fn opaque_claim_matches_filter(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+    filter_hash: Option<&str>,
+) -> bool {
+    let Some(filter_hash) = filter_hash else {
+        return true;
+    };
+    raw_keys.iter().any(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|claim| opaque_hash(claim) == filter_hash)
+    }) || hash_keys.iter().any(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|claim| is_short_hash(claim) && claim.eq_ignore_ascii_case(filter_hash))
+    })
+}
+
+fn custodied_hash_any(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+    hash_raw: fn(&str) -> String,
+) -> CustodiedHash {
+    let raw_hash = consistent_claim(value, raw_keys, hash_raw);
+    let prehashed = consistent_claim(value, hash_keys, valid_prehash);
+    match (raw_hash, prehashed) {
+        (Err(()), _) | (_, Err(())) => CustodiedHash::Invalid,
+        (Ok(None), Ok(None)) => CustodiedHash::Absent,
+        (Ok(Some(hash)), Ok(None)) | (Ok(None), Ok(Some(hash))) => CustodiedHash::Valid(hash),
+        (Ok(Some(raw_hash)), Ok(Some(prehashed))) if raw_hash == prehashed => {
+            CustodiedHash::Valid(raw_hash)
+        }
+        (Ok(Some(_)), Ok(Some(_))) => CustodiedHash::Invalid,
+    }
+}
+
+fn consistent_claim(
+    value: &Value,
+    keys: &[&str],
+    normalize: fn(&str) -> String,
+) -> Result<Option<String>, ()> {
+    let mut normalized_claim = None;
+    for key in keys {
+        let Some(claim) = value.get(*key) else {
+            continue;
+        };
+        let raw = claim.as_str().ok_or(())?;
+        let normalized = normalize(raw);
+        if normalized.is_empty()
+            || normalized_claim
+                .as_ref()
+                .is_some_and(|existing| existing != &normalized)
+        {
+            return Err(());
+        }
+        normalized_claim = Some(normalized);
+    }
+    Ok(normalized_claim)
+}
+
+fn valid_prehash(value: &str) -> String {
+    if is_short_hash(value) {
+        value.to_ascii_lowercase()
+    } else {
+        String::new()
+    }
 }
 
 fn redacted_hash(value: &str) -> String {
@@ -436,9 +681,26 @@ fn cap_limit(value: u32, hard_limit: u32) -> u32 {
     value.clamp(1, hard_limit)
 }
 
-fn ledger_time_sort_key(value: &Value) -> Option<String> {
-    string_any(value, &["submitted_at", "submittedAt", "time", "timestamp"])
-        .and_then(utc_timestamp_key)
+fn ledger_time_sort_key(value: &Value) -> Result<Option<String>, ()> {
+    let mut timestamp_key = None;
+    for key in ["submitted_at", "submittedAt", "time", "timestamp"] {
+        let Some(claim) = value.get(key) else {
+            continue;
+        };
+        let raw = claim.as_str().ok_or(())?;
+        if raw != raw.trim() {
+            return Err(());
+        }
+        let normalized = utc_timestamp_key(raw).ok_or(())?;
+        if timestamp_key
+            .as_ref()
+            .is_some_and(|existing| existing != &normalized)
+        {
+            return Err(());
+        }
+        timestamp_key = Some(normalized);
+    }
+    Ok(timestamp_key)
 }
 
 fn utc_timestamp_key(value: &str) -> Option<String> {
@@ -633,13 +895,63 @@ mod tests {
     }
 
     #[test]
+    fn ledger_window_reconciles_every_timestamp_alias() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/timestamp-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            concat!(
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"submittedAt\":\"2026-06-30T00:10:00.000Z\",\"time\":\"2026-06-30T00:10:00.0Z\",\"recipient\":\"good@example.net\",\"message_id\":\"message-good\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\"2026-06-30T02:10:00Z\",\"recipient\":\"conflict@example.net\",\"message_id\":\"message-good\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"time\":null,\"recipient\":\"null@example.net\",\"message_id\":\"message-good\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\"not-a-time\",\"recipient\":\"malformed@example.net\",\"message_id\":\"message-good\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\" 2026-06-30T00:10:00Z \",\"recipient\":\"whitespace@example.net\",\"message_id\":\"message-good\"}\n"
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some("message-good".to_string()),
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("timestamp-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.scanned_rows, 5);
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 4);
+        assert_eq!(report.totals.returned_rows, 1);
+        assert_eq!(
+            report.rows[0].submitted_at.as_deref(),
+            Some("2026-06-30T00:10:00Z")
+        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ledger_invalid_rows"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn ledger_window_preserves_prehashed_rows_for_event_correlation() {
         let path = PathBuf::from("target/oci-email-ledger-tests/prehashed.jsonl");
         let campaign_hash = short_hash("campaign-private");
         let batch_hash = short_hash("batch-private");
         let recipient_hash = short_hash("person@example.net");
-        let message_hash = short_hash("message@example.com");
-        let correlation_hash = short_hash("corr-private");
+        let message_hash = opaque_hash("message@example.com");
+        let correlation_hash = opaque_hash("corr-private");
         fs::create_dir_all(path.parent().expect("ledger fixture parent"))
             .expect("create ledger fixture dir");
         fs::write(
@@ -720,7 +1032,7 @@ mod tests {
         assert_eq!(by_message.totals.returned_rows, 1);
         assert_eq!(
             by_message.filters.message_id_hash,
-            Some(short_hash("message-b"))
+            Some(opaque_hash("message-b"))
         );
         assert_eq!(
             by_message.rows[0].recipient_address_hash,
@@ -746,12 +1058,756 @@ mod tests {
         assert!(!by_correlation.totals.rows_capped);
         assert_eq!(
             by_correlation.filters.correlation_id_hash,
-            Some(short_hash("corr-a"))
+            Some(opaque_hash("corr-a"))
         );
         assert_eq!(
             by_correlation.rows[0].recipient_address_hash,
             Some(short_hash("first@example.net"))
         );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_trace_filters_preserve_opaque_identifier_case() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/trace-case-filter.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            concat!(
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"recipient\":\"first@example.net\",\"message_id\":\"Trace-AbC\",\"correlation_id\":\"Header-AbC\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"second@example.net\",\"message_id\":\"trace-abc\",\"correlation_id\":\"header-abc\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:12:00Z\",\"recipient\":\"third@example.net\",\"message_id\":\"Trace-AbC\",\"message_id_hash\":\"not-a-hash\",\"correlation_id\":\"Header-AbC\",\"correlation_id_hash\":\"not-a-hash\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:13:00Z\",\"recipient\":\"fourth@example.net\",\"message_id\":\"Trace-AbC\",\"message_id_hash\":\"00000000000000000000\",\"correlation_id\":\"Header-AbC\",\"correlation_id_hash\":\"00000000000000000000\"}\n"
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some("Trace-AbC".to_string()),
+                correlation_id: Some("Header-AbC".to_string()),
+                limit: Some(20),
+            },
+        )
+        .expect("case-preserving trace-filtered ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 2);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ledger_invalid_rows"));
+        assert_eq!(
+            report.filters.message_id_hash,
+            Some(opaque_hash("Trace-AbC"))
+        );
+        assert_eq!(
+            report.filters.correlation_id_hash,
+            Some(opaque_hash("Header-AbC"))
+        );
+        assert_eq!(
+            report.rows[0].message_id_hash,
+            Some(opaque_hash("Trace-AbC"))
+        );
+        assert_eq!(
+            report.rows[0].correlation_id_hash,
+            Some(opaque_hash("Header-AbC"))
+        );
+
+        for (message_id, correlation_id) in [
+            (Some(" Trace-AbC".to_string()), None),
+            (None, Some("Header-AbC ".to_string())),
+        ] {
+            let error = ledger_window(
+                &config,
+                &LedgerWindowRequest {
+                    start_time: "2026-06-30T00:00:00Z".to_string(),
+                    end_time: "2026-06-30T01:00:00Z".to_string(),
+                    sender_domain: None,
+                    campaign_id: None,
+                    batch_id: None,
+                    message_id,
+                    correlation_id,
+                    limit: Some(20),
+                },
+            )
+            .expect_err("opaque trace filters must not trim identity bytes");
+            assert_eq!(error.code(), "invalid_input");
+        }
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opaque_trace_hashes_require_raw_and_prehashed_values_to_agree() {
+        let expected = opaque_hash("Trace-AbC");
+        let matching = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "message_id_hash": expected
+        });
+        let malformed = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "message_id_hash": "not-a-hash"
+        });
+        let contradictory = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "message_id_hash": "00000000000000000000"
+        });
+
+        assert_eq!(
+            opaque_hash_any(&matching, &["message_id"], &["message_id_hash"]),
+            Some(opaque_hash("Trace-AbC"))
+        );
+        assert_eq!(
+            opaque_hash_any(&malformed, &["message_id"], &["message_id_hash"]),
+            None
+        );
+        assert_eq!(
+            opaque_hash_any(&contradictory, &["message_id"], &["message_id_hash"]),
+            None
+        );
+    }
+
+    #[test]
+    fn recipient_hashes_require_raw_and_prehashed_values_to_agree() {
+        let expected = short_hash("Person@Example.NET");
+        let matching = serde_json::json!({
+            "recipient": "Person@Example.NET",
+            "recipient_hash": expected.to_ascii_uppercase()
+        });
+        let malformed = serde_json::json!({
+            "recipient": "Person@Example.NET",
+            "recipient_hash": "not-a-hash"
+        });
+        let contradictory = serde_json::json!({
+            "recipient": "Person@Example.NET",
+            "recipient_hash": "00000000000000000000"
+        });
+
+        assert_eq!(
+            custodied_recipient_hash_any(&matching, &["recipient"], &["recipient_hash"]),
+            CustodiedHash::Valid(expected)
+        );
+        assert_eq!(
+            custodied_recipient_hash_any(&malformed, &["recipient"], &["recipient_hash"]),
+            CustodiedHash::Invalid
+        );
+        assert_eq!(
+            custodied_recipient_hash_any(&contradictory, &["recipient"], &["recipient_hash"]),
+            CustodiedHash::Invalid
+        );
+    }
+
+    #[test]
+    fn recipient_hashes_reject_malformed_and_conflicting_aliases() {
+        let malformed_hash_type = serde_json::json!({
+            "recipient": "a@example.net",
+            "recipient_hash": 123
+        });
+        let null_hash = serde_json::json!({
+            "recipient": "a@example.net",
+            "recipient_hash": null
+        });
+        let conflicting_raw_aliases = serde_json::json!({
+            "recipient": "a@example.net",
+            "email": "b@example.net",
+            "recipient_hash": short_hash("a@example.net")
+        });
+        let conflicting_hash_aliases = serde_json::json!({
+            "recipient": "a@example.net",
+            "recipient_hash": short_hash("a@example.net"),
+            "recipientAddressHash": short_hash("b@example.net")
+        });
+
+        for value in [
+            malformed_hash_type,
+            null_hash,
+            conflicting_raw_aliases,
+            conflicting_hash_aliases,
+        ] {
+            assert_eq!(
+                custodied_recipient_hash_any(
+                    &value,
+                    &["recipient", "email"],
+                    &["recipient_hash", "recipientAddressHash"]
+                ),
+                CustodiedHash::Invalid
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_trace_hashes_reject_malformed_and_conflicting_aliases() {
+        let malformed_alias = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "messageIdHash": 123
+        });
+        let conflicting_raw_aliases = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "provider_message_id": "trace-abc"
+        });
+        let agreeing_aliases = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "provider_message_id": "Trace-AbC",
+            "message_id_hash": opaque_hash("Trace-AbC")
+        });
+
+        assert_eq!(
+            opaque_hash_any(
+                &malformed_alias,
+                &["message_id", "provider_message_id"],
+                &["message_id_hash", "messageIdHash"]
+            ),
+            None
+        );
+        assert_eq!(
+            opaque_hash_any(
+                &conflicting_raw_aliases,
+                &["message_id", "provider_message_id"],
+                &["message_id_hash", "messageIdHash"]
+            ),
+            None
+        );
+        assert_eq!(
+            opaque_hash_any(
+                &agreeing_aliases,
+                &["message_id", "provider_message_id"],
+                &["message_id_hash", "messageIdHash"]
+            ),
+            Some(opaque_hash("Trace-AbC"))
+        );
+    }
+
+    #[test]
+    fn ledger_selector_claims_reconcile_every_alias() {
+        let campaign_hash = short_hash("campaign-target");
+        let agreeing = serde_json::json!({
+            "sender_domain": "example.com",
+            "senderDomain": "EXAMPLE.COM",
+            "sender": "news@example.com",
+            "campaign_id": "campaign-target",
+            "campaignId": "CAMPAIGN-TARGET",
+            "campaign_hash": campaign_hash.to_ascii_uppercase()
+        });
+        let conflicting_sender = serde_json::json!({
+            "sender_domain": "example.com",
+            "senderDomain": "other.example"
+        });
+        let conflicting_campaign = serde_json::json!({
+            "campaign_id": "campaign-target",
+            "campaignId": "campaign-other"
+        });
+        let malformed_campaign = serde_json::json!({
+            "campaign_id": "campaign-target",
+            "campaignHash": null
+        });
+
+        assert_eq!(
+            custodied_sender_domain(&agreeing),
+            CustodiedHash::Valid("example.com".to_string())
+        );
+        assert_eq!(
+            custodied_redacted_hash_any(&agreeing, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS),
+            CustodiedHash::Valid(campaign_hash)
+        );
+        assert_eq!(
+            custodied_sender_domain(&conflicting_sender),
+            CustodiedHash::Invalid
+        );
+        assert_eq!(
+            custodied_redacted_hash_any(
+                &conflicting_campaign,
+                CAMPAIGN_RAW_KEYS,
+                CAMPAIGN_HASH_KEYS
+            ),
+            CustodiedHash::Invalid
+        );
+        assert_eq!(
+            custodied_redacted_hash_any(&malformed_campaign, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS),
+            CustodiedHash::Invalid
+        );
+    }
+
+    #[test]
+    fn ledger_window_retains_filtered_selector_contradictions_as_invalid_evidence() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/selector-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        let campaign_hash = short_hash("campaign-target");
+        let batch_hash = short_hash("batch-target");
+        let rows = vec![
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:10:00Z",
+                "sender_domain": "example.com",
+                "senderDomain": "EXAMPLE.COM",
+                "sender": "news@example.com",
+                "campaign_id": "campaign-target",
+                "campaignId": "CAMPAIGN-TARGET",
+                "campaign_hash": campaign_hash.to_ascii_uppercase(),
+                "batch_id": "batch-target",
+                "batchId": "BATCH-TARGET",
+                "batch_hash": batch_hash.to_ascii_uppercase(),
+                "recipient": "good@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:11:00Z",
+                "sender_domain": "example.com",
+                "senderDomain": "other.example",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "sender-first@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:12:00Z",
+                "sender_domain": "other.example",
+                "senderDomain": "example.com",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "sender-second@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:13:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "campaignId": "campaign-other",
+                "batch_id": "batch-target",
+                "recipient": "campaign-first@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:14:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-other",
+                "campaignId": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "campaign-second@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:15:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "campaign_hash": short_hash("campaign-other"),
+                "batch_id": "batch-target",
+                "recipient": "campaign-hash@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:16:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "batchId": "batch-other",
+                "recipient": "batch-first@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:17:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-other",
+                "batchId": "batch-target",
+                "recipient": "batch-second@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:18:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "batch_hash": null,
+                "recipient": "batch-null@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:19:00Z",
+                "sender_domain": "example.com",
+                "senderDomain": null,
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "sender-null@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:20:00Z",
+                "sender_domain": "unrelated.example",
+                "senderDomain": "other.example",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "unrelated@example.net",
+                "message_id": "message-target"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:21:00Z",
+                "sender_domain": "example.com",
+                "senderDomain": "other.example",
+                "campaign_id": "campaign-target",
+                "batch_id": "batch-target",
+                "recipient": "other-message@example.net",
+                "message_id": "message-other"
+            }),
+        ];
+        let payload = rows
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize selector fixture row"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{payload}\n")).expect("write selector-custody fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: Some("campaign-target".to_string()),
+                batch_id: Some("batch-target".to_string()),
+                message_id: Some("message-target".to_string()),
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("selector-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.scanned_rows, 12);
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 9);
+        assert_eq!(report.totals.returned_rows, 1);
+        assert_eq!(report.rows[0].sender_domain.as_deref(), Some("example.com"));
+        assert_eq!(report.rows[0].campaign_hash, Some(campaign_hash));
+        assert_eq!(report.rows[0].batch_hash, Some(batch_hash));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ledger_invalid_rows"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_window_preserves_hash_shaped_raw_selector_ids() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/hash-shaped-selectors.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        let campaign_filter = "0123456789abcdef0123";
+        let batch_filter = "fedcba9876543210fedc";
+        let rows = [
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:10:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": campaign_filter,
+                "batch_id": batch_filter,
+                "recipient": "raw@example.net",
+                "message_id": "message-raw"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:11:00Z",
+                "sender_domain": "example.com",
+                "campaign_hash": campaign_filter.to_ascii_uppercase(),
+                "batch_hash": batch_filter.to_ascii_uppercase(),
+                "recipient": "prehashed@example.net",
+                "message_id": "message-prehashed"
+            }),
+            serde_json::json!({
+                "submitted_at": "2026-06-30T00:12:00Z",
+                "sender_domain": "example.com",
+                "campaign_id": campaign_filter,
+                "campaignId": "campaign-other",
+                "batch_id": batch_filter,
+                "recipient": "conflicting@example.net",
+                "message_id": "message-conflicting"
+            }),
+        ];
+        let payload = rows
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize hash-shaped fixture row"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{payload}\n")).expect("write hash-shaped selector fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: Some(campaign_filter.to_string()),
+                batch_id: Some(batch_filter.to_string()),
+                message_id: None,
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("hash-shaped selector report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.scanned_rows, 3);
+        assert_eq!(report.totals.matched_rows, 2);
+        assert_eq!(report.totals.invalid_rows, 1);
+        assert_eq!(report.totals.returned_rows, 2);
+        assert_eq!(
+            report.filters.campaign_hash.as_deref(),
+            Some(campaign_filter)
+        );
+        assert_eq!(report.filters.batch_hash.as_deref(), Some(batch_filter));
+        assert_eq!(
+            report.rows[0].campaign_hash,
+            Some(short_hash(campaign_filter))
+        );
+        assert_eq!(report.rows[0].batch_hash, Some(short_hash(batch_filter)));
+        assert_eq!(
+            report.rows[1].campaign_hash.as_deref(),
+            Some(campaign_filter)
+        );
+        assert_eq!(report.rows[1].batch_hash.as_deref(), Some(batch_filter));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn contradictory_trace_claim_invalidates_all_trace_proof_for_the_row() {
+        let message_contradiction = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "message_id_hash": "00000000000000000000",
+            "correlation_id": "Header-AbC"
+        });
+        let correlation_contradiction = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "correlation_id": "Header-AbC",
+            "correlation_id_hash": "00000000000000000000"
+        });
+
+        for value in [message_contradiction, correlation_contradiction] {
+            let row = ledger_row_summary(&value).expect("object row");
+            assert_eq!(row.message_id_hash, None);
+            assert_eq!(row.correlation_id_hash, None);
+        }
+    }
+
+    #[test]
+    fn contradictory_recipient_claim_invalidates_all_recipient_proof_for_the_row() {
+        let address_contradiction = serde_json::json!({
+            "recipient": "person@example.net",
+            "recipient_hash": "00000000000000000000",
+            "recipient_id": "person@example.net"
+        });
+        let id_contradiction = serde_json::json!({
+            "recipient": "person@example.net",
+            "recipient_id": "person@example.net",
+            "recipient_id_hash": "00000000000000000000"
+        });
+
+        for value in [address_contradiction, id_contradiction] {
+            let row = ledger_row_summary(&value).expect("object row");
+            assert_eq!(row.recipient_address_hash, None);
+            assert_eq!(row.recipient_id_hash, None);
+        }
+    }
+
+    #[test]
+    fn ledger_window_fails_closed_on_conflicting_provider_aliases() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/provider-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "{{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"provider\":\"oci-email-delivery\",\"provider_hash\":\"{}\",\"recipient\":\"good@example.net\",\"message_id\":\"message-good\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"provider\":\"oci-email-delivery\",\"providerHash\":\"00000000000000000000\",\"recipient\":\"bad@example.net\",\"message_id\":\"message-bad\"}}\n"
+                ),
+                short_hash("oci-email-delivery")
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: None,
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("provider-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 1);
+        assert!(ledger_row_has_oci_provider_authority(&report.rows[0]));
+        assert_eq!(
+            report.rows[0].provider_hash,
+            Some(short_hash("oci-email-delivery"))
+        );
+        let generic_oci_row =
+            ledger_row_summary(&serde_json::json!({"provider": "oci"})).expect("object row");
+        assert!(!ledger_row_has_oci_provider_authority(&generic_oci_row));
+
+        let filtered = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some("message-bad".to_string()),
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("filtered provider-custody ledger report");
+        assert_eq!(filtered.totals.matched_rows, 0);
+        assert_eq!(filtered.totals.invalid_rows, 1);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_window_fails_closed_on_malformed_or_conflicting_recipient_aliases() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/recipient-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "{{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"recipient\":\"good@example.net\",\"recipient_hash\":\"{}\",\"message_id\":\"message-good\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"typed@example.net\",\"recipient_hash\":123,\"message_id\":\"message-typed\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:12:00Z\",\"recipient\":\"first@example.net\",\"email\":\"second@example.net\",\"recipient_hash\":\"{}\",\"message_id\":\"message-alias\"}}\n"
+                ),
+                short_hash("good@example.net"),
+                short_hash("first@example.net")
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: None,
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("recipient-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.matched_rows, 3);
+        assert_eq!(report.totals.missing_recipient_key_count, 2);
+        assert_eq!(
+            report.rows[0].recipient_address_hash,
+            Some(short_hash("good@example.net"))
+        );
+        for row in &report.rows[1..] {
+            assert_eq!(row.recipient_address_hash, None);
+            assert_eq!(row.recipient_id_hash, None);
+        }
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_window_fails_closed_on_any_invalid_trace_claim_in_a_row() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/trace-row-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "{{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"recipient\":\"good@example.net\",\"message_id\":\"message-good\",\"correlation_id\":\"corr-good\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"message@example.net\",\"message_id\":\"message-bad\",\"message_id_hash\":\"00000000000000000000\",\"correlation_id\":\"corr-valid\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:12:00Z\",\"recipient\":\"correlation@example.net\",\"message_id\":\"message-valid\",\"correlation_id\":\"corr-bad\",\"correlation_id_hash\":\"{}\"}}\n"
+                ),
+                opaque_hash("other-correlation")
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: None,
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("trace-row-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 2);
+        assert_eq!(report.totals.missing_trace_key_count, 0);
+        assert_eq!(
+            report.rows[0].message_id_hash,
+            Some(opaque_hash("message-good"))
+        );
+        assert_eq!(
+            report.rows[0].correlation_id_hash,
+            Some(opaque_hash("corr-good"))
+        );
+
+        for (message_id, correlation_id) in [
+            (Some("message-bad".to_string()), None),
+            (None, Some("corr-bad".to_string())),
+        ] {
+            let filtered = ledger_window(
+                &config,
+                &LedgerWindowRequest {
+                    start_time: "2026-06-30T00:00:00Z".to_string(),
+                    end_time: "2026-06-30T01:00:00Z".to_string(),
+                    sender_domain: None,
+                    campaign_id: None,
+                    batch_id: None,
+                    message_id,
+                    correlation_id,
+                    limit: Some(20),
+                },
+            )
+            .expect("filtered invalid trace claim report");
+            assert_eq!(filtered.status, "degraded");
+            assert_eq!(filtered.totals.matched_rows, 0);
+            assert_eq!(filtered.totals.invalid_rows, 1);
+            assert!(filtered
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ledger_invalid_rows"));
+        }
 
         let _ = fs::remove_file(&path);
     }
@@ -763,8 +1819,8 @@ mod tests {
         let other_message = "message-other";
         let shared_correlation = "corr-shared";
         let other_correlation = "corr-other";
-        let target_message_hash = short_hash(target_message);
-        let shared_correlation_hash = short_hash(shared_correlation);
+        let target_message_hash = opaque_hash(target_message);
+        let shared_correlation_hash = opaque_hash(shared_correlation);
         fs::create_dir_all(path.parent().expect("ledger fixture parent"))
             .expect("create ledger fixture dir");
         fs::write(

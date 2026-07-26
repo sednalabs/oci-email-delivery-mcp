@@ -33,8 +33,12 @@ green.
   local ledger proof and still returns `send_authorized=false`.
 - `oci_email_traceability_audit` is the preferred exact-proof receipt when an
   operator needs to answer whether a specific message/header trace reached OCI
-  logs and overlaps the configured local send ledger. It returns
-  `aggregate_only=true` until exact message and recipient overlap is proven.
+  logs and overlaps the configured local send ledger. Its v2 output identifies
+  itself with `schema="oci-email-delivery.traceability-audit.v2"` and separates
+  complete, partial, unavailable, and not-requested evidence states before any
+  proof decision. `provider_evidence_available=false` means no provider metric
+  datapoint or log event was observed; `true` is observed-evidence existence,
+  not provider acceptance, relay, completeness, or exact traceability.
 - `oci_email_monitoring_snapshot_artifact` writes redacted watch-window,
   send-readiness, or traceability-audit receipts to the configured private
   snapshot root for later replay. It returns a generated filename, root hash,
@@ -67,13 +71,22 @@ Pause the pilot or keep it paused when any of these are true:
 - provider warning, authentication failure, blocklist evidence, or
   reputation-style deferral appears;
 - event ingestion fails or cannot be reconciled to the local send ledger;
-- `oci_email_traceability_audit` returns `traceability_no_log_events`,
+- `oci_email_traceability_audit` returns explicit unavailable or partial
+  evidence codes before it can return an empty-result code:
+  `traceability_log_evidence_unavailable`, `traceability_log_evidence_partial`,
+  `traceability_trace_evidence_unavailable`,
+  `traceability_trace_evidence_partial`,
+  `traceability_ledger_evidence_unavailable`, or
+  `traceability_ledger_evidence_partial` are all stop conditions. Successful
+  complete reads may instead return `traceability_no_log_events`,
   `traceability_no_trace_events`, `traceability_no_ledger_rows`,
   `traceability_expected_ledger_rows_mismatch`,
   `traceability_no_ledger_trace_key_overlap`,
+  `traceability_ledger_provider_message_identity_mismatch`,
   `traceability_no_recipient_hash_overlap`,
-  `traceability_no_single_ledger_row_overlap`, or `aggregate_only=true` for
-  a send window that is expected to be traceable;
+  `traceability_no_single_ledger_row_overlap`,
+  `traceability_provider_evidence_unavailable`, or `aggregate_only=true` for a
+  send window that is expected to be traceable;
 - any event or suppression response returns exactly the requested limit; narrow
   the window or filters and rerun before treating the result set as complete.
 
@@ -147,7 +160,10 @@ component are present.
 authorizes a send by itself. A missing or blank campaign/batch identifier,
 zero expected rows, a row-count mismatch, missing ledger trace keys, missing
 recipient keys, capped ledger rows, or invalid ledger rows keeps the lane
-paused.
+paused. Every matched ledger row must also carry an unambiguous
+service-specific OCI Email Delivery provider identity. A missing identity, a
+non-OCI identity, or a mixed cohort containing another provider keeps readiness
+blocked even when the expected row count matches.
 
 `oci_email_watch_window` remains useful before a specific send batch exists or
 for diagnosis when ledger proof is not expected yet:
@@ -198,16 +214,55 @@ same-row trace-key and recipient-hash overlap, not row counts alone:
 }
 ```
 
-Expected: `send_authorized=false`. `exact_message_traceable=true` only when a
+Expected: `send_authorized=false`. Branch on
+`schema="oci-email-delivery.traceability-audit.v2"` and the evidence-state
+fields before reading a summary scalar. `exact_message_traceable=true` only when a
 message/header trace returned OCI log events, the configured local ledger has
-matching rows for the window, the ledger is uncapped and valid, and one ledger
-row overlaps both the requested trace key and OCI event recipient hash. The
+exactly one matching row for the window, the ledger is uncapped and valid, and
+that row overlaps both the trace identity and recipient hash on the same
+returned OCI event. The selected ledger row must carry an unambiguous OCI Email
+Delivery provider identity. Missing provider identity, a non-OCI provider, or
+contradictory raw/prehashed provider aliases is a stop condition; provider
+hashes are compared only against the adapter's bounded OCI identity allowlist.
+Multiple provider lifecycle events may relate to that one
+row only when every returned trace event has the same complete message-id and
+recipient identity. Missing or heterogeneous provider trace identity is a
+blocker. Multiple matching ledger rows are also a blocker even when
+`expected_ledger_rows` equals the observed count. For a message-id trace, the
+returned event message-id hash must match. For a header trace, the returned
+value hash for the requested header name must match; matching only the request
+criterion is insufficient. If that ledger row also has a message-id hash, it
+must equal the uniform provider message identity; an absent ledger message id
+is allowed because the correlation header is the requested authority. Message
+ids and header/correlation values are opaque case-sensitive identities, so case-distinct values must produce different hashes and must not overlap. The
+provider parser checks every present recipient and message-id alias: each must
+be a non-empty string and all aliases for one identity must agree. Null,
+non-string, or conflicting aliases make the event evidence unavailable. The
+same custody rule applies to every present outer/record timestamp alias: each
+must be a strict UTC string and all aliases must represent the same instant.
+Malformed, null, or conflicting timestamp residue makes event evidence
+unavailable before window proof.
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
-`single_ledger_row_overlap` is the same-row gate. Otherwise the response is
-blocked or degraded with `aggregate_only=true`; aggregate accepted, relayed,
-suppressed, or bounce totals are useful pressure signals, not per-recipient
-proof.
+`single_ledger_row_overlap` is the same-row overlap gate, not a cardinality
+claim; exact proof separately requires `ledger_rows_matched=1` and one complete,
+uniform provider trace identity across all returned trace lifecycle events.
+Without exact proof, the response is blocked or degraded. `aggregate_only=true`
+means provider metric datapoints or log events were actually observed but are
+not per-recipient proof. `provider_evidence_available=false` means acceptance, relay, and exact
+traceability are unproven. `log_evidence_state` and `ledger_evidence_state`
+are `complete`, `partial`, or `unavailable`; `trace_evidence_state` also has
+`not_requested`. `log_events_returned` is populated only for complete combined
+general-event plus requested-trace evidence; a successful uncapped empty read
+is `0` even when the nested report carries the expected no-events warning, but
+capped, partial, or unavailable combined evidence is `null`. A successfully
+read, uncapped, valid zero-row ledger is `complete` with zero/false summary
+values despite its expected no-rows warning; capped, invalid, malformed, or
+missing-key ledger evidence is `partial`. Ledger counts/caps/overlap scalars
+are `null` when the ledger is unavailable and otherwise retain the observed
+`0`/`false`/`true` value. Treat unavailable or partial evidence codes,
+including `traceability_provider_evidence_unavailable`, as stop codes rather
+than successful empty provider results.
 
 Use `oci_email_monitoring_snapshot_artifact` whenever the receipt needs to be
 replayable outside the MCP transcript. The tool writes only under
@@ -294,7 +349,37 @@ have message or correlation hashes, recipient address or recipient-id hashes,
 and no raw recipient, message id, subject, campaign id, batch id, or private
 path is returned. When `message_id` or `correlation_id` is supplied, the
 returned `filters` contain only redacted hashes and the filter is applied before
-the row cap. `ledger_no_rows_matched`, `ledger_results_capped`,
+the row cap. Raw message/correlation fields use a case-preserving opaque hash.
+Prehashed message/correlation fields must already contain a valid 20-hex digest
+from the same contract. If a raw and prehashed form coexist, their hash must
+agree; malformed or contradictory pairs are missing trace evidence rather than
+being rehashed or silently preferring one representation. A malformed or
+contradictory message or correlation claim invalidates all trace proof from
+that row; the other trace key cannot preserve exact proof. If a raw or valid
+prehashed alias claims the requested filter, the contradictory row remains
+visible in `invalid_rows` and blocks completeness instead of disappearing
+before row-count evaluation. Every present ledger timestamp alias must be a
+strict UTC string and all aliases must normalize to the same instant. Null,
+malformed, or conflicting timestamp residue is counted in `invalid_rows`
+before trace filters can discard it. Recipient address
+and recipient-id raw/prehashed pairs must also agree. A contradiction in either
+pair invalidates all recipient proof from that row. When both valid address and
+recipient-id hashes are present, provider-recipient overlap uses the address
+hash; the alternate id cannot override contradictory address evidence. Every
+present identity alias must be a string, and duplicate raw or prehashed aliases
+must agree. Nulls, other JSON types, and conflicting aliases fail closed.
+Sender, campaign, and batch selectors are also reconciled before filtering.
+All present aliases must agree on one normalized sender domain or redacted
+campaign/batch identifier, including raw/prehashed agreement. If any alias
+claims the requested scope, malformed or contradictory selector residue is
+retained in `invalid_rows` and blocks completeness instead of disappearing
+before exact row-count evaluation. Because a legitimate raw identifier may
+itself be 20 hexadecimal characters, a hash-shaped campaign or batch filter is
+matched as both a raw identifier and a valid prehash; downstream proof must use
+the returned redacted row identities rather than infer which representation
+the caller intended.
+`ledger_no_rows_matched`,
+`ledger_results_capped`,
 `ledger_missing_trace_keys`, or `ledger_missing_recipient_keys` keeps the lane
 paused for proof sends that should have ledger rows.
 
@@ -423,6 +508,14 @@ Check:
 Check:
 
 - expected accepted/relayed/bounce/suppression event types appear;
+- every provider result was recognized as an OutboundAccepted or
+  OutboundRelayed record with an object payload, non-empty action, and valid UTC
+  timestamp inside the requested half-open window; one unrecognized,
+  out-of-window, or filter-mismatching result makes the component unavailable
+  rather than contributing to event counts;
+- forward-compatible unknown provider actions appear only as `unknown`; no raw
+  action text is copied into the receipt, and their presence makes event
+  evidence partial so it cannot support exact traceability;
 - `source_domain` is matched after the MCP parses redacted event summaries,
   so an empty result means no matching summarized event evidence was found; it
   does not prove the provider emitted no events for the broader compartment.

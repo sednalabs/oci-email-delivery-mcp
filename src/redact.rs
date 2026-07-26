@@ -6,6 +6,11 @@ pub fn short_hash(value: &str) -> String {
     hex::encode(&digest[..10])
 }
 
+pub fn opaque_hash(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    hex::encode(&digest[..10])
+}
+
 pub fn redact_email(value: &str) -> String {
     let trimmed = value.trim();
     let Some((_local, domain)) = trimmed.split_once('@') else {
@@ -276,6 +281,13 @@ mod tests {
             short_hash("user@example.com")
         );
         assert_eq!(short_hash("user@example.com").len(), 20);
+    }
+
+    #[test]
+    fn opaque_hashes_preserve_case_and_whitespace() {
+        assert_ne!(opaque_hash("Trace-AbC"), opaque_hash("trace-abc"));
+        assert_ne!(opaque_hash("trace-abc"), opaque_hash(" trace-abc"));
+        assert_eq!(opaque_hash("trace-abc").len(), 20);
     }
 
     #[test]

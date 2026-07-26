@@ -141,7 +141,7 @@ impl OciEmailMcpServer {
                 ),
                 read_capability(
                     "oci_email_traceability_audit",
-                    "Audit whether one UTC window proves exact OCI log and local send-ledger traceability or only aggregate delivery pressure.",
+                    "Audit whether one UTC window proves an exact trace, shows observed aggregate provider evidence, or reports provider evidence as unavailable.",
                     ["oci", "email", "traceability", "ledger", "logs"],
                 ),
                 ToolCapability::new("oci_email_monitoring_snapshot_artifact")
@@ -274,7 +274,7 @@ impl OciEmailMcpServer {
     }
 
     #[tool(
-        description = "Audit whether one UTC window proves exact OCI Email Delivery traceability across logs and the local send ledger without authorizing a send."
+        description = "Produce a no-send traceability-audit.v2 receipt for one UTC window, separating complete, partial, unavailable, and not-requested evidence from observed provider evidence without inferring acceptance, relay, or exact proof."
     )]
     fn oci_email_traceability_audit(
         &self,
@@ -519,10 +519,15 @@ pub mod tests_support {
                 .header_value
                 .as_deref()
                 .map(|_| "fixture".to_string());
+            if request.header_value.is_some() {
+                for event in &mut events.events {
+                    event.trace_header_value_hash = Some("fixture".to_string());
+                }
+            }
             Ok(TraceMessageReport {
                 status: "ok".to_string(),
                 criteria: TraceCriteria {
-                    message_id_hash: Some("fixture".to_string()),
+                    message_id_hash: request.message_id.as_ref().map(|_| "fixture".to_string()),
                     header_name: request.header_name.clone(),
                     header_value_hash: request
                         .header_value
@@ -629,7 +634,7 @@ pub mod tests_support {
                 batches: vec!["fixture".to_string()],
                 rows: vec![LedgerRowSummary {
                     submitted_at: Some("2026-06-30T00:10:00Z".to_string()),
-                    provider_hash: Some("fixture".to_string()),
+                    provider_hash: Some("0010a331516757b7b31e".to_string()),
                     campaign_hash: Some("fixture".to_string()),
                     batch_hash: Some("fixture".to_string()),
                     sender_domain: Some("example.com".to_string()),
@@ -695,6 +700,7 @@ pub mod tests_support {
                 recipient_domain: Some("example.net".to_string()),
                 recipient_hash: Some("fixture".to_string()),
                 message_id_hash: Some("fixture".to_string()),
+                trace_header_value_hash: None,
                 error_type: None,
                 bounce_category: None,
                 smtp_status: None,

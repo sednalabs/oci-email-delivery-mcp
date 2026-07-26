@@ -90,9 +90,10 @@ Third addendum: the later `oci_email_traceability_audit` tool makes the
 aggregate-versus-exact boundary explicit. It returns `exact_message_traceable`
 only when a requested message/header trace has OCI log events and those events
 overlap the same uncapped local ledger row by trace key and recipient hash.
-Otherwise it returns `aggregate_only=true` with blocker findings such as no log
-events, no trace events, no ledger rows, no trace-key overlap, no
-recipient-hash overlap, or split-row overlap.
+When provider metric datapoints or log events exist without exact overlap, it
+returns `aggregate_only=true`. When provider evidence is unavailable, it
+returns `provider_evidence_available=false`, leaves unavailable aggregate
+totals `null`, and blocks without claiming aggregate delivery pressure.
 Fixture/schema proof is current; live exact traceability remains pending until
 a real seed/proof window has matching OCI log events and configured local
 ledger rows.
@@ -113,4 +114,7 @@ ledger rows.
   is treated as a full monitor.
 - The production host must configure the real private snapshot root before
   monitoring receipts can be treated as durable operational evidence.
-- Hosted validation and reviewer signoff are still pending.
+- This historical no-send proof predates traceability-audit.v2. The current
+  candidate needs its own exact-head hosted validation and review receipts;
+  neither this note nor fixture coverage proves merge, release, installation,
+  or live traceability.

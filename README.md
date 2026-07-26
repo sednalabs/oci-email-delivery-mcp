@@ -20,7 +20,7 @@ The server exposes thirteen curated intent tools:
 | `oci_email_suppression_delta` | Compare full active suppressions with a bounded window and classify clean, incomplete, or blocked evidence. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, logging configuration, metrics, logs, optional trace, and suppressions. |
 | `oci_email_send_readiness` | Build one read-only send-window receipt that combines watch-window evidence with local send-ledger proof and expected row-count gates. |
-| `oci_email_traceability_audit` | Audit whether one UTC window proves exact message/recipient traceability across OCI logs and the local send ledger, or only aggregate delivery pressure. |
+| `oci_email_traceability_audit` | Produce a v2 no-send traceability audit that distinguishes complete, partial, unavailable, and not-requested evidence from observed provider evidence. |
 | `oci_email_monitoring_snapshot_artifact` | Write one redacted private monitoring, send-readiness, or traceability receipt artifact under the configured local snapshot root. |
 
 No tools send email, mutate OCI resources, enable logs, change DNS, import
@@ -106,8 +106,19 @@ contract tests with an OCI profile configured. The live smoke must not use
 - `oci_email_events` keeps the provider query scoped to Email Delivery event
   types plus exact action/message/header/recipient-domain filters, then applies
   `source_domain` after redacted event summaries are parsed. This avoids hiding
-  valid events if OCI varies the top-level log `source` field; an empty result
-  with `source_domain` is still missing event evidence, not proof of no sends.
+  valid events if OCI varies the top-level log `source` field; a successful
+  JSON empty result with `source_domain` is still missing event evidence, not
+  proof of no sends. Blank or JSON-null Logging Search output is unavailable
+  evidence and blocks the component rather than being reshaped as an empty
+  result. Every returned row must contain a recognized OutboundAccepted or
+  OutboundRelayed record with an object payload, non-empty action, and valid
+  UTC timestamp inside the requested half-open window. Every present outer or
+  record timestamp alias must be a string, parse as strict UTC, and represent
+  the same instant; malformed, null, conflicting, unrecognized, or
+  out-of-window rows make the event read unavailable instead of contributing
+  synthetic evidence. Forward-compatible unknown actions are summarized as
+  `unknown` rather than copied from the provider payload, and make the event
+  evidence partial so they cannot authorize exact traceability.
   `provider_returned` and `source_domain_matched` distinguish no provider
   events from post-summary source-domain mismatch without returning raw events.
   When no `source_domain` is requested, `source_domain_matched` equals the
@@ -133,7 +144,34 @@ contract tests with an OCI profile configured. The live smoke must not use
   The ledger tool summarizes JSONL rows with hashes and domains only. It can
   narrow a large window by message id or approved non-PII correlation value
   before applying the returned-row cap, so exact traceability audits do not
-  have to expose or scan a whole campaign in the transcript.
+  have to expose or scan a whole campaign in the transcript. Raw message and
+  correlation values use the case-preserving opaque trace-key hash contract.
+  Prehashed trace fields must contain a valid 20-hex digest from that same
+  contract. When raw and prehashed forms coexist they must agree; malformed or
+  contradictory pairs fail closed as missing trace evidence. If either a
+  message or correlation claim is invalid, all trace proof from that ledger row
+  is invalidated; the other key cannot override contradictory row evidence.
+  A contradictory row that claims the requested message or correlation filter
+  is retained in `invalid_rows` and blocks completeness; it cannot disappear
+  before expected-row or exact-proof evaluation.
+  Every present ledger timestamp alias must be a UTC string and all aliases
+  must represent the same instant. Null, malformed, or conflicting timestamp
+  residue is retained as `invalid_rows` evidence before trace filtering.
+  Sender, campaign, and batch selector aliases are reconciled before any row is
+  narrowed away. All present aliases for one selector must normalize to the
+  same domain or redacted identifier, and raw/prehashed campaign or batch forms
+  must agree. A malformed or contradictory row that claims the requested scope
+  is retained as `invalid_rows`, so it cannot hide behind selector ordering and
+  weaken exact one-row proof. A 20-hex campaign or batch filter is deliberately
+  matched under both valid interpretations: a raw identifier with those exact
+  characters and an already-redacted hash.
+  Recipient address and recipient-id raw/prehashed pairs follow the same
+  custody rule. A
+  contradictory pair invalidates all recipient proof from that ledger row, and
+  a present address hash is authoritative over an alternate recipient-id hash
+  for provider-event overlap. Every present alias must be a string and all
+  aliases for one identity must agree; malformed types, nulls, or conflicting
+  duplicate aliases also fail closed.
 - Private monitoring snapshot artifacts are disabled unless
   `OCI_MCP_SNAPSHOT_ROOT` is set to an absolute existing private directory.
   On Unix, the directory must not grant group or other permissions. The
@@ -148,14 +186,61 @@ contract tests with an OCI profile configured. The live smoke must not use
   an event source domain is available.
 - `oci_email_send_readiness` also requires an expected local ledger row count
   and blocks when ledger rows are missing, capped, invalid, or lack trace or
-  recipient reconciliation keys.
-- `oci_email_traceability_audit` is the exact-trace boundary. It returns
-  `aggregate_only=true` until a requested message/header trace returns OCI log
-  events and one uncapped local ledger row overlaps both the requested trace
-  key and the OCI event recipient hash. The audit passes the requested trace
-  key into the local ledger read before the row cap, which keeps high-volume
-  windows measurable without weakening exact-proof requirements. Aggregate
-  metrics alone are never reported as per-recipient proof.
+  recipient reconciliation keys. Every matched readiness row must carry an
+  unambiguous service-specific OCI Email Delivery provider identity; missing,
+  non-OCI, mixed-provider, or contradictory provider claims remain blocked.
+- `oci_email_traceability_audit` is the exact-trace boundary. Its v2 output has
+  `schema="oci-email-delivery.traceability-audit.v2"`; consumers must branch
+  on that schema and the evidence-state fields, rather than treat summary
+  scalars as complete proof. `log_evidence_state` and `ledger_evidence_state`
+  are `complete`, `partial`, or `unavailable`; `trace_evidence_state` also
+  permits `not_requested`. `log_events_returned` is populated only after the
+  general-event read and, when requested, the trace read both complete; a
+  successful complete empty read is `0`, while partial or unavailable combined
+  log evidence is `null`. A successful uncapped empty provider response remains
+  complete even though its nested report carries the expected no-events
+  warning; blank, malformed, capped, or missing responses do not. Trace scalars
+  are `null` when trace evidence is `not_requested`, unavailable, or
+  incomplete. Ledger scalars are `null` when the ledger is unavailable and
+  otherwise preserve the observed `0`, `false`, or `true` value. In v1 the
+  event, ledger-count, cap, and overlap scalars were non-null and did not carry
+  explicit completeness state. V2 consumers must branch on the schema and state
+  fields before interpreting nullable values.
+  `provider_evidence_available=true` only means a provider metric datapoint or
+  log event was observed; it is not a completeness, acceptance, relay, or exact
+  traceability claim. `aggregate_only=true` means observed provider evidence
+  lacks an exact message-to-recipient overlap, and
+  `exact_message_traceable=true` additionally requires complete requested log
+  evidence, exactly one matching valid and uncapped local ledger row, equality
+  with a supplied positive `expected_ledger_rows`, and that one row overlapping
+  both the trace identity and recipient hash on the same returned event. The
+  selected ledger row must also carry an unambiguous OCI Email Delivery
+  provider identity. Supported raw provider spellings are normalized into a
+  bounded allowlist; a missing provider identity, a non-OCI identity, or
+  contradictory raw/prehashed provider aliases blocks exact proof.
+  Multiple provider lifecycle events may relate to that one ledger row only
+  when every returned trace event has the same complete message-id and
+  recipient identity. Missing or heterogeneous event identity blocks exact
+  proof. Multiple matching ledger rows also block exact proof even when the
+  supplied expected count equals the observed count. A message-id trace uses the
+  returned event's message-id hash. A correlation-header trace uses only the
+  requested header name's returned value hash; the request criterion by itself
+  is not event identity. When a header-traced ledger row also carries a
+  message-id hash, that identity must match the uniform provider message
+  identity; a genuinely absent ledger message id remains admissible because
+  the correlation header is authoritative. These opaque trace-key hashes
+  preserve case and exact bytes; they deliberately do not use the case-folded address/domain hash contract. Every
+  present provider-event recipient or message-id alias must be a non-empty
+  string, and all aliases for that identity must agree under its field-specific
+  hash contract. Malformed, null, or conflicting aliases make event evidence
+  unavailable.
+  Omitting the optional expected count skips only that count
+  comparison. Because this flag is scoped to one message trace, it may be true
+  while the overall receipt remains blocked by an orthogonal profile, metric,
+  logging-status, or suppression finding; neither state authorizes a send. The
+  audit passes the requested trace key
+  into the local ledger read before the row cap, which keeps high-volume windows
+  measurable without weakening exact-proof requirements.
 
 ## Release And Operations
 
