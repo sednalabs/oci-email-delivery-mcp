@@ -1090,9 +1090,10 @@ fn traceability_audit_marks_trace_not_requested_without_calling_it_unavailable()
         .findings
         .iter()
         .any(|finding| finding.code == "traceability_trace_criteria_missing"));
-    assert!(!report.findings.iter().any(|finding| {
-        finding.code == "traceability_trace_evidence_unavailable"
-    }));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| { finding.code == "traceability_trace_evidence_unavailable" }));
 }
 
 #[test]

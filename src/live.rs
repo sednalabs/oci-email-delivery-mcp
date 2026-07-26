@@ -2186,10 +2186,7 @@ fn log_evidence_state(watch_report: &WatchWindowReport) -> String {
     }
 }
 
-fn trace_events_returned(
-    watch_report: &WatchWindowReport,
-    evidence_state: &str,
-) -> Option<usize> {
+fn trace_events_returned(watch_report: &WatchWindowReport, evidence_state: &str) -> Option<usize> {
     (evidence_state == "complete")
         .then(|| {
             watch_report
