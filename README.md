@@ -20,7 +20,7 @@ The server exposes thirteen curated intent tools:
 | `oci_email_suppression_delta` | Compare full active suppressions with a bounded window and classify clean, incomplete, or blocked evidence. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, logging configuration, metrics, logs, optional trace, and suppressions. |
 | `oci_email_send_readiness` | Build one read-only send-window receipt that combines watch-window evidence with local send-ledger proof and expected row-count gates. |
-| `oci_email_traceability_audit` | Audit whether one UTC window proves an exact trace, shows observed aggregate provider evidence, or reports provider evidence as unavailable. |
+| `oci_email_traceability_audit` | Produce a v2 no-send traceability audit that distinguishes complete, partial, unavailable, and not-requested evidence from observed provider evidence. |
 | `oci_email_monitoring_snapshot_artifact` | Write one redacted private monitoring, send-readiness, or traceability receipt artifact under the configured local snapshot root. |
 
 No tools send email, mutate OCI resources, enable logs, change DNS, import
@@ -149,22 +149,28 @@ contract tests with an OCI profile configured. The live smoke must not use
 - `oci_email_send_readiness` also requires an expected local ledger row count
   and blocks when ledger rows are missing, capped, invalid, or lack trace or
   recipient reconciliation keys.
-- `oci_email_traceability_audit` is the exact-trace boundary. It returns
-  `provider_evidence_available=true` only when the window contains at least one
-  provider metric datapoint or log event. It returns `aggregate_only=true` when
-  that evidence exists but a requested message/header trace does not overlap
-  one uncapped local ledger row by both trace key and recipient hash. When
-  provider evidence is unavailable, aggregate totals are `null`, not zero, and
-  the response is blocked without claiming aggregate delivery pressure. The
-  summary fields `log_events_returned`, `ledger_rows_matched`, and
-  `ledger_rows_capped` are nullable component-read indicators: `null` means the
-  corresponding report was unavailable, while `0` or `false` means a successful
-  empty or uncapped read. The ledger overlap fields
-  `ledger_trace_key_overlap`, `recipient_hash_overlap`, and
-  `single_ledger_row_overlap` follow the same rule: they are `null` when the
-  ledger report is unavailable, and are `false` or `true` only after an
-  available ledger read. The audit passes the requested trace key into the
-  local ledger read before the row cap, which keeps high-volume windows
+- `oci_email_traceability_audit` is the exact-trace boundary. Its v2 output has
+  `schema="oci-email-delivery.traceability-audit.v2"`; consumers must branch
+  on that schema and the evidence-state fields, rather than treat summary
+  scalars as complete proof. `log_evidence_state` and `ledger_evidence_state`
+  are `complete`, `partial`, or `unavailable`; `trace_evidence_state` also
+  permits `not_requested`. `log_events_returned` is populated only after the
+  general-event read and, when requested, the trace read both complete; a
+  successful complete empty read is `0`, while partial or unavailable combined
+  log evidence is `null`. Trace scalars are `null` when trace evidence is
+  unavailable or incomplete. Ledger scalars are `null` when the ledger is
+  unavailable and otherwise preserve the observed `0`, `false`, or `true`
+  value. In v1 these
+  scalars did not carry explicit completeness state; v2 consumers must not
+  infer acceptance, relay, or exact proof from v1-style nullable values.
+  `provider_evidence_available=true` only means a provider metric datapoint or
+  log event was observed; it is not a completeness, acceptance, relay, or exact
+  traceability claim. `aggregate_only=true` means observed provider evidence
+  lacks an exact message-to-recipient overlap, and
+  `exact_message_traceable=true` additionally requires complete requested log
+  evidence and one uncapped local ledger row overlapping both the requested
+  trace key and event recipient hash. The audit passes the requested trace key
+  into the local ledger read before the row cap, which keeps high-volume windows
   measurable without weakening exact-proof requirements.
 
 ## Release And Operations

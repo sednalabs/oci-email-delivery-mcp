@@ -1910,21 +1910,27 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
     }
 
     let trace_requested = watch_report.trace_requested;
+    let log_evidence_state = log_evidence_state(&watch_report);
+    let trace_evidence_state = trace_evidence_state(&watch_report);
+    let ledger_evidence_state = ledger_evidence_state(&ledger);
     let ledger_trace_key_overlap = ledger_trace_key_overlap(ledger.report.as_ref(), &watch_report);
     let recipient_hash_overlap = recipient_hash_overlap(ledger.report.as_ref(), &watch_report);
     let single_ledger_row_overlap =
         single_ledger_row_overlap(ledger.report.as_ref(), &watch_report);
-    let log_events_returned = log_events_returned(&watch_report);
-    let trace_events_returned = trace_events_returned(&watch_report);
-    let ledger_exact_ready = ledger.report.as_ref().is_some_and(|report| {
-        report.totals.matched_rows > 0
-            && report.totals.invalid_rows == 0
-            && !report.totals.rows_capped
-            && report.totals.missing_trace_key_count == 0
-            && report.totals.missing_recipient_key_count == 0
-    });
+    let log_events_returned = log_events_returned(&watch_report, &log_evidence_state);
+    let trace_events_returned = trace_events_returned(&watch_report, &trace_evidence_state);
+    let ledger_exact_ready = ledger_evidence_state == "complete"
+        && ledger.report.as_ref().is_some_and(|report| {
+            report.totals.matched_rows > 0
+                && report.totals.invalid_rows == 0
+                && !report.totals.rows_capped
+                && report.totals.missing_trace_key_count == 0
+                && report.totals.missing_recipient_key_count == 0
+        });
     let exact_message_traceable = trace_requested
         && !expected_rows_zero
+        && log_evidence_state == "complete"
+        && trace_evidence_state == "complete"
         && trace_events_returned.is_some_and(|returned| returned > 0)
         && ledger_exact_ready
         && ledger_trace_key_overlap
@@ -1939,18 +1945,55 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
             "No message id or correlation header trace was requested; exact message traceability cannot be proven from aggregate metrics.",
         ));
     }
-    if log_events_returned.is_none_or(|returned| returned == 0) {
+    if log_evidence_state == "unavailable" {
+        findings.push(finding(
+            "blocker",
+            "traceability_log_evidence_unavailable",
+            "Combined OCI Email Delivery log evidence is unavailable; provider acceptance, relay, and exact message traceability are not proven.",
+        ));
+    } else if log_evidence_state == "partial" {
+        findings.push(finding(
+            "blocker",
+            "traceability_log_evidence_partial",
+            "Combined OCI Email Delivery log evidence is partial; provider acceptance, relay, and exact message traceability are not proven.",
+        ));
+    } else if log_events_returned == Some(0) {
         findings.push(finding(
             "blocker",
             "traceability_no_log_events",
             "OCI Email Delivery logs returned no events for this audit window; aggregate metrics are not exact message proof.",
         ));
     }
-    if trace_requested && trace_events_returned.unwrap_or(0) == 0 {
+    if trace_requested && trace_evidence_state == "unavailable" {
+        findings.push(finding(
+            "blocker",
+            "traceability_trace_evidence_unavailable",
+            "Requested OCI Email Delivery trace evidence is unavailable; exact message traceability is not proven.",
+        ));
+    } else if trace_requested && trace_evidence_state == "partial" {
+        findings.push(finding(
+            "blocker",
+            "traceability_trace_evidence_partial",
+            "Requested OCI Email Delivery trace evidence is partial; exact message traceability is not proven.",
+        ));
+    } else if trace_requested && trace_events_returned == Some(0) {
         findings.push(finding(
             "blocker",
             "traceability_no_trace_events",
             "The requested message or correlation trace returned no OCI Email Delivery log events.",
+        ));
+    }
+    if ledger_evidence_state == "unavailable" {
+        findings.push(finding(
+            "blocker",
+            "traceability_ledger_evidence_unavailable",
+            "Local send-ledger evidence is unavailable; exact message traceability is not proven.",
+        ));
+    } else if ledger_evidence_state == "partial" {
+        findings.push(finding(
+            "blocker",
+            "traceability_ledger_evidence_partial",
+            "Local send-ledger evidence is partial; exact message traceability is not proven.",
         ));
     }
     if trace_requested
@@ -2005,7 +2048,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
         ));
     }
 
-    let summary = traceability_summary(&watch_report, ledger.report.as_ref());
+    let summary = traceability_summary(&watch_report, &ledger);
     let status = traceability_status(&watch_report, &ledger, &findings, exact_message_traceable);
     let decision = match status.as_str() {
         "blocked" => "remain_paused".to_string(),
@@ -2017,6 +2060,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
     let source_domain = watch_report.source_domain.clone();
 
     TraceabilityAuditReport {
+        schema: "oci-email-delivery.traceability-audit.v2".to_string(),
         status,
         decision,
         send_authorized: false,
@@ -2044,8 +2088,12 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
 
 fn traceability_summary(
     watch_report: &WatchWindowReport,
-    ledger_report: Option<&LedgerWindowReport>,
+    ledger: &ToolCallOutcome<LedgerWindowReport>,
 ) -> TraceabilitySummary {
+    let log_evidence_state = log_evidence_state(watch_report);
+    let trace_evidence_state = trace_evidence_state(watch_report);
+    let ledger_evidence_state = ledger_evidence_state(ledger);
+    let ledger_report = ledger.report.as_ref();
     TraceabilitySummary {
         aggregate_accepted: observed_metric_total(watch_report, "accepted", |totals| {
             totals.accepted
@@ -2057,8 +2105,11 @@ fn traceability_summary(
         aggregate_suppressed: observed_metric_total(watch_report, "suppressed", |totals| {
             totals.suppressed
         }),
-        log_events_returned: log_events_returned(watch_report),
-        trace_events_returned: trace_events_returned(watch_report),
+        log_evidence_state: log_evidence_state.clone(),
+        log_events_returned: log_events_returned(watch_report, &log_evidence_state),
+        trace_evidence_state: trace_evidence_state.clone(),
+        trace_events_returned: trace_events_returned(watch_report, &trace_evidence_state),
+        ledger_evidence_state,
         ledger_rows_matched: ledger_report.map(|report| report.totals.matched_rows),
         ledger_rows_capped: ledger_report.map(|report| report.totals.rows_capped),
         ledger_trace_key_overlap: ledger_report
@@ -2083,8 +2134,7 @@ fn traceability_provider_evidence_available(watch_report: &WatchWindowReport) ->
                     .iter()
                     .any(|metric| metric.status == "ok" && metric.point_count > 0)
             });
-    metric_datapoints_available
-        || log_events_returned(watch_report).is_some_and(|returned| returned > 0)
+    metric_datapoints_available || observed_log_events_returned(watch_report) > 0
 }
 
 fn observed_metric_total(
@@ -2100,7 +2150,59 @@ fn observed_metric_total(
         .then(|| value(&report.totals))
 }
 
-fn trace_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {
+fn component_evidence_state<T>(component: &ToolCallOutcome<T>) -> String {
+    if component.report.is_none() {
+        "unavailable".to_string()
+    } else if matches!(component.status.as_str(), "ok" | "ready") {
+        "complete".to_string()
+    } else {
+        "partial".to_string()
+    }
+}
+
+fn trace_evidence_state(watch_report: &WatchWindowReport) -> String {
+    match watch_report.components.trace.as_ref() {
+        None => "not_requested".to_string(),
+        Some(trace) => component_evidence_state(trace),
+    }
+}
+
+fn ledger_evidence_state(ledger: &ToolCallOutcome<LedgerWindowReport>) -> String {
+    component_evidence_state(ledger)
+}
+
+fn log_evidence_state(watch_report: &WatchWindowReport) -> String {
+    let events_state = component_evidence_state(&watch_report.components.events);
+    let trace_state = trace_evidence_state(watch_report);
+    if trace_state == "not_requested" {
+        return events_state;
+    }
+    if events_state == "complete" && trace_state == "complete" {
+        "complete".to_string()
+    } else if events_state == "unavailable" && trace_state == "unavailable" {
+        "unavailable".to_string()
+    } else {
+        "partial".to_string()
+    }
+}
+
+fn trace_events_returned(
+    watch_report: &WatchWindowReport,
+    evidence_state: &str,
+) -> Option<usize> {
+    (evidence_state == "complete")
+        .then(|| {
+            watch_report
+                .components
+                .trace
+                .as_ref()
+                .and_then(|trace| trace.report.as_ref())
+                .map(|report| report.events.returned)
+        })
+        .flatten()
+}
+
+fn observed_trace_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {
     watch_report
         .components
         .trace
@@ -2109,20 +2211,23 @@ fn trace_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {
         .map(|report| report.events.returned)
 }
 
-fn log_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {
+fn observed_log_events_returned(watch_report: &WatchWindowReport) -> usize {
     let events_returned = watch_report
         .components
         .events
         .report
         .as_ref()
         .map(|report| report.returned);
-    let trace_events_returned = trace_events_returned(watch_report);
-    match (events_returned, trace_events_returned) {
-        (Some(events), Some(trace)) => Some(events.max(trace)),
-        (Some(events), None) => Some(events),
-        (None, Some(trace)) => Some(trace),
-        (None, None) => None,
-    }
+    let trace_events_returned = observed_trace_events_returned(watch_report);
+    events_returned
+        .into_iter()
+        .chain(trace_events_returned)
+        .max()
+        .unwrap_or(0)
+}
+
+fn log_events_returned(watch_report: &WatchWindowReport, evidence_state: &str) -> Option<usize> {
+    (evidence_state == "complete").then(|| observed_log_events_returned(watch_report))
 }
 
 fn ledger_trace_key_overlap(

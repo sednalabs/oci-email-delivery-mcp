@@ -274,7 +274,7 @@ impl OciEmailMcpServer {
     }
 
     #[tool(
-        description = "Audit whether one UTC window proves exact OCI Email Delivery traceability across logs and the local send ledger without authorizing a send."
+        description = "Produce a no-send traceability-audit.v2 receipt for one UTC window, separating complete, partial, unavailable, and not-requested evidence from observed provider evidence without inferring acceptance, relay, or exact proof."
     )]
     fn oci_email_traceability_audit(
         &self,

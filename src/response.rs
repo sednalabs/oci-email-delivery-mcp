@@ -656,6 +656,7 @@ pub struct SnapshotArtifactSummary {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TraceabilityAuditReport {
+    pub schema: String,
     pub status: String,
     pub decision: String,
     pub send_authorized: bool,
@@ -683,8 +684,11 @@ pub struct TraceabilitySummary {
     pub aggregate_relayed: Option<f64>,
     pub aggregate_hard_bounced: Option<f64>,
     pub aggregate_suppressed: Option<f64>,
+    pub log_evidence_state: String,
     pub log_events_returned: Option<usize>,
+    pub trace_evidence_state: String,
     pub trace_events_returned: Option<usize>,
+    pub ledger_evidence_state: String,
     pub ledger_rows_matched: Option<usize>,
     pub ledger_rows_capped: Option<bool>,
     pub ledger_trace_key_overlap: Option<bool>,

@@ -1,7 +1,9 @@
 # Public Release Readiness
 
 Status: public repository published at `sednalabs/oci-email-delivery-mcp`;
-hosted validation and Code Quality enablement are the current gates.
+the current PR-head candidate requires its own hosted validation receipts and
+Code Quality enablement remains an external repository-setting gate. This is
+not merge, release, install, or live proof.
 
 ## Classification
 
@@ -63,13 +65,15 @@ explain its core value.
   full active suppressions with a bounded UTC window and distinguish clean,
   lower-bound, no-sample, and stop-gate suppression evidence without exposing
   raw recipients.
-- The adapter includes `oci_email_traceability_audit` so operators can ask the
+- The adapter includes v2 `oci_email_traceability_audit` so operators can ask the
   narrower question: does this window prove exact message and recipient
   overlap across provider logs and the same configured local ledger row, only
   aggregate provider evidence, or no provider evidence? The audit is read-only
   and redacted. It returns `aggregate_only=true` only when provider metric
-  datapoints or log events exist without exact overlap, and keeps unavailable
-  aggregate totals `null`.
+  datapoints or log events exist without exact overlap. Its schema discriminator
+  and evidence-state fields distinguish complete, partial, unavailable, and
+  not-requested reads; observed provider evidence is never acceptance, relay,
+  or exact proof.
 - The adapter includes `oci_email_monitoring_snapshot_artifact` so those
   redacted watch, readiness, or traceability receipts can be persisted
   privately for later replay without scraping MCP transcripts or exposing raw

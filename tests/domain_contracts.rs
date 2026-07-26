@@ -672,11 +672,15 @@ fn traceability_audit_distinguishes_exact_overlap_from_aggregate_pressure() {
         .unwrap_or_else(|err| panic!("serialize traceability audit: {err}"));
 
     assert!(report.exact_message_traceable);
+    assert_eq!(report.schema, "oci-email-delivery.traceability-audit.v2");
     assert!(report.provider_evidence_available);
     assert!(!report.aggregate_only);
     assert!(!report.send_authorized);
     assert_eq!(report.summary.log_events_returned, Some(1));
+    assert_eq!(report.summary.log_evidence_state, "complete");
     assert_eq!(report.summary.trace_events_returned, Some(1));
+    assert_eq!(report.summary.trace_evidence_state, "complete");
+    assert_eq!(report.summary.ledger_evidence_state, "complete");
     assert_eq!(report.summary.ledger_rows_matched, Some(1));
     assert_eq!(report.summary.ledger_rows_capped, Some(false));
     assert_eq!(report.summary.ledger_trace_key_overlap, Some(true));
@@ -732,8 +736,11 @@ fn traceability_audit_blocks_when_metrics_exist_but_logs_and_ledger_do_not_match
     assert!(report.provider_evidence_available);
     assert!(report.aggregate_only);
     assert_eq!(report.summary.aggregate_accepted, Some(10.0));
+    assert_eq!(report.summary.log_evidence_state, "complete");
     assert_eq!(report.summary.log_events_returned, Some(0));
+    assert_eq!(report.summary.trace_evidence_state, "complete");
     assert_eq!(report.summary.trace_events_returned, Some(0));
+    assert_eq!(report.summary.ledger_evidence_state, "complete");
     assert_eq!(report.summary.ledger_rows_matched, Some(0));
     assert_eq!(report.summary.ledger_rows_capped, Some(false));
     assert_eq!(report.summary.ledger_trace_key_overlap, Some(false));
@@ -782,12 +789,16 @@ fn traceability_audit_distinguishes_unavailable_provider_evidence_from_aggregate
     assert!(!report.exact_message_traceable);
     assert!(!report.provider_evidence_available);
     assert!(!report.aggregate_only);
+    assert_eq!(report.schema, "oci-email-delivery.traceability-audit.v2");
     assert_eq!(report.summary.aggregate_accepted, None);
     assert_eq!(report.summary.aggregate_relayed, None);
     assert_eq!(report.summary.aggregate_hard_bounced, None);
     assert_eq!(report.summary.aggregate_suppressed, None);
     assert_eq!(report.summary.log_events_returned, None);
+    assert_eq!(report.summary.log_evidence_state, "unavailable");
     assert_eq!(report.summary.trace_events_returned, None);
+    assert_eq!(report.summary.trace_evidence_state, "unavailable");
+    assert_eq!(report.summary.ledger_evidence_state, "unavailable");
     assert_eq!(report.summary.ledger_rows_matched, None);
     assert_eq!(report.summary.ledger_rows_capped, None);
     assert_eq!(report.summary.ledger_trace_key_overlap, None);
@@ -803,11 +814,29 @@ fn traceability_audit_distinguishes_unavailable_provider_evidence_from_aggregate
         .findings
         .iter()
         .any(|finding| finding.code == "traceability_aggregate_only"));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_log_events"));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_trace_events"));
     assert!(report.findings.iter().any(|finding| {
         finding.code == "traceability_provider_evidence_unavailable"
             && finding.message.contains("acceptance")
             && finding.message.contains("not proven")
     }));
+    for code in [
+        "traceability_log_evidence_unavailable",
+        "traceability_trace_evidence_unavailable",
+        "traceability_ledger_evidence_unavailable",
+    ] {
+        assert!(
+            report.findings.iter().any(|finding| finding.code == code),
+            "missing finding {code}"
+        );
+    }
 }
 
 #[test]
@@ -844,7 +873,10 @@ fn traceability_audit_keeps_metric_evidence_when_other_components_are_unavailabl
     assert_eq!(report.summary.aggregate_accepted, Some(10.0));
     assert_eq!(report.summary.aggregate_relayed, None);
     assert_eq!(report.summary.log_events_returned, None);
+    assert_eq!(report.summary.log_evidence_state, "partial");
     assert_eq!(report.summary.trace_events_returned, None);
+    assert_eq!(report.summary.trace_evidence_state, "unavailable");
+    assert_eq!(report.summary.ledger_evidence_state, "unavailable");
     assert_eq!(report.summary.ledger_rows_matched, None);
     assert_eq!(report.summary.ledger_rows_capped, None);
     assert_eq!(report.summary.ledger_trace_key_overlap, None);
@@ -877,6 +909,8 @@ fn traceability_audit_keeps_metric_evidence_when_other_components_are_unavailabl
         .iter()
         .any(|finding| finding.code == "traceability_aggregate_only"));
     assert!(payload.contains("\"provider_evidence_available\":true"));
+    assert!(payload.contains("\"schema\":\"oci-email-delivery.traceability-audit.v2\""));
+    assert!(payload.contains("\"log_evidence_state\":\"partial\""));
     assert!(payload.contains("\"aggregate_accepted\":10.0"));
     assert!(payload.contains("\"exact_message_traceable\":false"));
     assert!(payload.contains("\"send_authorized\":false"));
@@ -1022,6 +1056,90 @@ fn traceability_audit_blocks_explicit_zero_expected_rows() {
         .findings
         .iter()
         .any(|finding| finding.code == "traceability_expected_ledger_rows_zero"));
+}
+
+#[test]
+fn traceability_audit_marks_trace_not_requested_without_calling_it_unavailable() {
+    let backend = FixtureBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("no-trace audit: {err}"));
+
+    assert_eq!(report.schema, "oci-email-delivery.traceability-audit.v2");
+    assert_eq!(report.summary.log_evidence_state, "complete");
+    assert_eq!(report.summary.trace_evidence_state, "not_requested");
+    assert_eq!(report.summary.trace_events_returned, None);
+    assert_eq!(report.summary.ledger_evidence_state, "complete");
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_trace_criteria_missing"));
+    assert!(!report.findings.iter().any(|finding| {
+        finding.code == "traceability_trace_evidence_unavailable"
+    }));
+}
+
+#[test]
+fn traceability_audit_marks_requested_missing_trace_as_partial_log_evidence() {
+    let backend = TraceUnavailableAfterEmptyEventsBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("partial-trace audit: {err}"));
+
+    assert_eq!(report.schema, "oci-email-delivery.traceability-audit.v2");
+    assert_eq!(report.summary.log_evidence_state, "partial");
+    assert_eq!(report.summary.log_events_returned, None);
+    assert_eq!(report.summary.trace_evidence_state, "unavailable");
+    assert_eq!(report.summary.trace_events_returned, None);
+    assert_eq!(report.summary.ledger_evidence_state, "complete");
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_log_evidence_partial"));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_trace_evidence_unavailable"));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_log_events"));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_trace_events"));
 }
 
 #[test]
@@ -1417,6 +1535,56 @@ impl OciEmailBackend for AggregateOnlyBackend {
 }
 
 struct MismatchedTraceRecipientBackend;
+
+struct TraceUnavailableAfterEmptyEventsBackend;
+
+impl OciEmailBackend for TraceUnavailableAfterEmptyEventsBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        Ok(empty_events(
+            &request.start_time,
+            &request.end_time,
+            request.source_domain.clone(),
+        ))
+    }
+
+    fn trace_message(
+        &self,
+        _request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic trace evidence unavailable".to_string(),
+        ))
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        FixtureBackend.ledger_window(request)
+    }
+}
 
 impl OciEmailBackend for MismatchedTraceRecipientBackend {
     fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {

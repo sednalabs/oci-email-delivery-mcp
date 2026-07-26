@@ -114,4 +114,7 @@ ledger rows.
   is treated as a full monitor.
 - The production host must configure the real private snapshot root before
   monitoring receipts can be treated as durable operational evidence.
-- Hosted validation and reviewer signoff are still pending.
+- This historical no-send proof predates traceability-audit.v2. The current
+  candidate needs its own exact-head hosted validation and review receipts;
+  neither this note nor fixture coverage proves merge, release, installation,
+  or live traceability.

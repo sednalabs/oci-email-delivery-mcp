@@ -33,11 +33,12 @@ green.
   local ledger proof and still returns `send_authorized=false`.
 - `oci_email_traceability_audit` is the preferred exact-proof receipt when an
   operator needs to answer whether a specific message/header trace reached OCI
-  logs and overlaps the configured local send ledger. It returns
-  `provider_evidence_available=false` when neither provider metric datapoints
-  nor log events are available. It returns `aggregate_only=true` only when
-  provider evidence exists but exact message and recipient overlap is not
-  proven.
+  logs and overlaps the configured local send ledger. Its v2 output identifies
+  itself with `schema="oci-email-delivery.traceability-audit.v2"` and separates
+  complete, partial, unavailable, and not-requested evidence states before any
+  proof decision. `provider_evidence_available=false` means no provider metric
+  datapoint or log event was observed; `true` is observed-evidence existence,
+  not provider acceptance, relay, completeness, or exact traceability.
 - `oci_email_monitoring_snapshot_artifact` writes redacted watch-window,
   send-readiness, or traceability-audit receipts to the configured private
   snapshot root for later replay. It returns a generated filename, root hash,
@@ -70,7 +71,14 @@ Pause the pilot or keep it paused when any of these are true:
 - provider warning, authentication failure, blocklist evidence, or
   reputation-style deferral appears;
 - event ingestion fails or cannot be reconciled to the local send ledger;
-- `oci_email_traceability_audit` returns `traceability_no_log_events`,
+- `oci_email_traceability_audit` returns explicit unavailable or partial
+  evidence codes before it can return an empty-result code:
+  `traceability_log_evidence_unavailable`, `traceability_log_evidence_partial`,
+  `traceability_trace_evidence_unavailable`,
+  `traceability_trace_evidence_partial`,
+  `traceability_ledger_evidence_unavailable`, or
+  `traceability_ledger_evidence_partial` are all stop conditions. Successful
+  complete reads may instead return `traceability_no_log_events`,
   `traceability_no_trace_events`, `traceability_no_ledger_rows`,
   `traceability_expected_ledger_rows_mismatch`,
   `traceability_no_ledger_trace_key_overlap`,
@@ -202,7 +210,9 @@ same-row trace-key and recipient-hash overlap, not row counts alone:
 }
 ```
 
-Expected: `send_authorized=false`. `exact_message_traceable=true` only when a
+Expected: `send_authorized=false`. Branch on
+`schema="oci-email-delivery.traceability-audit.v2"` and the evidence-state
+fields before reading a summary scalar. `exact_message_traceable=true` only when a
 message/header trace returned OCI log events, the configured local ledger has
 matching rows for the window, the ledger is uncapped and valid, and one ledger
 row overlaps both the requested trace key and OCI event recipient hash. The
@@ -212,16 +222,15 @@ confirms which trace key was used for the narrowed local read. The summary field
 response is blocked or degraded. `aggregate_only=true` means provider metric
 datapoints or log events were actually observed but are not per-recipient
 proof. `provider_evidence_available=false` means acceptance, relay, and exact
-traceability are unproven; unavailable aggregate totals are `null`, not zero.
-The summary fields `log_events_returned`, `ledger_rows_matched`, and
-`ledger_rows_capped` are also nullable: `null` means the corresponding event or
-ledger report was unavailable, while `0` or `false` means a successful empty or
-uncapped read. The ledger overlap fields `ledger_trace_key_overlap`,
-`recipient_hash_overlap`, and `single_ledger_row_overlap` are nullable for the
-same reason: `null` means ledger evidence was unavailable, while `false` or
-`true` means an available ledger read found no overlap or did find overlap.
-Treat `traceability_provider_evidence_unavailable` as a stop code, not as a
-successful empty provider result.
+traceability are unproven. `log_evidence_state` and `ledger_evidence_state`
+are `complete`, `partial`, or `unavailable`; `trace_evidence_state` also has
+`not_requested`. `log_events_returned` is populated only for complete combined
+general-event plus requested-trace evidence; a complete empty read is `0`, but
+partial or unavailable combined evidence is `null`. Ledger counts/caps/overlap
+scalars are `null` when the ledger is unavailable and otherwise retain the
+observed `0`/`false`/`true` value. Treat unavailable or partial evidence codes,
+including `traceability_provider_evidence_unavailable`, as stop codes rather
+than successful empty provider results.
 
 Use `oci_email_monitoring_snapshot_artifact` whenever the receipt needs to be
 replayable outside the MCP transcript. The tool writes only under
