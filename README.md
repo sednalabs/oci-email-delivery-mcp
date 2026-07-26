@@ -111,9 +111,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   proof of no sends. Blank or JSON-null Logging Search output is unavailable
   evidence and blocks the component rather than being reshaped as an empty
   result. Every returned row must contain a recognized OutboundAccepted or
-  OutboundRelayed record with an object payload and non-empty action; an
-  unrecognized row makes the event read unavailable instead of contributing
-  synthetic evidence.
+  OutboundRelayed record with an object payload, non-empty action, and valid
+  UTC timestamp; an unrecognized row makes the event read unavailable instead
+  of contributing synthetic evidence. Forward-compatible unknown actions are
+  summarized as `unknown` rather than copied from the provider payload.
   `provider_returned` and `source_domain_matched` distinguish no provider
   events from post-summary source-domain mismatch without returning raw events.
   When no `source_domain` is requested, `source_domain_matched` equals the
@@ -139,7 +140,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   The ledger tool summarizes JSONL rows with hashes and domains only. It can
   narrow a large window by message id or approved non-PII correlation value
   before applying the returned-row cap, so exact traceability audits do not
-  have to expose or scan a whole campaign in the transcript.
+  have to expose or scan a whole campaign in the transcript. Raw message and
+  correlation values use the case-preserving opaque trace-key hash contract.
+  Prehashed trace fields must contain a valid 20-hex digest from that same
+  contract; malformed prehashes fail closed as missing trace evidence.
 - Private monitoring snapshot artifacts are disabled unless
   `OCI_MCP_SNAPSHOT_ROOT` is set to an absolute existing private directory.
   On Unix, the directory must not grant group or other permissions. The
@@ -182,7 +186,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   hash on the same returned event. A message-id trace uses the returned event's
   message-id hash. A correlation-header trace uses only the requested header
   name's returned value hash; the request criterion by itself is not event
-  identity. Omitting the optional expected count skips only that count
+  identity. These opaque trace-key hashes preserve case and exact bytes; they
+  deliberately do not use the case-folded address/domain hash contract.
+  Omitting the optional expected count skips only that count
   comparison. Because this flag is scoped to one message trace, it may be true
   while the overall receipt remains blocked by an orthogonal profile, metric,
   logging-status, or suppression finding; neither state authorizes a send. The

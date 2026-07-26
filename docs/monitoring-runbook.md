@@ -218,7 +218,9 @@ matching rows for the window, the ledger is uncapped and valid, and one ledger
 row overlaps both the trace identity and recipient hash on the same returned
 OCI event. For a message-id trace, the returned event message-id hash must
 match. For a header trace, the returned value hash for the requested header
-name must match; matching only the request criterion is insufficient. The
+name must match; matching only the request criterion is insufficient. Message
+ids and header/correlation values are opaque case-sensitive identities, so
+case-distinct values must produce different hashes and must not overlap. The
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
 `single_ledger_row_overlap` is the same-row gate. Without exact proof, the
@@ -324,7 +326,11 @@ have message or correlation hashes, recipient address or recipient-id hashes,
 and no raw recipient, message id, subject, campaign id, batch id, or private
 path is returned. When `message_id` or `correlation_id` is supplied, the
 returned `filters` contain only redacted hashes and the filter is applied before
-the row cap. `ledger_no_rows_matched`, `ledger_results_capped`,
+the row cap. Raw message/correlation fields use a case-preserving opaque hash.
+Prehashed message/correlation fields must already contain a valid 20-hex digest
+from the same contract; malformed prehashes are missing trace evidence rather
+than being rehashed under a different normalization. `ledger_no_rows_matched`,
+`ledger_results_capped`,
 `ledger_missing_trace_keys`, or `ledger_missing_recipient_keys` keeps the lane
 paused for proof sends that should have ledger rows.
 
@@ -454,9 +460,11 @@ Check:
 
 - expected accepted/relayed/bounce/suppression event types appear;
 - every provider result was recognized as an OutboundAccepted or
-  OutboundRelayed record with an object payload and non-empty action; one
-  unrecognized result makes the component unavailable rather than contributing
-  to event counts;
+  OutboundRelayed record with an object payload, non-empty action, and valid UTC
+  timestamp; one unrecognized or filter-mismatching result makes the component
+  unavailable rather than contributing to event counts;
+- forward-compatible unknown provider actions appear only as `unknown`; no raw
+  action text is copied into the receipt;
 - `source_domain` is matched after the MCP parses redacted event summaries,
   so an empty result means no matching summarized event evidence was found; it
   does not prove the provider emitted no events for the broader compartment.

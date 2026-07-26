@@ -1,7 +1,7 @@
 use crate::{
     config::OciEmailConfig,
     error::OciEmailError,
-    redact::{email_domain, is_host_token, redact_sensitive_text, short_hash},
+    redact::{email_domain, is_host_token, opaque_hash, redact_sensitive_text, short_hash},
     response::{
         Evidence, LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest,
         LedgerWindowTotals, ReadinessFinding, DEFAULT_LEDGER_LIMIT, HARD_LEDGER_LIMIT,
@@ -49,13 +49,15 @@ pub fn ledger_window(
     let message_filter_hash = request
         .message_id
         .as_deref()
-        .and_then(non_empty_string)
-        .map(redacted_hash);
+        .map(|value| validate_opaque_filter(value, "message_id"))
+        .transpose()?
+        .map(opaque_hash);
     let correlation_filter_hash = request
         .correlation_id
         .as_deref()
-        .and_then(non_empty_string)
-        .map(redacted_hash);
+        .map(|value| validate_opaque_filter(value, "correlation_id"))
+        .transpose()?
+        .map(opaque_hash);
     let sender_filter = request
         .sender_domain
         .as_deref()
@@ -311,7 +313,7 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
         recipient_domain,
         recipient_address_hash,
         recipient_id_hash,
-        message_id_hash: redacted_hash_any(
+        message_id_hash: opaque_hash_any(
             value,
             &[
                 "message_id",
@@ -326,7 +328,7 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
                 "providerMessageIdHash",
             ],
         ),
-        correlation_id_hash: redacted_hash_any(
+        correlation_id_hash: opaque_hash_any(
             value,
             &[
                 "correlation_id",
@@ -376,9 +378,15 @@ fn string_any<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .find_map(|key| value.get(*key).and_then(Value::as_str))
 }
 
-fn non_empty_string(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then_some(trimmed)
+fn validate_opaque_filter<'a>(value: &'a str, label: &str) -> Result<&'a str, OciEmailError> {
+    if !value.is_empty() && value == value.trim() {
+        Ok(value)
+    } else {
+        Err(labelled_invalid_input_error(
+            label,
+            " must be non-empty and contain no leading or trailing whitespace",
+        ))
+    }
 }
 
 fn domain_from_address_or_domain(value: &str) -> Option<String> {
@@ -396,6 +404,12 @@ fn redacted_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Op
     string_any(value, hash_keys)
         .map(redacted_hash)
         .or_else(|| string_any(value, raw_keys).map(short_hash))
+}
+
+fn opaque_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Option<String> {
+    string_any(value, hash_keys)
+        .and_then(|value| is_short_hash(value).then(|| value.to_ascii_lowercase()))
+        .or_else(|| string_any(value, raw_keys).map(opaque_hash))
 }
 
 fn redacted_hash(value: &str) -> String {
@@ -638,8 +652,8 @@ mod tests {
         let campaign_hash = short_hash("campaign-private");
         let batch_hash = short_hash("batch-private");
         let recipient_hash = short_hash("person@example.net");
-        let message_hash = short_hash("message@example.com");
-        let correlation_hash = short_hash("corr-private");
+        let message_hash = opaque_hash("message@example.com");
+        let correlation_hash = opaque_hash("corr-private");
         fs::create_dir_all(path.parent().expect("ledger fixture parent"))
             .expect("create ledger fixture dir");
         fs::write(
@@ -720,7 +734,7 @@ mod tests {
         assert_eq!(by_message.totals.returned_rows, 1);
         assert_eq!(
             by_message.filters.message_id_hash,
-            Some(short_hash("message-b"))
+            Some(opaque_hash("message-b"))
         );
         assert_eq!(
             by_message.rows[0].recipient_address_hash,
@@ -746,12 +760,84 @@ mod tests {
         assert!(!by_correlation.totals.rows_capped);
         assert_eq!(
             by_correlation.filters.correlation_id_hash,
-            Some(short_hash("corr-a"))
+            Some(opaque_hash("corr-a"))
         );
         assert_eq!(
             by_correlation.rows[0].recipient_address_hash,
             Some(short_hash("first@example.net"))
         );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_trace_filters_preserve_opaque_identifier_case() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/trace-case-filter.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            concat!(
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"recipient\":\"first@example.net\",\"message_id\":\"Trace-AbC\",\"correlation_id\":\"Header-AbC\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"second@example.net\",\"message_id\":\"trace-abc\",\"correlation_id\":\"header-abc\"}\n"
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some("Trace-AbC".to_string()),
+                correlation_id: Some("Header-AbC".to_string()),
+                limit: Some(20),
+            },
+        )
+        .expect("case-preserving trace-filtered ledger report");
+
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(
+            report.filters.message_id_hash,
+            Some(opaque_hash("Trace-AbC"))
+        );
+        assert_eq!(
+            report.filters.correlation_id_hash,
+            Some(opaque_hash("Header-AbC"))
+        );
+        assert_eq!(
+            report.rows[0].message_id_hash,
+            Some(opaque_hash("Trace-AbC"))
+        );
+        assert_eq!(
+            report.rows[0].correlation_id_hash,
+            Some(opaque_hash("Header-AbC"))
+        );
+
+        for (message_id, correlation_id) in [
+            (Some(" Trace-AbC".to_string()), None),
+            (None, Some("Header-AbC ".to_string())),
+        ] {
+            let error = ledger_window(
+                &config,
+                &LedgerWindowRequest {
+                    start_time: "2026-06-30T00:00:00Z".to_string(),
+                    end_time: "2026-06-30T01:00:00Z".to_string(),
+                    sender_domain: None,
+                    campaign_id: None,
+                    batch_id: None,
+                    message_id,
+                    correlation_id,
+                    limit: Some(20),
+                },
+            )
+            .expect_err("opaque trace filters must not trim identity bytes");
+            assert_eq!(error.code(), "invalid_input");
+        }
 
         let _ = fs::remove_file(&path);
     }
@@ -763,8 +849,8 @@ mod tests {
         let other_message = "message-other";
         let shared_correlation = "corr-shared";
         let other_correlation = "corr-other";
-        let target_message_hash = short_hash(target_message);
-        let shared_correlation_hash = short_hash(shared_correlation);
+        let target_message_hash = opaque_hash(target_message);
+        let shared_correlation_hash = opaque_hash(shared_correlation);
         fs::create_dir_all(path.parent().expect("ledger fixture parent"))
             .expect("create ledger fixture dir");
         fs::write(

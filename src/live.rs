@@ -1,7 +1,9 @@
 use crate::{
     config::OciEmailConfig,
     error::OciEmailError,
-    redact::{email_domain, is_host_token, redact_email, redact_sensitive_text, short_hash},
+    redact::{
+        email_domain, is_host_token, opaque_hash, redact_email, redact_sensitive_text, short_hash,
+    },
     response::{
         EmailDeliveryLogSummary, EmailEventSummary, EventCount, EventCounts, EventFilters,
         EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowReport,
@@ -781,9 +783,9 @@ impl OciEmailBackend for LiveOciEmailBackend {
         Ok(TraceMessageReport {
             status: events.status.clone(),
             criteria: TraceCriteria {
-                message_id_hash: request.message_id.as_deref().map(short_hash),
+                message_id_hash: request.message_id.as_deref().map(opaque_hash),
                 header_name: request.header_name.clone(),
-                header_value_hash: request.header_value.as_deref().map(short_hash),
+                header_value_hash: request.header_value.as_deref().map(opaque_hash),
             },
             events,
         })
@@ -938,6 +940,9 @@ impl LiveOciEmailBackend {
             .into_iter()
             .map(|value| email_event_summary(value, request.header_name.as_deref()))
             .collect::<Result<Vec<_>, _>>()?;
+        for event in &raw_events {
+            validate_returned_event_matches_request(event, request)?;
+        }
         let rows_capped = rows_may_be_capped(raw_events.len(), limit);
         let provider_returned = raw_events.len();
         let events = raw_events
@@ -978,9 +983,9 @@ impl LiveOciEmailBackend {
             end_time: request.end_time.clone(),
             filters: EventFilters {
                 action: request.action.clone(),
-                message_id_hash: request.message_id.as_deref().map(short_hash),
+                message_id_hash: request.message_id.as_deref().map(opaque_hash),
                 header_name: request.header_name.clone(),
-                header_value_hash: request.header_value.as_deref().map(short_hash),
+                header_value_hash: request.header_value.as_deref().map(opaque_hash),
                 receiving_domain: request.receiving_domain.clone(),
                 source_domain: request.source_domain.clone(),
             },
@@ -3005,6 +3010,21 @@ fn email_event_summary(
                 .to_string(),
         ));
     };
+    let datetime = string_field(value, "datetime")
+        .or_else(|| string_field(record, "datetime"))
+        .or_else(|| string_field(record, "time"))
+        .ok_or_else(|| {
+            OciEmailError::Config(
+                "OCI Logging Search returned an Email Delivery event without a timestamp; event evidence is unavailable."
+                    .to_string(),
+            )
+        })?;
+    if parse_strict_utc_time(datetime, "event datetime").is_err() {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned an Email Delivery event with an invalid timestamp; event evidence is unavailable."
+                .to_string(),
+        ));
+    }
     let email = nested_string(data, &["recipient"])
         .or_else(|| nested_string(data, &["recipientAddress"]))
         .or_else(|| nested_string(data, &["emailAddress"]));
@@ -3016,19 +3036,16 @@ fn email_event_summary(
         .transpose()?
         .flatten();
     Ok(EmailEventSummary {
-        datetime: string_field(value, "datetime")
-            .or_else(|| string_field(record, "datetime"))
-            .or_else(|| string_field(record, "time"))
-            .map(ToString::to_string),
+        datetime: Some(datetime.to_string()),
         log_type: Some(log_type.to_string()),
-        action: Some(action.to_string()),
+        action: Some(summarize_email_event_action(action).to_string()),
         source_domain: email_event_source_domain(record, data),
         receiving_domain: string_field(data, "receivingDomain")
             .filter(|value| is_host_token(value))
             .map(|value| value.to_ascii_lowercase()),
         recipient_domain: email.and_then(email_domain),
         recipient_hash: email.map(short_hash),
-        message_id_hash: message_id.map(short_hash),
+        message_id_hash: message_id.map(opaque_hash),
         trace_header_value_hash,
         error_type: nested_string(data, &["errorType"]).map(redact_sensitive_text),
         bounce_category: nested_string(data, &["bounceCategory"]).map(redact_sensitive_text),
@@ -3069,7 +3086,50 @@ fn email_event_header_value_hash(
                 .to_string(),
         ));
     };
-    Ok(Some(short_hash(value)))
+    Ok(Some(opaque_hash(value)))
+}
+
+fn summarize_email_event_action(action: &str) -> &'static str {
+    match action.to_ascii_lowercase().as_str() {
+        "accept" => "accept",
+        "relay" => "relay",
+        "bounce" => "bounce",
+        "complaint" => "complaint",
+        "open" => "open",
+        "click" => "click",
+        "unsubscribe" => "unsubscribe",
+        _ => "unknown",
+    }
+}
+
+fn validate_returned_event_matches_request(
+    event: &EmailEventSummary,
+    request: &EventsRequest,
+) -> Result<(), OciEmailError> {
+    let matches = request
+        .action
+        .as_ref()
+        .is_none_or(|action| event.action.as_ref() == Some(action))
+        && request.message_id.as_deref().is_none_or(|message_id| {
+            event.message_id_hash.as_ref() == Some(&opaque_hash(message_id))
+        })
+        && request.header_value.as_deref().is_none_or(|header_value| {
+            event.trace_header_value_hash.as_ref() == Some(&opaque_hash(header_value))
+        })
+        && request.receiving_domain.as_deref().is_none_or(|domain| {
+            event
+                .receiving_domain
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(domain))
+        });
+    if matches {
+        Ok(())
+    } else {
+        Err(OciEmailError::Config(
+            "OCI Logging Search returned an Email Delivery event that did not match the requested provider filters; event evidence is unavailable."
+                .to_string(),
+        ))
+    }
 }
 
 fn event_counts(events: &[EmailEventSummary]) -> EventCounts {
@@ -3741,6 +3801,7 @@ mod tests {
                 "logContent": {
                     "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
                     "source": "oci.emaildelivery",
+                    "time": "2026-06-30T00:10:00Z",
                     "data": {
                         "action": "accept",
                         "sender": "not-an-email",
@@ -3763,6 +3824,7 @@ mod tests {
                 "logContent": {
                     "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
                     "source": "oci.emaildelivery",
+                    "time": "2026-06-30T00:10:00Z",
                     "data": {
                         "action": "accept",
                         "sourceDomain": "bad domain token",
@@ -3785,6 +3847,7 @@ mod tests {
                 "logContent": {
                     "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
                     "source": "sender.example",
+                    "time": "2026-06-30T00:10:00Z",
                     "data": {
                         "action": "relay",
                         "messageId": "message-one",
@@ -3804,10 +3867,57 @@ mod tests {
 
         assert_eq!(
             summary.trace_header_value_hash,
-            Some(short_hash("returned-trace-value"))
+            Some(opaque_hash("returned-trace-value"))
         );
         assert!(!payload.contains("returned-trace-value"));
         assert!(!payload.contains("unrelated-private-value"));
+    }
+
+    #[test]
+    fn event_summary_safely_tolerates_unknown_actions() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "time": "2026-06-30T00:10:00Z",
+                    "data": {
+                        "action": "person@example.test",
+                        "messageId": "Trace-AbC",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value, None).expect("forward-compatible event");
+        let payload = serde_json::to_string(&summary).expect("serialize event summary");
+
+        assert_eq!(summary.action.as_deref(), Some("unknown"));
+        assert!(!payload.contains("person@example.test"));
+    }
+
+    #[test]
+    fn event_summary_rejects_missing_or_invalid_timestamps() {
+        for timestamp in [None, Some("person@example.test")] {
+            let mut record = serde_json::json!({
+                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                "source": "sender.example",
+                "data": {
+                    "action": "accept",
+                    "messageId": "Trace-AbC",
+                    "recipient": "person@recipient.example"
+                }
+            });
+            if let Some(timestamp) = timestamp {
+                record["time"] = Value::String(timestamp.to_string());
+            }
+            let value = serde_json::json!({ "data": { "logContent": record } });
+
+            let error = email_event_summary(&value, None)
+                .expect_err("missing or invalid event timestamps must fail closed");
+            assert_eq!(error.code(), "configuration_error");
+            assert!(!error.to_string().contains("person@example.test"));
+        }
     }
 
     #[test]
@@ -3816,6 +3926,7 @@ mod tests {
             "data": {
                 "logContent": {
                     "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "time": "2026-06-30T00:10:00Z",
                     "data": {
                         "action": "bounce",
                         "recipient": "person@example.com",
@@ -3916,6 +4027,51 @@ mod tests {
         assert!(!payload.contains("person@recipient.example"));
         assert!(!payload.contains("sender@sender.example"));
         assert!(!payload.contains("other@other.example"));
+    }
+
+    #[test]
+    fn event_search_rejects_case_distinct_returned_trace_identity() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": {
+                            "logContent": {
+                                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                "source": "sender.example",
+                                "time": "2026-06-30T00:10:00Z",
+                                "data": {
+                                    "action": "accept",
+                                    "sender": "sender@sender.example",
+                                    "recipient": "person@recipient.example",
+                                    "messageId": "trace-abc"
+                                }
+                            }
+                        }
+                    }]
+                }
+            }))),
+        );
+
+        let error = backend
+            .events(&EventsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                action: None,
+                message_id: Some("Trace-AbC".to_string()),
+                header_name: None,
+                header_value: None,
+                receiving_domain: None,
+                source_domain: None,
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .expect_err("case-distinct returned message id must not satisfy the request");
+
+        assert_eq!(error.code(), "configuration_error");
+        assert!(error.to_string().contains("did not match"));
     }
 
     #[test]
