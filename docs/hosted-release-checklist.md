@@ -36,8 +36,10 @@ uploads the `rust-cobertura-coverage` artifact with
 not the coverage authority. Its separate upload job runs only when the
 repository variable `CODE_QUALITY_UPLOAD_ENABLED` is exactly `true`; leaving
 the variable unset or false keeps that unavailable feature skipped without
-weakening coverage generation or artifact retention. Do not add
-`continue-on-error` to either contract.
+weakening coverage generation or artifact retention. The reporting job also
+skips fork pull requests because their token cannot retain Code Quality write
+authority; the required coverage artifact remains the review evidence for
+those candidates. Do not add `continue-on-error` to either contract.
 
 `release-artifact` is not a normal pull-request branch-protection check because
 it runs only on `workflow_dispatch` and `v*` tags. Treat it as the artifact
@@ -92,7 +94,7 @@ After public repository creation, verify:
 - code scanning is enabled and accepting CodeQL, DevSkim, and OSV SARIF;
 - when GitHub Code Quality is intentionally enabled,
   `CODE_QUALITY_UPLOAD_ENABLED=true` and the optional upload job is accepting
-  the generated Cobertura report;
+  the generated Cobertura report on eligible same-repository events;
 - Dependabot security updates are enabled;
 - secret scanning and push protection are enabled where available;
 - default branch protection requires the pull-request hosted validation gates

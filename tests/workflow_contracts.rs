@@ -26,12 +26,15 @@ fn cobertura_generation_and_artifact_remain_the_required_gate() {
 }
 
 #[test]
-fn external_code_quality_reporting_is_explicitly_capability_gated() {
+fn external_code_quality_reporting_is_capability_and_same_repository_gated() {
     let (_, optional_job) = CODE_COVERAGE_WORKFLOW
         .split_once("  code-quality-upload:")
         .expect("workflow must define the optional upload job");
 
-    assert!(optional_job.contains("if: ${{ vars.CODE_QUALITY_UPLOAD_ENABLED == 'true' }}"));
+    assert!(optional_job.contains("vars.CODE_QUALITY_UPLOAD_ENABLED == 'true'"));
+    assert!(optional_job.contains("github.event_name != 'pull_request'"));
+    assert!(optional_job
+        .contains("github.event.pull_request.head.repo.full_name == github.repository"));
     assert!(optional_job.contains("name: GitHub Code Quality upload"));
     assert!(optional_job.contains("needs: rust-coverage"));
     assert!(optional_job.contains("code-quality: write"));

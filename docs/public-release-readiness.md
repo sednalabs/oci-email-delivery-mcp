@@ -38,8 +38,10 @@ explain its core value.
   gate, mandatory Cobertura generation and hosted artifact retention, optional
   GitHub Code Quality reporting, DevSkim SARIF upload, OSV scanning, and
   Dependabot update configuration. The optional reporting job is isolated
-  behind `CODE_QUALITY_UPLOAD_ENABLED=true`; the required coverage job does not
-  depend on that external feature and retains no Code Quality write permission.
+  behind `CODE_QUALITY_UPLOAD_ENABLED=true` and a same-repository event guard;
+  fork pull requests skip it because their token is read-only. The required
+  coverage job does not depend on that external feature and retains no Code
+  Quality write permission.
 - A release artifact lane produces a Linux x86_64 binary tarball, archive
   SHA-256 sidecar, and target-specific CycloneDX 1.5 Cargo dependency SBOM.
   The workflow fails closed unless the SBOM contains components and a
@@ -97,8 +99,9 @@ explain its core value.
 - The `code-coverage` workflow must generate and retain its Cobertura artifact
   on every candidate. If GitHub Code Quality is intentionally enabled, set
   `CODE_QUALITY_UPLOAD_ENABLED=true` and require the separate optional upload
-  job to succeed; leaving the variable unset or false must not bypass
-  generation or artifact retention.
+  job to succeed on eligible same-repository events. Fork pull requests skip
+  the write-authorized reporting job; leaving the variable unset or false must
+  not bypass generation or artifact retention.
 - Before production monitoring use, the current hard-bounce blocker and
   degraded log-event proof must be resolved, `oci_email_logging_status` must
   prove active service-log visibility for the sender lane using a
