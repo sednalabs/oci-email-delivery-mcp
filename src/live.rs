@@ -2050,9 +2050,7 @@ fn traceability_summary(
         aggregate_accepted: observed_metric_total(watch_report, "accepted", |totals| {
             totals.accepted
         }),
-        aggregate_relayed: observed_metric_total(watch_report, "relayed", |totals| {
-            totals.relayed
-        }),
+        aggregate_relayed: observed_metric_total(watch_report, "relayed", |totals| totals.relayed),
         aggregate_hard_bounced: observed_metric_total(watch_report, "hard_bounced", |totals| {
             totals.hard_bounced
         }),
@@ -2074,17 +2072,18 @@ fn traceability_summary(
 }
 
 fn traceability_provider_evidence_available(watch_report: &WatchWindowReport) -> bool {
-    let metric_datapoints_available = watch_report
-        .components
-        .metrics
-        .report
-        .as_ref()
-        .is_some_and(|report| {
-            report
-                .metrics
-                .iter()
-                .any(|metric| metric.status == "ok" && metric.point_count > 0)
-        });
+    let metric_datapoints_available =
+        watch_report
+            .components
+            .metrics
+            .report
+            .as_ref()
+            .is_some_and(|report| {
+                report
+                    .metrics
+                    .iter()
+                    .any(|metric| metric.status == "ok" && metric.point_count > 0)
+            });
     metric_datapoints_available || log_events_returned(watch_report) > 0
 }
 
@@ -2097,9 +2096,7 @@ fn observed_metric_total(
     report
         .metrics
         .iter()
-        .any(|metric| {
-            metric.key == metric_name && metric.status == "ok" && metric.point_count > 0
-        })
+        .any(|metric| metric.key == metric_name && metric.status == "ok" && metric.point_count > 0)
         .then(|| value(&report.totals))
 }
 

@@ -20,7 +20,7 @@ The server exposes thirteen curated intent tools:
 | `oci_email_suppression_delta` | Compare full active suppressions with a bounded window and classify clean, incomplete, or blocked evidence. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, logging configuration, metrics, logs, optional trace, and suppressions. |
 | `oci_email_send_readiness` | Build one read-only send-window receipt that combines watch-window evidence with local send-ledger proof and expected row-count gates. |
-| `oci_email_traceability_audit` | Audit whether one UTC window proves exact message/recipient traceability across OCI logs and the local send ledger, or only aggregate delivery pressure. |
+| `oci_email_traceability_audit` | Audit whether one UTC window proves an exact trace, shows observed aggregate provider evidence, or reports provider evidence as unavailable. |
 | `oci_email_monitoring_snapshot_artifact` | Write one redacted private monitoring, send-readiness, or traceability receipt artifact under the configured local snapshot root. |
 
 No tools send email, mutate OCI resources, enable logs, change DNS, import

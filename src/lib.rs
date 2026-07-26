@@ -141,7 +141,7 @@ impl OciEmailMcpServer {
                 ),
                 read_capability(
                     "oci_email_traceability_audit",
-                    "Audit whether one UTC window proves exact OCI log and local send-ledger traceability or only aggregate delivery pressure.",
+                    "Audit whether one UTC window proves an exact trace, shows observed aggregate provider evidence, or reports provider evidence as unavailable.",
                     ["oci", "email", "traceability", "ledger", "logs"],
                 ),
                 ToolCapability::new("oci_email_monitoring_snapshot_artifact")
