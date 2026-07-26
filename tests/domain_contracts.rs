@@ -1054,6 +1054,44 @@ fn traceability_audit_requires_same_ledger_row_for_trace_and_recipient_overlap()
 }
 
 #[test]
+fn traceability_audit_rejects_positive_expected_row_mismatch_from_exact_proof() {
+    let backend = FixtureBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(2),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("positive expected-row mismatch audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.send_authorized);
+    assert!(!report.exact_message_traceable);
+    assert!(report.aggregate_only);
+    assert_eq!(report.summary.ledger_rows_matched, Some(1));
+    assert_eq!(report.summary.single_ledger_row_overlap, Some(true));
+    assert!(report.findings.iter().any(|finding| {
+        finding.code == "traceability_expected_ledger_rows_mismatch"
+            && finding
+                .message
+                .contains("exact message traceability is not proven")
+    }));
+}
+
+#[test]
 fn traceability_audit_blocks_explicit_zero_expected_rows() {
     let backend = FixtureBackend;
     let report = backend

@@ -168,8 +168,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   traceability claim. `aggregate_only=true` means observed provider evidence
   lacks an exact message-to-recipient overlap, and
   `exact_message_traceable=true` additionally requires complete requested log
-  evidence and one uncapped local ledger row overlapping both the requested
-  trace key and event recipient hash. The audit passes the requested trace key
+  evidence, equality with a supplied positive `expected_ledger_rows`, and one
+  uncapped local ledger row overlapping both the requested trace key and event
+  recipient hash. The audit passes the requested trace key
   into the local ledger read before the row cap, which keeps high-volume windows
   measurable without weakening exact-proof requirements.
 

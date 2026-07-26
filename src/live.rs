@@ -1919,6 +1919,12 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
         single_ledger_row_overlap(ledger.report.as_ref(), &watch_report);
     let log_events_returned = log_events_returned(&watch_report, &log_evidence_state);
     let trace_events_returned = trace_events_returned(&watch_report, &trace_evidence_state);
+    let expected_rows_match = expected_rows.is_none_or(|expected| {
+        ledger
+            .report
+            .as_ref()
+            .is_some_and(|report| report.totals.matched_rows as u64 == expected)
+    });
     let ledger_exact_ready = ledger_evidence_state == "complete"
         && ledger.report.as_ref().is_some_and(|report| {
             report.totals.matched_rows > 0
@@ -1929,6 +1935,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
         });
     let exact_message_traceable = trace_requested
         && !expected_rows_zero
+        && expected_rows_match
         && log_evidence_state == "complete"
         && trace_evidence_state == "complete"
         && trace_events_returned.is_some_and(|returned| returned > 0)
