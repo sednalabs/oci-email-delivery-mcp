@@ -2163,16 +2163,6 @@ fn observed_metric_total(
         .then(|| value(&report.totals))
 }
 
-fn component_evidence_state<T>(component: &ToolCallOutcome<T>) -> String {
-    if component.report.is_none() {
-        "unavailable".to_string()
-    } else if matches!(component.status.as_str(), "ok" | "ready") {
-        "complete".to_string()
-    } else {
-        "partial".to_string()
-    }
-}
-
 fn events_evidence_state(component: &ToolCallOutcome<EventsReport>) -> String {
     match component.report.as_ref() {
         None => "unavailable".to_string(),
