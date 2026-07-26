@@ -330,7 +330,12 @@ the row cap. Raw message/correlation fields use a case-preserving opaque hash.
 Prehashed message/correlation fields must already contain a valid 20-hex digest
 from the same contract. If a raw and prehashed form coexist, their hash must
 agree; malformed or contradictory pairs are missing trace evidence rather than
-being rehashed or silently preferring one representation. `ledger_no_rows_matched`,
+being rehashed or silently preferring one representation. Recipient address
+and recipient-id raw/prehashed pairs must also agree. A contradiction in either
+pair invalidates all recipient proof from that row. When both valid address and
+recipient-id hashes are present, provider-recipient overlap uses the address
+hash; the alternate id cannot override contradictory address evidence.
+`ledger_no_rows_matched`,
 `ledger_results_capped`,
 `ledger_missing_trace_keys`, or `ledger_missing_recipient_keys` keeps the lane
 paused for proof sends that should have ledger rows.

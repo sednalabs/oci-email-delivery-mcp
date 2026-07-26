@@ -146,7 +146,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   correlation values use the case-preserving opaque trace-key hash contract.
   Prehashed trace fields must contain a valid 20-hex digest from that same
   contract. When raw and prehashed forms coexist they must agree; malformed or
-  contradictory pairs fail closed as missing trace evidence.
+  contradictory pairs fail closed as missing trace evidence. Recipient address
+  and recipient-id raw/prehashed pairs follow the same custody rule. A
+  contradictory pair invalidates all recipient proof from that ledger row, and
+  a present address hash is authoritative over an alternate recipient-id hash
+  for provider-event overlap.
 - Private monitoring snapshot artifacts are disabled unless
   `OCI_MCP_SNAPSHOT_ROOT` is set to an absolute existing private directory.
   On Unix, the directory must not grant group or other permissions. The

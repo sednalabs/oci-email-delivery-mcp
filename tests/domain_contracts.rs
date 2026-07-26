@@ -1223,6 +1223,40 @@ fn traceability_audit_requires_same_ledger_row_for_trace_and_recipient_overlap()
 }
 
 #[test]
+fn traceability_audit_does_not_let_recipient_id_override_address_evidence() {
+    let backend = ConflictingRecipientAliasBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("conflicting recipient alias audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert!(!report.exact_message_traceable);
+    assert_eq!(report.summary.ledger_trace_key_overlap, Some(true));
+    assert_eq!(report.summary.recipient_hash_overlap, Some(false));
+    assert_eq!(report.summary.single_ledger_row_overlap, Some(false));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_no_recipient_hash_overlap"));
+}
+
+#[test]
 fn traceability_audit_rejects_positive_expected_row_mismatch_from_exact_proof() {
     let backend = FixtureBackend;
     let report = backend
@@ -2086,6 +2120,53 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
             evidence: Vec::new(),
             raw_payload_returned: false,
         })
+    }
+}
+
+struct ConflictingRecipientAliasBackend;
+
+impl OciEmailBackend for ConflictingRecipientAliasBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        FixtureBackend.trace_message(request)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        let mut report = FixtureBackend.ledger_window(request)?;
+        report.rows[0].recipient_address_hash = Some("other-recipient".to_string());
+        report.rows[0].recipient_id_hash = Some("fixture".to_string());
+        Ok(report)
     }
 }
 

@@ -2410,13 +2410,14 @@ fn event_trace_keys_overlap_row(
 }
 
 fn event_recipient_hash_overlaps_row(event: &EmailEventSummary, row: &LedgerRowSummary) -> bool {
-    [
-        row.recipient_address_hash.as_ref(),
-        row.recipient_id_hash.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|hash| event.recipient_hash.as_ref() == Some(hash))
+    authoritative_ledger_recipient_hash(row)
+        .is_some_and(|hash| event.recipient_hash.as_ref() == Some(hash))
+}
+
+fn authoritative_ledger_recipient_hash(row: &LedgerRowSummary) -> Option<&String> {
+    row.recipient_address_hash
+        .as_ref()
+        .or(row.recipient_id_hash.as_ref())
 }
 
 fn ledger_row_recipient_hash_overlap(
@@ -2428,13 +2429,7 @@ fn ledger_row_recipient_hash_overlap(
         .trace
         .as_ref()
         .and_then(|trace| trace.report.as_ref());
-    [
-        row.recipient_address_hash.as_ref(),
-        row.recipient_id_hash.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|hash| match trace_report {
+    authoritative_ledger_recipient_hash(row).is_some_and(|hash| match trace_report {
         Some(trace) => trace_recipient_hash_overlap(hash, trace),
         None => watch_report
             .components

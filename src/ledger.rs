@@ -269,7 +269,7 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     let recipient_domain = recipient_email
         .and_then(email_domain)
         .or_else(|| validated_domain_any(value, &["recipient_domain", "recipientDomain"]));
-    let recipient_address_hash = redacted_hash_any(
+    let recipient_address_hash = custodied_recipient_hash_any(
         value,
         &[
             "recipient",
@@ -286,11 +286,21 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
             "recipientHash",
         ],
     );
-    let recipient_id_hash = redacted_hash_any(
+    let recipient_id_hash = custodied_recipient_hash_any(
         value,
         &["recipient_id", "recipientId"],
         &["recipient_id_hash", "recipientIdHash"],
     );
+    let recipient_identity_valid =
+        !recipient_address_hash.is_invalid() && !recipient_id_hash.is_invalid();
+    let (recipient_address_hash, recipient_id_hash) = if recipient_identity_valid {
+        (
+            recipient_address_hash.into_option(),
+            recipient_id_hash.into_option(),
+        )
+    } else {
+        (None, None)
+    };
     Some(LedgerRowSummary {
         submitted_at,
         provider_hash: redacted_hash_any(value, &["provider"], &["provider_hash", "providerHash"]),
@@ -404,6 +414,51 @@ fn redacted_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Op
     string_any(value, hash_keys)
         .map(redacted_hash)
         .or_else(|| string_any(value, raw_keys).map(short_hash))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CustodiedHash {
+    Absent,
+    Valid(String),
+    Invalid,
+}
+
+impl CustodiedHash {
+    fn is_invalid(&self) -> bool {
+        matches!(self, Self::Invalid)
+    }
+
+    fn into_option(self) -> Option<String> {
+        match self {
+            Self::Valid(value) => Some(value),
+            Self::Absent | Self::Invalid => None,
+        }
+    }
+}
+
+fn custodied_recipient_hash_any(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+) -> CustodiedHash {
+    let raw_value = string_any(value, raw_keys);
+    let prehashed_value = string_any(value, hash_keys);
+    match (raw_value, prehashed_value) {
+        (None, None) => CustodiedHash::Absent,
+        (Some(raw), None) => CustodiedHash::Valid(short_hash(raw)),
+        (None, Some(prehashed)) if is_short_hash(prehashed) => {
+            CustodiedHash::Valid(prehashed.to_ascii_lowercase())
+        }
+        (None, Some(_)) => CustodiedHash::Invalid,
+        (Some(raw), Some(prehashed)) => {
+            let raw_hash = short_hash(raw);
+            if is_short_hash(prehashed) && prehashed.eq_ignore_ascii_case(&raw_hash) {
+                CustodiedHash::Valid(raw_hash)
+            } else {
+                CustodiedHash::Invalid
+            }
+        }
+    }
 }
 
 fn opaque_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Option<String> {
@@ -881,6 +936,56 @@ mod tests {
             opaque_hash_any(&contradictory, &["message_id"], &["message_id_hash"]),
             None
         );
+    }
+
+    #[test]
+    fn recipient_hashes_require_raw_and_prehashed_values_to_agree() {
+        let expected = short_hash("Person@Example.NET");
+        let matching = serde_json::json!({
+            "recipient": "Person@Example.NET",
+            "recipient_hash": expected.to_ascii_uppercase()
+        });
+        let malformed = serde_json::json!({
+            "recipient": "Person@Example.NET",
+            "recipient_hash": "not-a-hash"
+        });
+        let contradictory = serde_json::json!({
+            "recipient": "Person@Example.NET",
+            "recipient_hash": "00000000000000000000"
+        });
+
+        assert_eq!(
+            custodied_recipient_hash_any(&matching, &["recipient"], &["recipient_hash"]),
+            CustodiedHash::Valid(expected)
+        );
+        assert_eq!(
+            custodied_recipient_hash_any(&malformed, &["recipient"], &["recipient_hash"]),
+            CustodiedHash::Invalid
+        );
+        assert_eq!(
+            custodied_recipient_hash_any(&contradictory, &["recipient"], &["recipient_hash"]),
+            CustodiedHash::Invalid
+        );
+    }
+
+    #[test]
+    fn contradictory_recipient_claim_invalidates_all_recipient_proof_for_the_row() {
+        let address_contradiction = serde_json::json!({
+            "recipient": "person@example.net",
+            "recipient_hash": "00000000000000000000",
+            "recipient_id": "person@example.net"
+        });
+        let id_contradiction = serde_json::json!({
+            "recipient": "person@example.net",
+            "recipient_id": "person@example.net",
+            "recipient_id_hash": "00000000000000000000"
+        });
+
+        for value in [address_contradiction, id_contradiction] {
+            let row = ledger_row_summary(&value).expect("object row");
+            assert_eq!(row.recipient_address_hash, None);
+            assert_eq!(row.recipient_id_hash, None);
+        }
     }
 
     #[test]
