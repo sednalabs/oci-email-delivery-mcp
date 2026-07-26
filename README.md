@@ -219,8 +219,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   supplied expected count equals the observed count. A message-id trace uses the
   returned event's message-id hash. A correlation-header trace uses only the
   requested header name's returned value hash; the request criterion by itself
-  is not event identity. These opaque trace-key hashes preserve case and exact bytes; they
-  deliberately do not use the case-folded address/domain hash contract. Every
+  is not event identity. When a header-traced ledger row also carries a
+  message-id hash, that identity must match the uniform provider message
+  identity; a genuinely absent ledger message id remains admissible because
+  the correlation header is authoritative. These opaque trace-key hashes
+  preserve case and exact bytes; they deliberately do not use the case-folded address/domain hash contract. Every
   present provider-event recipient or message-id alias must be a non-empty
   string, and all aliases for that identity must agree under its field-specific
   hash contract. Malformed, null, or conflicting aliases make event evidence

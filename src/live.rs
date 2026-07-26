@@ -2452,6 +2452,11 @@ fn event_trace_keys_overlap_row(
         {
             return false;
         }
+        if let Some(ledger_message_id_hash) = row.message_id_hash.as_ref() {
+            if event.message_id_hash.as_ref() != Some(ledger_message_id_hash) {
+                return false;
+            }
+        }
     }
 
     trace_key_requested

@@ -223,8 +223,10 @@ blocker. Multiple matching ledger rows are also a blocker even when
 `expected_ledger_rows` equals the observed count. For a message-id trace, the
 returned event message-id hash must match. For a header trace, the returned
 value hash for the requested header name must match; matching only the request
-criterion is insufficient. Message ids and header/correlation values are opaque case-sensitive identities, so
-case-distinct values must produce different hashes and must not overlap. The
+criterion is insufficient. If that ledger row also has a message-id hash, it
+must equal the uniform provider message identity; an absent ledger message id
+is allowed because the correlation header is the requested authority. Message
+ids and header/correlation values are opaque case-sensitive identities, so case-distinct values must produce different hashes and must not overlap. The
 provider parser checks every present recipient and message-id alias: each must
 be a non-empty string and all aliases for one identity must agree. Null,
 non-string, or conflicting aliases make the event evidence unavailable. The

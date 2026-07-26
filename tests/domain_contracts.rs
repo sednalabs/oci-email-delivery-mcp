@@ -1228,6 +1228,7 @@ fn traceability_audit_requires_exactly_one_matching_ledger_row() {
         let backend = CardinalityBackend {
             duplicate_ledger_row: true,
             trace_event_variant: TraceEventVariant::Identical,
+            ledger_message_id_variant: LedgerMessageIdVariant::Matching,
         };
         let report = backend
             .traceability_audit(&TraceabilityAuditRequest {
@@ -1285,6 +1286,7 @@ fn traceability_audit_allows_multiple_provider_events_for_one_ledger_row() {
     let backend = CardinalityBackend {
         duplicate_ledger_row: false,
         trace_event_variant: TraceEventVariant::Identical,
+        ledger_message_id_variant: LedgerMessageIdVariant::Matching,
     };
     let report = backend
         .traceability_audit(&TraceabilityAuditRequest {
@@ -1326,6 +1328,7 @@ fn traceability_audit_requires_one_complete_provider_trace_identity() {
         let backend = CardinalityBackend {
             duplicate_ledger_row: false,
             trace_event_variant,
+            ledger_message_id_variant: LedgerMessageIdVariant::Matching,
         };
         let report = backend
             .traceability_audit(&TraceabilityAuditRequest {
@@ -1357,6 +1360,53 @@ fn traceability_audit_requires_one_complete_provider_trace_identity() {
             .findings
             .iter()
             .any(|finding| { finding.code == "traceability_provider_trace_identity_incomplete" }));
+    }
+}
+
+#[test]
+fn header_trace_binds_present_ledger_message_identity_to_provider_events() {
+    for (ledger_message_id_variant, exact_expected) in [
+        (LedgerMessageIdVariant::Matching, true),
+        (LedgerMessageIdVariant::Missing, true),
+        (LedgerMessageIdVariant::Other, false),
+    ] {
+        let backend = CardinalityBackend {
+            duplicate_ledger_row: false,
+            trace_event_variant: TraceEventVariant::Identical,
+            ledger_message_id_variant,
+        };
+        let report = backend
+            .traceability_audit(&TraceabilityAuditRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                interval: Some("1h".to_string()),
+                resource_domain: Some("example.com".to_string()),
+                source_domain: Some("example.com".to_string()),
+                resource_id: None,
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: None,
+                batch_id: None,
+                expected_ledger_rows: Some(1),
+                message_id: None,
+                header_name: Some("X-Trace-Example".to_string()),
+                header_value: Some("trace-token-example".to_string()),
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .unwrap_or_else(|err| panic!("header-to-message identity audit: {err}"));
+
+        assert_eq!(report.exact_message_traceable, exact_expected);
+        assert_eq!(
+            report.summary.single_ledger_row_overlap,
+            Some(exact_expected)
+        );
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "traceability_no_single_ledger_row_overlap"),
+            !exact_expected
+        );
     }
 }
 
@@ -2264,6 +2314,7 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
 struct CardinalityBackend {
     duplicate_ledger_row: bool,
     trace_event_variant: TraceEventVariant,
+    ledger_message_id_variant: LedgerMessageIdVariant,
 }
 
 #[derive(Clone, Copy)]
@@ -2273,6 +2324,13 @@ enum TraceEventVariant {
     MissingRecipient,
     OtherMessageId,
     MissingMessageId,
+}
+
+#[derive(Clone, Copy)]
+enum LedgerMessageIdVariant {
+    Matching,
+    Missing,
+    Other,
 }
 
 impl OciEmailBackend for CardinalityBackend {
@@ -2377,6 +2435,17 @@ impl OciEmailBackend for CardinalityBackend {
         request: &LedgerWindowRequest,
     ) -> Result<LedgerWindowReport, OciEmailError> {
         let mut report = FixtureBackend.ledger_window(request)?;
+        let row = report
+            .rows
+            .first_mut()
+            .ok_or_else(|| OciEmailError::Config("fixture ledger row missing".to_string()))?;
+        match self.ledger_message_id_variant {
+            LedgerMessageIdVariant::Matching => {}
+            LedgerMessageIdVariant::Missing => row.message_id_hash = None,
+            LedgerMessageIdVariant::Other => {
+                row.message_id_hash = Some("other-message".to_string());
+            }
+        }
         if self.duplicate_ledger_row {
             let duplicate =
                 report.rows.first().cloned().ok_or_else(|| {
