@@ -842,7 +842,7 @@ fn traceability_audit_keeps_metric_evidence_when_other_components_are_unavailabl
     assert!(report.provider_evidence_available);
     assert!(report.aggregate_only);
     assert_eq!(report.summary.aggregate_accepted, Some(10.0));
-    assert_eq!(report.summary.aggregate_relayed, Some(9.0));
+    assert_eq!(report.summary.aggregate_relayed, None);
     assert_eq!(report.summary.log_events_returned, None);
     assert_eq!(report.summary.trace_events_returned, None);
     assert_eq!(report.summary.ledger_rows_matched, None);
