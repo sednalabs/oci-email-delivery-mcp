@@ -600,6 +600,9 @@ fn ledger_time_sort_key(value: &Value) -> Result<Option<String>, ()> {
             continue;
         };
         let raw = claim.as_str().ok_or(())?;
+        if raw != raw.trim() {
+            return Err(());
+        }
         let normalized = utc_timestamp_key(raw).ok_or(())?;
         if timestamp_key
             .as_ref()
@@ -814,7 +817,8 @@ mod tests {
                 "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"submittedAt\":\"2026-06-30T00:10:00.000Z\",\"time\":\"2026-06-30T00:10:00.0Z\",\"recipient\":\"good@example.net\",\"message_id\":\"message-good\"}\n",
                 "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\"2026-06-30T02:10:00Z\",\"recipient\":\"conflict@example.net\",\"message_id\":\"message-good\"}\n",
                 "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"time\":null,\"recipient\":\"null@example.net\",\"message_id\":\"message-good\"}\n",
-                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\"not-a-time\",\"recipient\":\"malformed@example.net\",\"message_id\":\"message-good\"}\n"
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\"not-a-time\",\"recipient\":\"malformed@example.net\",\"message_id\":\"message-good\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"timestamp\":\" 2026-06-30T00:10:00Z \",\"recipient\":\"whitespace@example.net\",\"message_id\":\"message-good\"}\n"
             ),
         )
         .expect("write ledger fixture");
@@ -836,9 +840,9 @@ mod tests {
         .expect("timestamp-custody ledger report");
 
         assert_eq!(report.status, "degraded");
-        assert_eq!(report.totals.scanned_rows, 4);
+        assert_eq!(report.totals.scanned_rows, 5);
         assert_eq!(report.totals.matched_rows, 1);
-        assert_eq!(report.totals.invalid_rows, 3);
+        assert_eq!(report.totals.invalid_rows, 4);
         assert_eq!(report.totals.returned_rows, 1);
         assert_eq!(
             report.rows[0].submitted_at.as_deref(),
