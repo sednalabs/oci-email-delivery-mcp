@@ -1950,6 +1950,8 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
     let single_ledger_row_overlap =
         single_ledger_row_overlap(ledger.report.as_ref(), &watch_report);
     let single_provider_trace_identity = single_provider_trace_identity(&watch_report);
+    let header_trace_message_identity_mismatch =
+        header_trace_message_identity_mismatch(ledger.report.as_ref(), &watch_report);
     let log_events_returned = log_events_returned(&watch_report, &log_evidence_state);
     let trace_events_returned = trace_events_returned(&watch_report, &trace_evidence_state);
     let expected_rows_match = expected_rows.is_none_or(|expected| {
@@ -2046,6 +2048,13 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
             "blocker",
             "traceability_ledger_evidence_partial",
             "Local send-ledger evidence is partial; exact message traceability is not proven.",
+        ));
+    }
+    if header_trace_message_identity_mismatch {
+        findings.push(finding(
+            "blocker",
+            "traceability_ledger_provider_message_identity_mismatch",
+            "A header-traced ledger row carries a message identity that conflicts with the provider event identity; exact message traceability is not proven.",
         ));
     }
     if trace_requested
@@ -2339,6 +2348,36 @@ fn recipient_hash_overlap(
         .rows
         .iter()
         .any(|row| ledger_row_recipient_hash_overlap(row, watch_report))
+}
+
+fn header_trace_message_identity_mismatch(
+    ledger_report: Option<&LedgerWindowReport>,
+    watch_report: &WatchWindowReport,
+) -> bool {
+    let (Some(ledger_report), Some(trace)) = (
+        ledger_report,
+        watch_report
+            .components
+            .trace
+            .as_ref()
+            .and_then(|trace| trace.report.as_ref()),
+    ) else {
+        return false;
+    };
+    let Some(requested_header_hash) = trace.criteria.header_value_hash.as_ref() else {
+        return false;
+    };
+    ledger_report.rows.iter().any(|row| {
+        let Some(ledger_message_id_hash) = row.message_id_hash.as_ref() else {
+            return false;
+        };
+        row.correlation_id_hash.as_ref() == Some(requested_header_hash)
+            && trace.events.events.iter().any(|event| {
+                event.trace_header_value_hash.as_ref() == Some(requested_header_hash)
+                    && event_recipient_hash_overlaps_row(event, row)
+                    && event.message_id_hash.as_ref() != Some(ledger_message_id_hash)
+            })
+    })
 }
 
 fn single_provider_trace_identity(watch_report: &WatchWindowReport) -> bool {

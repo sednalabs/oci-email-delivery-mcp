@@ -1401,10 +1401,9 @@ fn header_trace_binds_present_ledger_message_identity_to_provider_events() {
             Some(exact_expected)
         );
         assert_eq!(
-            report
-                .findings
-                .iter()
-                .any(|finding| finding.code == "traceability_no_single_ledger_row_overlap"),
+            report.findings.iter().any(|finding| {
+                finding.code == "traceability_ledger_provider_message_identity_mismatch"
+            }),
             !exact_expected
         );
     }

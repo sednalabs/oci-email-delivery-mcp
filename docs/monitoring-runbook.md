@@ -82,6 +82,7 @@ Pause the pilot or keep it paused when any of these are true:
   `traceability_no_trace_events`, `traceability_no_ledger_rows`,
   `traceability_expected_ledger_rows_mismatch`,
   `traceability_no_ledger_trace_key_overlap`,
+  `traceability_ledger_provider_message_identity_mismatch`,
   `traceability_no_recipient_hash_overlap`,
   `traceability_no_single_ledger_row_overlap`,
   `traceability_provider_evidence_unavailable`, or `aggregate_only=true` for a
