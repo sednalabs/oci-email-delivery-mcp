@@ -441,38 +441,61 @@ fn custodied_recipient_hash_any(
     raw_keys: &[&str],
     hash_keys: &[&str],
 ) -> CustodiedHash {
-    let raw_value = string_any(value, raw_keys);
-    let prehashed_value = string_any(value, hash_keys);
-    match (raw_value, prehashed_value) {
-        (None, None) => CustodiedHash::Absent,
-        (Some(raw), None) => CustodiedHash::Valid(short_hash(raw)),
-        (None, Some(prehashed)) if is_short_hash(prehashed) => {
-            CustodiedHash::Valid(prehashed.to_ascii_lowercase())
-        }
-        (None, Some(_)) => CustodiedHash::Invalid,
-        (Some(raw), Some(prehashed)) => {
-            let raw_hash = short_hash(raw);
-            if is_short_hash(prehashed) && prehashed.eq_ignore_ascii_case(&raw_hash) {
-                CustodiedHash::Valid(raw_hash)
-            } else {
-                CustodiedHash::Invalid
-            }
-        }
-    }
+    custodied_hash_any(value, raw_keys, hash_keys, short_hash)
 }
 
 fn opaque_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Option<String> {
-    let raw_value = string_any(value, raw_keys);
-    let prehashed_value = string_any(value, hash_keys);
-    match (raw_value, prehashed_value) {
-        (None, None) => None,
-        (Some(raw), None) => Some(opaque_hash(raw)),
-        (None, Some(prehashed)) => is_short_hash(prehashed).then(|| prehashed.to_ascii_lowercase()),
-        (Some(raw), Some(prehashed)) => {
-            let raw_hash = opaque_hash(raw);
-            (is_short_hash(prehashed) && prehashed.eq_ignore_ascii_case(&raw_hash))
-                .then_some(raw_hash)
+    custodied_hash_any(value, raw_keys, hash_keys, opaque_hash).into_option()
+}
+
+fn custodied_hash_any(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+    hash_raw: fn(&str) -> String,
+) -> CustodiedHash {
+    let raw_hash = consistent_claim(value, raw_keys, hash_raw);
+    let prehashed = consistent_claim(value, hash_keys, valid_prehash);
+    match (raw_hash, prehashed) {
+        (Err(()), _) | (_, Err(())) => CustodiedHash::Invalid,
+        (Ok(None), Ok(None)) => CustodiedHash::Absent,
+        (Ok(Some(hash)), Ok(None)) | (Ok(None), Ok(Some(hash))) => CustodiedHash::Valid(hash),
+        (Ok(Some(raw_hash)), Ok(Some(prehashed))) if raw_hash == prehashed => {
+            CustodiedHash::Valid(raw_hash)
         }
+        (Ok(Some(_)), Ok(Some(_))) => CustodiedHash::Invalid,
+    }
+}
+
+fn consistent_claim(
+    value: &Value,
+    keys: &[&str],
+    normalize: fn(&str) -> String,
+) -> Result<Option<String>, ()> {
+    let mut normalized_claim = None;
+    for key in keys {
+        let Some(claim) = value.get(*key) else {
+            continue;
+        };
+        let raw = claim.as_str().ok_or(())?;
+        let normalized = normalize(raw);
+        if normalized.is_empty()
+            || normalized_claim
+                .as_ref()
+                .is_some_and(|existing| existing != &normalized)
+        {
+            return Err(());
+        }
+        normalized_claim = Some(normalized);
+    }
+    Ok(normalized_claim)
+}
+
+fn valid_prehash(value: &str) -> String {
+    if is_short_hash(value) {
+        value.to_ascii_lowercase()
+    } else {
+        String::new()
     }
 }
 
@@ -969,6 +992,86 @@ mod tests {
     }
 
     #[test]
+    fn recipient_hashes_reject_malformed_and_conflicting_aliases() {
+        let malformed_hash_type = serde_json::json!({
+            "recipient": "a@example.net",
+            "recipient_hash": 123
+        });
+        let null_hash = serde_json::json!({
+            "recipient": "a@example.net",
+            "recipient_hash": null
+        });
+        let conflicting_raw_aliases = serde_json::json!({
+            "recipient": "a@example.net",
+            "email": "b@example.net",
+            "recipient_hash": short_hash("a@example.net")
+        });
+        let conflicting_hash_aliases = serde_json::json!({
+            "recipient": "a@example.net",
+            "recipient_hash": short_hash("a@example.net"),
+            "recipientAddressHash": short_hash("b@example.net")
+        });
+
+        for value in [
+            malformed_hash_type,
+            null_hash,
+            conflicting_raw_aliases,
+            conflicting_hash_aliases,
+        ] {
+            assert_eq!(
+                custodied_recipient_hash_any(
+                    &value,
+                    &["recipient", "email"],
+                    &["recipient_hash", "recipientAddressHash"]
+                ),
+                CustodiedHash::Invalid
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_trace_hashes_reject_malformed_and_conflicting_aliases() {
+        let malformed_alias = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "messageIdHash": 123
+        });
+        let conflicting_raw_aliases = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "provider_message_id": "trace-abc"
+        });
+        let agreeing_aliases = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "provider_message_id": "Trace-AbC",
+            "message_id_hash": opaque_hash("Trace-AbC")
+        });
+
+        assert_eq!(
+            opaque_hash_any(
+                &malformed_alias,
+                &["message_id", "provider_message_id"],
+                &["message_id_hash", "messageIdHash"]
+            ),
+            None
+        );
+        assert_eq!(
+            opaque_hash_any(
+                &conflicting_raw_aliases,
+                &["message_id", "provider_message_id"],
+                &["message_id_hash", "messageIdHash"]
+            ),
+            None
+        );
+        assert_eq!(
+            opaque_hash_any(
+                &agreeing_aliases,
+                &["message_id", "provider_message_id"],
+                &["message_id_hash", "messageIdHash"]
+            ),
+            Some(opaque_hash("Trace-AbC"))
+        );
+    }
+
+    #[test]
     fn contradictory_recipient_claim_invalidates_all_recipient_proof_for_the_row() {
         let address_contradiction = serde_json::json!({
             "recipient": "person@example.net",
@@ -986,6 +1089,56 @@ mod tests {
             assert_eq!(row.recipient_address_hash, None);
             assert_eq!(row.recipient_id_hash, None);
         }
+    }
+
+    #[test]
+    fn ledger_window_fails_closed_on_malformed_or_conflicting_recipient_aliases() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/recipient-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "{{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"recipient\":\"good@example.net\",\"recipient_hash\":\"{}\",\"message_id\":\"message-good\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"typed@example.net\",\"recipient_hash\":123,\"message_id\":\"message-typed\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:12:00Z\",\"recipient\":\"first@example.net\",\"email\":\"second@example.net\",\"recipient_hash\":\"{}\",\"message_id\":\"message-alias\"}}\n"
+                ),
+                short_hash("good@example.net"),
+                short_hash("first@example.net")
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: None,
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("recipient-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.matched_rows, 3);
+        assert_eq!(report.totals.missing_recipient_key_count, 2);
+        assert_eq!(
+            report.rows[0].recipient_address_hash,
+            Some(short_hash("good@example.net"))
+        );
+        for row in &report.rows[1..] {
+            assert_eq!(row.recipient_address_hash, None);
+            assert_eq!(row.recipient_id_hash, None);
+        }
+
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

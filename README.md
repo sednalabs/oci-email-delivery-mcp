@@ -150,7 +150,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   and recipient-id raw/prehashed pairs follow the same custody rule. A
   contradictory pair invalidates all recipient proof from that ledger row, and
   a present address hash is authoritative over an alternate recipient-id hash
-  for provider-event overlap.
+  for provider-event overlap. Every present alias must be a string and all
+  aliases for one identity must agree; malformed types, nulls, or conflicting
+  duplicate aliases also fail closed.
 - Private monitoring snapshot artifacts are disabled unless
   `OCI_MCP_SNAPSHOT_ROOT` is set to an absolute existing private directory.
   On Unix, the directory must not grant group or other permissions. The

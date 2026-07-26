@@ -334,7 +334,9 @@ being rehashed or silently preferring one representation. Recipient address
 and recipient-id raw/prehashed pairs must also agree. A contradiction in either
 pair invalidates all recipient proof from that row. When both valid address and
 recipient-id hashes are present, provider-recipient overlap uses the address
-hash; the alternate id cannot override contradictory address evidence.
+hash; the alternate id cannot override contradictory address evidence. Every
+present identity alias must be a string, and duplicate raw or prehashed aliases
+must agree. Nulls, other JSON types, and conflicting aliases fail closed.
 `ledger_no_rows_matched`,
 `ledger_results_capped`,
 `ledger_missing_trace_keys`, or `ledger_missing_recipient_keys` keeps the lane
