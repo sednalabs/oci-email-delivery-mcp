@@ -582,6 +582,71 @@ fn send_readiness_blocks_ambiguous_or_mismatched_ledger_counts() {
 }
 
 #[test]
+fn send_readiness_requires_oci_provider_authority_for_every_matched_row() {
+    for (provider_hash, append_oci_row, expected_rows, expected_code) in [
+        (
+            None,
+            false,
+            1,
+            "ledger_provider_identity_missing_block_readiness",
+        ),
+        (
+            Some("7e887edb52b723997076"),
+            false,
+            1,
+            "ledger_provider_authority_mismatch_block_readiness",
+        ),
+        (
+            Some("7e887edb52b723997076"),
+            true,
+            2,
+            "ledger_provider_authority_mismatch_block_readiness",
+        ),
+    ] {
+        let backend = ProviderAuthorityBackend {
+            provider_hash,
+            append_oci_row,
+        };
+        let report = backend
+            .send_readiness(&SendReadinessRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                interval: Some("1h".to_string()),
+                resource_domain: Some("example.com".to_string()),
+                source_domain: Some("example.com".to_string()),
+                resource_id: None,
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: "campaign-token-123".to_string(),
+                batch_id: "batch-token-456".to_string(),
+                expected_ledger_rows: expected_rows,
+                message_id: Some("message-token-789".to_string()),
+                header_name: None,
+                header_value: None,
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .unwrap_or_else(|err| panic!("provider-authority send readiness: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.decision, "remain_paused");
+        assert!(!report.send_authorized);
+        assert_eq!(
+            report
+                .components
+                .ledger
+                .report
+                .as_ref()
+                .map(|ledger| ledger.totals.matched_rows),
+            Some(expected_rows as usize)
+        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == expected_code));
+    }
+}
+
+#[test]
 fn send_readiness_skips_ledger_read_when_required_identifiers_are_missing() {
     let backend = FixtureBackend;
     let report = backend
@@ -1425,7 +1490,10 @@ fn traceability_audit_requires_explicit_oci_ledger_provider_authority() {
             "traceability_ledger_provider_authority_mismatch",
         ),
     ] {
-        let backend = ProviderAuthorityBackend { provider_hash };
+        let backend = ProviderAuthorityBackend {
+            provider_hash,
+            append_oci_row: false,
+        };
         let report = backend
             .traceability_audit(&TraceabilityAuditRequest {
                 start_time: "2026-06-30T00:00:00Z".to_string(),
@@ -2511,6 +2579,7 @@ struct ConflictingRecipientAliasBackend;
 
 struct ProviderAuthorityBackend {
     provider_hash: Option<&'static str>,
+    append_oci_row: bool,
 }
 
 impl OciEmailBackend for ProviderAuthorityBackend {
@@ -2553,6 +2622,14 @@ impl OciEmailBackend for ProviderAuthorityBackend {
     ) -> Result<LedgerWindowReport, OciEmailError> {
         let mut report = FixtureBackend.ledger_window(request)?;
         report.rows[0].provider_hash = self.provider_hash.map(ToString::to_string);
+        if self.append_oci_row {
+            let mut row = report.rows[0].clone();
+            row.provider_hash = Some("0010a331516757b7b31e".to_string());
+            report.rows.push(row);
+            report.totals.scanned_rows += 1;
+            report.totals.matched_rows += 1;
+            report.totals.returned_rows += 1;
+        }
         Ok(report)
     }
 }

@@ -186,7 +186,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   an event source domain is available.
 - `oci_email_send_readiness` also requires an expected local ledger row count
   and blocks when ledger rows are missing, capped, invalid, or lack trace or
-  recipient reconciliation keys.
+  recipient reconciliation keys. Every matched readiness row must carry an
+  unambiguous service-specific OCI Email Delivery provider identity; missing,
+  non-OCI, mixed-provider, or contradictory provider claims remain blocked.
 - `oci_email_traceability_audit` is the exact-trace boundary. Its v2 output has
   `schema="oci-email-delivery.traceability-audit.v2"`; consumers must branch
   on that schema and the evidence-state fields, rather than treat summary

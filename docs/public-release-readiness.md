@@ -76,6 +76,9 @@ explain its core value.
   or exact proof. Exact proof additionally requires the selected local ledger
   row to carry unambiguous OCI Email Delivery provider authority; missing,
   non-OCI, malformed, or contradictory provider identity remains fail-closed.
+- `oci_email_send_readiness` applies the same service-specific provider
+  authority to every matched ledger row, so a missing, non-OCI, or mixed
+  provider cohort cannot be described as OCI-ready even when counts match.
 - The adapter includes `oci_email_monitoring_snapshot_artifact` so those
   redacted watch, readiness, or traceability receipts can be persisted
   privately for later replay without scraping MCP transcripts or exposing raw

@@ -160,7 +160,10 @@ component are present.
 authorizes a send by itself. A missing or blank campaign/batch identifier,
 zero expected rows, a row-count mismatch, missing ledger trace keys, missing
 recipient keys, capped ledger rows, or invalid ledger rows keeps the lane
-paused.
+paused. Every matched ledger row must also carry an unambiguous
+service-specific OCI Email Delivery provider identity. A missing identity, a
+non-OCI identity, or a mixed cohort containing another provider keeps readiness
+blocked even when the expected row count matches.
 
 `oci_email_watch_window` remains useful before a specific send batch exists or
 for diagnosis when ledger proof is not expected yet:

@@ -2641,6 +2641,22 @@ fn add_send_readiness_ledger_findings(
             "Local send-ledger rows are missing recipient hashes needed for clean-audience reconciliation.",
         ));
     }
+    if report.rows.iter().any(|row| row.provider_hash.is_none()) {
+        findings.push(finding(
+            "blocker",
+            "ledger_provider_identity_missing_block_readiness",
+            "One or more matched local send-ledger rows have no provider identity; OCI Email Delivery readiness is not proven.",
+        ));
+    }
+    if report.rows.iter().any(|row| {
+        row.provider_hash.is_some() && !crate::ledger::ledger_row_has_oci_provider_authority(row)
+    }) {
+        findings.push(finding(
+            "blocker",
+            "ledger_provider_authority_mismatch_block_readiness",
+            "One or more matched local send-ledger rows are not bound to OCI Email Delivery provider authority; OCI readiness is not proven.",
+        ));
+    }
 }
 
 fn redact_watch_trace_header_names_for_readiness(report: &mut WatchWindowReport) {
