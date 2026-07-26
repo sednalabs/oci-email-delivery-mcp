@@ -146,8 +146,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   correlation values use the case-preserving opaque trace-key hash contract.
   Prehashed trace fields must contain a valid 20-hex digest from that same
   contract. When raw and prehashed forms coexist they must agree; malformed or
-  contradictory pairs fail closed as missing trace evidence. Recipient address
-  and recipient-id raw/prehashed pairs follow the same custody rule. A
+  contradictory pairs fail closed as missing trace evidence. If either a
+  message or correlation claim is invalid, all trace proof from that ledger row
+  is invalidated; the other key cannot override contradictory row evidence.
+  Recipient address and recipient-id raw/prehashed pairs follow the same
+  custody rule. A
   contradictory pair invalidates all recipient proof from that ledger row, and
   a present address hash is authoritative over an alternate recipient-id hash
   for provider-event overlap. Every present alias must be a string and all

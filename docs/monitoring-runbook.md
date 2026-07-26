@@ -333,7 +333,9 @@ the row cap. Raw message/correlation fields use a case-preserving opaque hash.
 Prehashed message/correlation fields must already contain a valid 20-hex digest
 from the same contract. If a raw and prehashed form coexist, their hash must
 agree; malformed or contradictory pairs are missing trace evidence rather than
-being rehashed or silently preferring one representation. Recipient address
+being rehashed or silently preferring one representation. A malformed or
+contradictory message or correlation claim invalidates all trace proof from
+that row; the other trace key cannot preserve exact proof. Recipient address
 and recipient-id raw/prehashed pairs must also agree. A contradiction in either
 pair invalidates all recipient proof from that row. When both valid address and
 recipient-id hashes are present, provider-recipient overlap uses the address

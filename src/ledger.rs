@@ -301,6 +301,49 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     } else {
         (None, None)
     };
+    let message_id_hash = custodied_opaque_hash_any(
+        value,
+        &[
+            "message_id",
+            "messageId",
+            "provider_message_id",
+            "providerMessageId",
+        ],
+        &[
+            "message_id_hash",
+            "messageIdHash",
+            "provider_message_id_hash",
+            "providerMessageIdHash",
+        ],
+    );
+    let correlation_id_hash = custodied_opaque_hash_any(
+        value,
+        &[
+            "correlation_id",
+            "correlationId",
+            "header_value",
+            "headerValue",
+            "x_campaign_correlation_id",
+            "xCampaignCorrelationId",
+        ],
+        &[
+            "correlation_id_hash",
+            "correlationIdHash",
+            "header_value_hash",
+            "headerValueHash",
+            "x_campaign_correlation_id_hash",
+            "xCampaignCorrelationIdHash",
+        ],
+    );
+    let trace_identity_valid = !message_id_hash.is_invalid() && !correlation_id_hash.is_invalid();
+    let (message_id_hash, correlation_id_hash) = if trace_identity_valid {
+        (
+            message_id_hash.into_option(),
+            correlation_id_hash.into_option(),
+        )
+    } else {
+        (None, None)
+    };
     Some(LedgerRowSummary {
         submitted_at,
         provider_hash: redacted_hash_any(value, &["provider"], &["provider_hash", "providerHash"]),
@@ -323,40 +366,8 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
         recipient_domain,
         recipient_address_hash,
         recipient_id_hash,
-        message_id_hash: opaque_hash_any(
-            value,
-            &[
-                "message_id",
-                "messageId",
-                "provider_message_id",
-                "providerMessageId",
-            ],
-            &[
-                "message_id_hash",
-                "messageIdHash",
-                "provider_message_id_hash",
-                "providerMessageIdHash",
-            ],
-        ),
-        correlation_id_hash: opaque_hash_any(
-            value,
-            &[
-                "correlation_id",
-                "correlationId",
-                "header_value",
-                "headerValue",
-                "x_campaign_correlation_id",
-                "xCampaignCorrelationId",
-            ],
-            &[
-                "correlation_id_hash",
-                "correlationIdHash",
-                "header_value_hash",
-                "headerValueHash",
-                "x_campaign_correlation_id_hash",
-                "xCampaignCorrelationIdHash",
-            ],
-        ),
+        message_id_hash,
+        correlation_id_hash,
         template_version_hash: redacted_hash_any(
             value,
             &["template_version", "templateVersion"],
@@ -445,7 +456,15 @@ fn custodied_recipient_hash_any(
 }
 
 fn opaque_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Option<String> {
-    custodied_hash_any(value, raw_keys, hash_keys, opaque_hash).into_option()
+    custodied_opaque_hash_any(value, raw_keys, hash_keys).into_option()
+}
+
+fn custodied_opaque_hash_any(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+) -> CustodiedHash {
+    custodied_hash_any(value, raw_keys, hash_keys, opaque_hash)
 }
 
 fn custodied_hash_any(
@@ -1072,6 +1091,26 @@ mod tests {
     }
 
     #[test]
+    fn contradictory_trace_claim_invalidates_all_trace_proof_for_the_row() {
+        let message_contradiction = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "message_id_hash": "00000000000000000000",
+            "correlation_id": "Header-AbC"
+        });
+        let correlation_contradiction = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "correlation_id": "Header-AbC",
+            "correlation_id_hash": "00000000000000000000"
+        });
+
+        for value in [message_contradiction, correlation_contradiction] {
+            let row = ledger_row_summary(&value).expect("object row");
+            assert_eq!(row.message_id_hash, None);
+            assert_eq!(row.correlation_id_hash, None);
+        }
+    }
+
+    #[test]
     fn contradictory_recipient_claim_invalidates_all_recipient_proof_for_the_row() {
         let address_contradiction = serde_json::json!({
             "recipient": "person@example.net",
@@ -1136,6 +1175,59 @@ mod tests {
         for row in &report.rows[1..] {
             assert_eq!(row.recipient_address_hash, None);
             assert_eq!(row.recipient_id_hash, None);
+        }
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ledger_window_fails_closed_on_any_invalid_trace_claim_in_a_row() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/trace-row-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "{{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"recipient\":\"good@example.net\",\"message_id\":\"message-good\",\"correlation_id\":\"corr-good\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"message@example.net\",\"message_id\":\"message-bad\",\"message_id_hash\":\"00000000000000000000\",\"correlation_id\":\"corr-valid\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:12:00Z\",\"recipient\":\"correlation@example.net\",\"message_id\":\"message-valid\",\"correlation_id\":\"corr-bad\",\"correlation_id_hash\":\"{}\"}}\n"
+                ),
+                opaque_hash("other-correlation")
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: None,
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("trace-row-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.matched_rows, 3);
+        assert_eq!(report.totals.missing_trace_key_count, 2);
+        assert_eq!(
+            report.rows[0].message_id_hash,
+            Some(opaque_hash("message-good"))
+        );
+        assert_eq!(
+            report.rows[0].correlation_id_hash,
+            Some(opaque_hash("corr-good"))
+        );
+        for row in &report.rows[1..] {
+            assert_eq!(row.message_id_hash, None);
+            assert_eq!(row.correlation_id_hash, None);
         }
 
         let _ = fs::remove_file(&path);
