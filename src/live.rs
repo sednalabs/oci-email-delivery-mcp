@@ -2050,7 +2050,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
             "Local send-ledger evidence is partial; exact message traceability is not proven.",
         ));
     }
-    if header_trace_message_identity_mismatch {
+    if single_provider_trace_identity && header_trace_message_identity_mismatch {
         findings.push(finding(
             "blocker",
             "traceability_ledger_provider_message_identity_mismatch",
@@ -2375,7 +2375,10 @@ fn header_trace_message_identity_mismatch(
             && trace.events.events.iter().any(|event| {
                 event.trace_header_value_hash.as_ref() == Some(requested_header_hash)
                     && event_recipient_hash_overlaps_row(event, row)
-                    && event.message_id_hash.as_ref() != Some(ledger_message_id_hash)
+                    && event
+                        .message_id_hash
+                        .as_ref()
+                        .is_some_and(|provider_hash| provider_hash != ledger_message_id_hash)
             })
     })
 }

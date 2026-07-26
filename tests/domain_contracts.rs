@@ -1360,6 +1360,9 @@ fn traceability_audit_requires_one_complete_provider_trace_identity() {
             .findings
             .iter()
             .any(|finding| { finding.code == "traceability_provider_trace_identity_incomplete" }));
+        assert!(!report.findings.iter().any(|finding| {
+            finding.code == "traceability_ledger_provider_message_identity_mismatch"
+        }));
     }
 }
 
