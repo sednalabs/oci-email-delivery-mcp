@@ -687,9 +687,9 @@ pub struct TraceabilitySummary {
     pub trace_events_returned: Option<usize>,
     pub ledger_rows_matched: Option<usize>,
     pub ledger_rows_capped: Option<bool>,
-    pub ledger_trace_key_overlap: bool,
-    pub recipient_hash_overlap: bool,
-    pub single_ledger_row_overlap: bool,
+    pub ledger_trace_key_overlap: Option<bool>,
+    pub recipient_hash_overlap: Option<bool>,
+    pub single_ledger_row_overlap: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

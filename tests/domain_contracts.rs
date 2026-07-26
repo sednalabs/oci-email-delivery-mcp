@@ -679,9 +679,9 @@ fn traceability_audit_distinguishes_exact_overlap_from_aggregate_pressure() {
     assert_eq!(report.summary.trace_events_returned, Some(1));
     assert_eq!(report.summary.ledger_rows_matched, Some(1));
     assert_eq!(report.summary.ledger_rows_capped, Some(false));
-    assert!(report.summary.ledger_trace_key_overlap);
-    assert!(report.summary.recipient_hash_overlap);
-    assert!(report.summary.single_ledger_row_overlap);
+    assert_eq!(report.summary.ledger_trace_key_overlap, Some(true));
+    assert_eq!(report.summary.recipient_hash_overlap, Some(true));
+    assert_eq!(report.summary.single_ledger_row_overlap, Some(true));
     assert_eq!(report.components.ledger.status, "ok");
     assert_eq!(
         report
@@ -736,6 +736,9 @@ fn traceability_audit_blocks_when_metrics_exist_but_logs_and_ledger_do_not_match
     assert_eq!(report.summary.trace_events_returned, Some(0));
     assert_eq!(report.summary.ledger_rows_matched, Some(0));
     assert_eq!(report.summary.ledger_rows_capped, Some(false));
+    assert_eq!(report.summary.ledger_trace_key_overlap, Some(false));
+    assert_eq!(report.summary.recipient_hash_overlap, Some(false));
+    assert_eq!(report.summary.single_ledger_row_overlap, Some(false));
     for code in [
         "traceability_no_log_events",
         "traceability_no_trace_events",
@@ -787,6 +790,15 @@ fn traceability_audit_distinguishes_unavailable_provider_evidence_from_aggregate
     assert_eq!(report.summary.trace_events_returned, None);
     assert_eq!(report.summary.ledger_rows_matched, None);
     assert_eq!(report.summary.ledger_rows_capped, None);
+    assert_eq!(report.summary.ledger_trace_key_overlap, None);
+    assert_eq!(report.summary.recipient_hash_overlap, None);
+    assert_eq!(report.summary.single_ledger_row_overlap, None);
+    let payload = serde_json::to_string(&report)
+        .unwrap_or_else(|err| panic!("serialize unavailable-evidence traceability audit: {err}"));
+    assert!(payload.contains("\"provider_evidence_available\":false"));
+    assert!(payload.contains("\"ledger_trace_key_overlap\":null"));
+    assert!(payload.contains("\"recipient_hash_overlap\":null"));
+    assert!(payload.contains("\"single_ledger_row_overlap\":null"));
     assert!(!report
         .findings
         .iter()
@@ -796,6 +808,81 @@ fn traceability_audit_distinguishes_unavailable_provider_evidence_from_aggregate
             && finding.message.contains("acceptance")
             && finding.message.contains("not proven")
     }));
+}
+
+#[test]
+fn traceability_audit_keeps_metric_evidence_when_other_components_are_unavailable() {
+    let backend = MetricOnlyPartialBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("metric-only partial traceability audit: {err}"));
+    let payload = serde_json::to_string(&report)
+        .unwrap_or_else(|err| panic!("serialize metric-only partial traceability audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.send_authorized);
+    assert!(!report.exact_message_traceable);
+    assert!(report.provider_evidence_available);
+    assert!(report.aggregate_only);
+    assert_eq!(report.summary.aggregate_accepted, Some(10.0));
+    assert_eq!(report.summary.aggregate_relayed, Some(9.0));
+    assert_eq!(report.summary.log_events_returned, None);
+    assert_eq!(report.summary.trace_events_returned, None);
+    assert_eq!(report.summary.ledger_rows_matched, None);
+    assert_eq!(report.summary.ledger_rows_capped, None);
+    assert_eq!(report.summary.ledger_trace_key_overlap, None);
+    assert_eq!(report.summary.recipient_hash_overlap, None);
+    assert_eq!(report.summary.single_ledger_row_overlap, None);
+    assert!(report
+        .components
+        .watch_window
+        .components
+        .metrics
+        .report
+        .is_some());
+    assert!(report
+        .components
+        .watch_window
+        .components
+        .events
+        .report
+        .is_none());
+    assert!(report
+        .components
+        .watch_window
+        .components
+        .trace
+        .as_ref()
+        .is_some_and(|trace| trace.report.is_none()));
+    assert!(report.components.ledger.report.is_none());
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_aggregate_only"));
+    assert!(payload.contains("\"provider_evidence_available\":true"));
+    assert!(payload.contains("\"aggregate_accepted\":10.0"));
+    assert!(payload.contains("\"exact_message_traceable\":false"));
+    assert!(payload.contains("\"send_authorized\":false"));
+    assert!(payload.contains("\"ledger_trace_key_overlap\":null"));
+    assert!(payload.contains("\"recipient_hash_overlap\":null"));
+    assert!(payload.contains("\"single_ledger_row_overlap\":null"));
 }
 
 #[test]
@@ -825,8 +912,8 @@ fn traceability_audit_requires_requested_trace_recipient_overlap() {
     assert_eq!(report.decision, "remain_paused");
     assert!(!report.exact_message_traceable);
     assert!(report.aggregate_only);
-    assert!(report.summary.ledger_trace_key_overlap);
-    assert!(!report.summary.recipient_hash_overlap);
+    assert_eq!(report.summary.ledger_trace_key_overlap, Some(true));
+    assert_eq!(report.summary.recipient_hash_overlap, Some(false));
     assert!(report
         .findings
         .iter()
@@ -860,8 +947,8 @@ fn traceability_audit_requires_requested_trace_key_overlap() {
     assert_eq!(report.decision, "remain_paused");
     assert!(!report.exact_message_traceable);
     assert!(report.aggregate_only);
-    assert!(!report.summary.ledger_trace_key_overlap);
-    assert!(report.summary.recipient_hash_overlap);
+    assert_eq!(report.summary.ledger_trace_key_overlap, Some(false));
+    assert_eq!(report.summary.recipient_hash_overlap, Some(true));
     assert!(report
         .findings
         .iter()
@@ -895,9 +982,9 @@ fn traceability_audit_requires_same_ledger_row_for_trace_and_recipient_overlap()
     assert_eq!(report.decision, "remain_paused");
     assert!(!report.exact_message_traceable);
     assert!(report.aggregate_only);
-    assert!(report.summary.ledger_trace_key_overlap);
-    assert!(report.summary.recipient_hash_overlap);
-    assert!(!report.summary.single_ledger_row_overlap);
+    assert_eq!(report.summary.ledger_trace_key_overlap, Some(true));
+    assert_eq!(report.summary.recipient_hash_overlap, Some(true));
+    assert_eq!(report.summary.single_ledger_row_overlap, Some(false));
     assert!(report
         .findings
         .iter()
@@ -1059,6 +1146,53 @@ impl OciEmailBackend for UnavailableEvidenceBackend {
         Err(OciEmailError::Config(
             "synthetic metric evidence unavailable".to_string(),
         ))
+    }
+
+    fn logging_status(
+        &self,
+        _request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic logging evidence unavailable".to_string(),
+        ))
+    }
+
+    fn events(&self, _request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic log events unavailable".to_string(),
+        ))
+    }
+
+    fn trace_message(
+        &self,
+        _request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic trace events unavailable".to_string(),
+        ))
+    }
+
+    fn suppressions(
+        &self,
+        _request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic suppression evidence unavailable".to_string(),
+        ))
+    }
+}
+
+struct MetricOnlyPartialBackend;
+
+impl OciEmailBackend for MetricOnlyPartialBackend {
+    fn status(&self, _request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic status evidence unavailable".to_string(),
+        ))
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
     }
 
     fn logging_status(

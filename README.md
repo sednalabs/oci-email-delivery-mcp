@@ -159,7 +159,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   summary fields `log_events_returned`, `ledger_rows_matched`, and
   `ledger_rows_capped` are nullable component-read indicators: `null` means the
   corresponding report was unavailable, while `0` or `false` means a successful
-  empty or uncapped read. The audit passes the requested trace key into the
+  empty or uncapped read. The ledger overlap fields
+  `ledger_trace_key_overlap`, `recipient_hash_overlap`, and
+  `single_ledger_row_overlap` follow the same rule: they are `null` when the
+  ledger report is unavailable, and are `false` or `true` only after an
+  available ledger read. The audit passes the requested trace key into the
   local ledger read before the row cap, which keeps high-volume windows
   measurable without weakening exact-proof requirements.
 

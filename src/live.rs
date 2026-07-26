@@ -2061,9 +2061,12 @@ fn traceability_summary(
         trace_events_returned: trace_events_returned(watch_report),
         ledger_rows_matched: ledger_report.map(|report| report.totals.matched_rows),
         ledger_rows_capped: ledger_report.map(|report| report.totals.rows_capped),
-        ledger_trace_key_overlap: ledger_trace_key_overlap(ledger_report, watch_report),
-        recipient_hash_overlap: recipient_hash_overlap(ledger_report, watch_report),
-        single_ledger_row_overlap: single_ledger_row_overlap(ledger_report, watch_report),
+        ledger_trace_key_overlap: ledger_report
+            .map(|_| ledger_trace_key_overlap(ledger_report, watch_report)),
+        recipient_hash_overlap: ledger_report
+            .map(|_| recipient_hash_overlap(ledger_report, watch_report)),
+        single_ledger_row_overlap: ledger_report
+            .map(|_| single_ledger_row_overlap(ledger_report, watch_report)),
     }
 }
 

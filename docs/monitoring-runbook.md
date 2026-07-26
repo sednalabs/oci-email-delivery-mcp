@@ -216,8 +216,12 @@ traceability are unproven; unavailable aggregate totals are `null`, not zero.
 The summary fields `log_events_returned`, `ledger_rows_matched`, and
 `ledger_rows_capped` are also nullable: `null` means the corresponding event or
 ledger report was unavailable, while `0` or `false` means a successful empty or
-uncapped read. Treat `traceability_provider_evidence_unavailable` as a stop
-code, not as a successful empty provider result.
+uncapped read. The ledger overlap fields `ledger_trace_key_overlap`,
+`recipient_hash_overlap`, and `single_ledger_row_overlap` are nullable for the
+same reason: `null` means ledger evidence was unavailable, while `false` or
+`true` means an available ledger read found no overlap or did find overlap.
+Treat `traceability_provider_evidence_unavailable` as a stop code, not as a
+successful empty provider result.
 
 Use `oci_email_monitoring_snapshot_artifact` whenever the receipt needs to be
 replayable outside the MCP transcript. The tool writes only under
