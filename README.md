@@ -143,7 +143,8 @@ contract tests with an OCI profile configured. The live smoke must not use
   have to expose or scan a whole campaign in the transcript. Raw message and
   correlation values use the case-preserving opaque trace-key hash contract.
   Prehashed trace fields must contain a valid 20-hex digest from that same
-  contract; malformed prehashes fail closed as missing trace evidence.
+  contract. When raw and prehashed forms coexist they must agree; malformed or
+  contradictory pairs fail closed as missing trace evidence.
 - Private monitoring snapshot artifacts are disabled unless
   `OCI_MCP_SNAPSHOT_ROOT` is set to an absolute existing private directory.
   On Unix, the directory must not grant group or other permissions. The

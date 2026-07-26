@@ -328,8 +328,9 @@ path is returned. When `message_id` or `correlation_id` is supplied, the
 returned `filters` contain only redacted hashes and the filter is applied before
 the row cap. Raw message/correlation fields use a case-preserving opaque hash.
 Prehashed message/correlation fields must already contain a valid 20-hex digest
-from the same contract; malformed prehashes are missing trace evidence rather
-than being rehashed under a different normalization. `ledger_no_rows_matched`,
+from the same contract. If a raw and prehashed form coexist, their hash must
+agree; malformed or contradictory pairs are missing trace evidence rather than
+being rehashed or silently preferring one representation. `ledger_no_rows_matched`,
 `ledger_results_capped`,
 `ledger_missing_trace_keys`, or `ledger_missing_recipient_keys` keeps the lane
 paused for proof sends that should have ledger rows.

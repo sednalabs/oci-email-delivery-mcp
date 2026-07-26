@@ -407,9 +407,18 @@ fn redacted_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Op
 }
 
 fn opaque_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Option<String> {
-    string_any(value, hash_keys)
-        .and_then(|value| is_short_hash(value).then(|| value.to_ascii_lowercase()))
-        .or_else(|| string_any(value, raw_keys).map(opaque_hash))
+    let raw_value = string_any(value, raw_keys);
+    let prehashed_value = string_any(value, hash_keys);
+    match (raw_value, prehashed_value) {
+        (None, None) => None,
+        (Some(raw), None) => Some(opaque_hash(raw)),
+        (None, Some(prehashed)) => is_short_hash(prehashed).then(|| prehashed.to_ascii_lowercase()),
+        (Some(raw), Some(prehashed)) => {
+            let raw_hash = opaque_hash(raw);
+            (is_short_hash(prehashed) && prehashed.eq_ignore_ascii_case(&raw_hash))
+                .then_some(raw_hash)
+        }
+    }
 }
 
 fn redacted_hash(value: &str) -> String {
@@ -779,7 +788,9 @@ mod tests {
             &path,
             concat!(
                 "{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"recipient\":\"first@example.net\",\"message_id\":\"Trace-AbC\",\"correlation_id\":\"Header-AbC\"}\n",
-                "{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"second@example.net\",\"message_id\":\"trace-abc\",\"correlation_id\":\"header-abc\"}\n"
+                "{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"recipient\":\"second@example.net\",\"message_id\":\"trace-abc\",\"correlation_id\":\"header-abc\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:12:00Z\",\"recipient\":\"third@example.net\",\"message_id\":\"Trace-AbC\",\"message_id_hash\":\"not-a-hash\",\"correlation_id\":\"Header-AbC\",\"correlation_id_hash\":\"not-a-hash\"}\n",
+                "{\"submitted_at\":\"2026-06-30T00:13:00Z\",\"recipient\":\"fourth@example.net\",\"message_id\":\"Trace-AbC\",\"message_id_hash\":\"00000000000000000000\",\"correlation_id\":\"Header-AbC\",\"correlation_id_hash\":\"00000000000000000000\"}\n"
             ),
         )
         .expect("write ledger fixture");
@@ -840,6 +851,36 @@ mod tests {
         }
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opaque_trace_hashes_require_raw_and_prehashed_values_to_agree() {
+        let expected = opaque_hash("Trace-AbC");
+        let matching = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "message_id_hash": expected
+        });
+        let malformed = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "message_id_hash": "not-a-hash"
+        });
+        let contradictory = serde_json::json!({
+            "message_id": "Trace-AbC",
+            "message_id_hash": "00000000000000000000"
+        });
+
+        assert_eq!(
+            opaque_hash_any(&matching, &["message_id"], &["message_id_hash"]),
+            Some(opaque_hash("Trace-AbC"))
+        );
+        assert_eq!(
+            opaque_hash_any(&malformed, &["message_id"], &["message_id_hash"]),
+            None
+        );
+        assert_eq!(
+            opaque_hash_any(&contradictory, &["message_id"], &["message_id_hash"]),
+            None
+        );
     }
 
     #[test]
