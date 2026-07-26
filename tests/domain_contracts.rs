@@ -853,23 +853,23 @@ fn traceability_audit_keeps_metric_evidence_when_other_components_are_unavailabl
     assert!(report
         .components
         .watch_window
-        .components
-        .metrics
         .report
+        .as_ref()
+        .and_then(|watch| watch.components.metrics.report.as_ref())
         .is_some());
     assert!(report
         .components
         .watch_window
-        .components
-        .events
         .report
+        .as_ref()
+        .and_then(|watch| watch.components.events.report.as_ref())
         .is_none());
     assert!(report
         .components
         .watch_window
-        .components
-        .trace
+        .report
         .as_ref()
+        .and_then(|watch| watch.components.trace.as_ref())
         .is_some_and(|trace| trace.report.is_none()));
     assert!(report.components.ledger.report.is_none());
     assert!(report
