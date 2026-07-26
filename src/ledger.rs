@@ -49,6 +49,17 @@ const SENDER_KEYS: &[&str] = &[
     "approved_sender",
     "approvedSender",
 ];
+const PROVIDER_RAW_KEYS: &[&str] = &["provider"];
+const PROVIDER_HASH_KEYS: &[&str] = &["provider_hash", "providerHash"];
+const OCI_EMAIL_DELIVERY_PROVIDER_IDENTITIES: &[&str] = &[
+    "oci",
+    "oci-email-delivery",
+    "oci_email_delivery",
+    "oci email delivery",
+    "oracle cloud infrastructure",
+    "oracle-cloud-infrastructure-email-delivery",
+    "oracle cloud infrastructure email delivery",
+];
 const CAMPAIGN_RAW_KEYS: &[&str] = &["campaign_id", "campaignId"];
 const CAMPAIGN_HASH_KEYS: &[&str] = &[
     "campaign_hash",
@@ -145,6 +156,8 @@ pub fn ledger_window(
             continue;
         }
         let sender_claim = custodied_sender_domain(&value);
+        let provider_claim =
+            custodied_redacted_hash_any(&value, PROVIDER_RAW_KEYS, PROVIDER_HASH_KEYS);
         let campaign_claim =
             custodied_redacted_hash_any(&value, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS);
         let batch_claim = custodied_redacted_hash_any(&value, BATCH_RAW_KEYS, BATCH_HASH_KEYS);
@@ -185,7 +198,11 @@ pub fn ledger_window(
         ) {
             continue;
         }
-        if sender_claim.is_invalid() || campaign_claim.is_invalid() || batch_claim.is_invalid() {
+        if sender_claim.is_invalid()
+            || provider_claim.is_invalid()
+            || campaign_claim.is_invalid()
+            || batch_claim.is_invalid()
+        {
             invalid_rows += 1;
             continue;
         }
@@ -363,7 +380,8 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     };
     Some(LedgerRowSummary {
         submitted_at,
-        provider_hash: redacted_hash_any(value, &["provider"], &["provider_hash", "providerHash"]),
+        provider_hash: custodied_redacted_hash_any(value, PROVIDER_RAW_KEYS, PROVIDER_HASH_KEYS)
+            .into_option(),
         campaign_hash: custodied_redacted_hash_any(value, CAMPAIGN_RAW_KEYS, CAMPAIGN_HASH_KEYS)
             .into_option(),
         batch_hash: custodied_redacted_hash_any(value, BATCH_RAW_KEYS, BATCH_HASH_KEYS)
@@ -381,6 +399,14 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
         ),
         subject_hash: redacted_hash_any(value, &["subject"], &["subject_hash", "subjectHash"]),
         raw_recipient_returned: false,
+    })
+}
+
+pub(crate) fn ledger_row_has_oci_provider_authority(row: &LedgerRowSummary) -> bool {
+    row.provider_hash.as_ref().is_some_and(|provider_hash| {
+        OCI_EMAIL_DELIVERY_PROVIDER_IDENTITIES
+            .iter()
+            .any(|identity| short_hash(identity) == *provider_hash)
     })
 }
 
@@ -1594,6 +1620,68 @@ mod tests {
             assert_eq!(row.recipient_address_hash, None);
             assert_eq!(row.recipient_id_hash, None);
         }
+    }
+
+    #[test]
+    fn ledger_window_fails_closed_on_conflicting_provider_aliases() {
+        let path = PathBuf::from("target/oci-email-ledger-tests/provider-custody.jsonl");
+        fs::create_dir_all(path.parent().expect("ledger fixture parent"))
+            .expect("create ledger fixture dir");
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "{{\"submitted_at\":\"2026-06-30T00:10:00Z\",\"provider\":\"oci-email-delivery\",\"provider_hash\":\"{}\",\"recipient\":\"good@example.net\",\"message_id\":\"message-good\"}}\n",
+                    "{{\"submitted_at\":\"2026-06-30T00:11:00Z\",\"provider\":\"oci-email-delivery\",\"providerHash\":\"00000000000000000000\",\"recipient\":\"bad@example.net\",\"message_id\":\"message-bad\"}}\n"
+                ),
+                short_hash("oci-email-delivery")
+            ),
+        )
+        .expect("write ledger fixture");
+        let config = config_with_ledger(path.clone());
+
+        let report = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: None,
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("provider-custody ledger report");
+
+        assert_eq!(report.status, "degraded");
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 1);
+        assert!(ledger_row_has_oci_provider_authority(&report.rows[0]));
+        assert_eq!(
+            report.rows[0].provider_hash,
+            Some(short_hash("oci-email-delivery"))
+        );
+
+        let filtered = ledger_window(
+            &config,
+            &LedgerWindowRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                sender_domain: None,
+                campaign_id: None,
+                batch_id: None,
+                message_id: Some("message-bad".to_string()),
+                correlation_id: None,
+                limit: Some(20),
+            },
+        )
+        .expect("filtered provider-custody ledger report");
+        assert_eq!(filtered.totals.matched_rows, 0);
+        assert_eq!(filtered.totals.invalid_rows, 1);
+
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

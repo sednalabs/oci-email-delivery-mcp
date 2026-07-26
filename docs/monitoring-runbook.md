@@ -217,7 +217,11 @@ fields before reading a summary scalar. `exact_message_traceable=true` only when
 message/header trace returned OCI log events, the configured local ledger has
 exactly one matching row for the window, the ledger is uncapped and valid, and
 that row overlaps both the trace identity and recipient hash on the same
-returned OCI event. Multiple provider lifecycle events may relate to that one
+returned OCI event. The selected ledger row must carry an unambiguous OCI Email
+Delivery provider identity. Missing provider identity, a non-OCI provider, or
+contradictory raw/prehashed provider aliases is a stop condition; provider
+hashes are compared only against the adapter's bounded OCI identity allowlist.
+Multiple provider lifecycle events may relate to that one
 row only when every returned trace event has the same complete message-id and
 recipient identity. Missing or heterogeneous provider trace identity is a
 blocker. Multiple matching ledger rows are also a blocker even when

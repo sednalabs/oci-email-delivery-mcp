@@ -634,7 +634,7 @@ pub mod tests_support {
                 batches: vec!["fixture".to_string()],
                 rows: vec![LedgerRowSummary {
                     submitted_at: Some("2026-06-30T00:10:00Z".to_string()),
-                    provider_hash: Some("fixture".to_string()),
+                    provider_hash: Some("0010a331516757b7b31e".to_string()),
                     campaign_hash: Some("fixture".to_string()),
                     batch_hash: Some("fixture".to_string()),
                     sender_domain: Some("example.com".to_string()),

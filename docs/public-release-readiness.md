@@ -73,7 +73,9 @@ explain its core value.
   datapoints or log events exist without exact overlap. Its schema discriminator
   and evidence-state fields distinguish complete, partial, unavailable, and
   not-requested reads; observed provider evidence is never acceptance, relay,
-  or exact proof.
+  or exact proof. Exact proof additionally requires the selected local ledger
+  row to carry unambiguous OCI Email Delivery provider authority; missing,
+  non-OCI, malformed, or contradictory provider identity remains fail-closed.
 - The adapter includes `oci_email_monitoring_snapshot_artifact` so those
   redacted watch, readiness, or traceability receipts can be persisted
   privately for later replay without scraping MCP transcripts or exposing raw

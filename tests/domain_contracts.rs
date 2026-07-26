@@ -1413,6 +1413,47 @@ fn header_trace_binds_present_ledger_message_identity_to_provider_events() {
 }
 
 #[test]
+fn traceability_audit_requires_explicit_oci_ledger_provider_authority() {
+    for (provider_hash, expected_code) in [
+        (None, "traceability_ledger_provider_identity_missing"),
+        (
+            Some("00000000000000000000"),
+            "traceability_ledger_provider_authority_mismatch",
+        ),
+    ] {
+        let backend = ProviderAuthorityBackend { provider_hash };
+        let report = backend
+            .traceability_audit(&TraceabilityAuditRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                interval: Some("1h".to_string()),
+                resource_domain: Some("example.com".to_string()),
+                source_domain: Some("example.com".to_string()),
+                resource_id: None,
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: None,
+                batch_id: None,
+                expected_ledger_rows: Some(1),
+                message_id: Some("message-token-789".to_string()),
+                header_name: None,
+                header_value: None,
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .unwrap_or_else(|err| panic!("provider-authority audit: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.decision, "remain_paused");
+        assert!(!report.exact_message_traceable);
+        assert!(report.aggregate_only);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == expected_code));
+    }
+}
+
+#[test]
 fn traceability_audit_does_not_let_recipient_id_override_address_evidence() {
     let backend = ConflictingRecipientAliasBackend;
     let report = backend
@@ -2277,7 +2318,7 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
             rows: vec![
                 LedgerRowSummary {
                     submitted_at: Some("2026-06-30T00:10:00Z".to_string()),
-                    provider_hash: Some("fixture".to_string()),
+                    provider_hash: Some("0010a331516757b7b31e".to_string()),
                     campaign_hash: None,
                     batch_hash: None,
                     sender_domain: Some("example.com".to_string()),
@@ -2292,7 +2333,7 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
                 },
                 LedgerRowSummary {
                     submitted_at: Some("2026-06-30T00:11:00Z".to_string()),
-                    provider_hash: Some("fixture".to_string()),
+                    provider_hash: Some("0010a331516757b7b31e".to_string()),
                     campaign_hash: None,
                     batch_hash: None,
                     sender_domain: Some("example.com".to_string()),
@@ -2463,6 +2504,54 @@ impl OciEmailBackend for CardinalityBackend {
 }
 
 struct ConflictingRecipientAliasBackend;
+
+struct ProviderAuthorityBackend {
+    provider_hash: Option<&'static str>,
+}
+
+impl OciEmailBackend for ProviderAuthorityBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        FixtureBackend.events(request)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        FixtureBackend.trace_message(request)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        let mut report = FixtureBackend.ledger_window(request)?;
+        report.rows[0].provider_hash = self.provider_hash.map(ToString::to_string);
+        Ok(report)
+    }
+}
 
 impl OciEmailBackend for ConflictingRecipientAliasBackend {
     fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {

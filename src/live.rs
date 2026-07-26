@@ -1967,6 +1967,10 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
                 && !report.totals.rows_capped
                 && report.totals.missing_trace_key_count == 0
                 && report.totals.missing_recipient_key_count == 0
+                && report
+                    .rows
+                    .first()
+                    .is_some_and(crate::ledger::ledger_row_has_oci_provider_authority)
         });
     let exact_message_traceable = trace_requested
         && !expected_rows_zero
@@ -2049,6 +2053,31 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
             "traceability_ledger_evidence_partial",
             "Local send-ledger evidence is partial; exact message traceability is not proven.",
         ));
+    }
+    if let Some(report) = ledger.report.as_ref().filter(|report| {
+        report.totals.matched_rows == 1
+            && report.totals.invalid_rows == 0
+            && !report.totals.rows_capped
+    }) {
+        match report.rows.first().and_then(|row| row.provider_hash.as_ref()) {
+            None => findings.push(finding(
+                "blocker",
+                "traceability_ledger_provider_identity_missing",
+                "The selected local send-ledger row has no provider identity; exact OCI traceability is not proven.",
+            )),
+            Some(_) if !report
+                .rows
+                .first()
+                .is_some_and(crate::ledger::ledger_row_has_oci_provider_authority) =>
+            {
+                findings.push(finding(
+                    "blocker",
+                    "traceability_ledger_provider_authority_mismatch",
+                    "The selected local send-ledger row is not bound to OCI Email Delivery provider authority; exact OCI traceability is not proven.",
+                ));
+            }
+            Some(_) => {}
+        }
     }
     if single_provider_trace_identity && header_trace_message_identity_mismatch {
         findings.push(finding(

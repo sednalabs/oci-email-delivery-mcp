@@ -211,7 +211,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   `exact_message_traceable=true` additionally requires complete requested log
   evidence, exactly one matching valid and uncapped local ledger row, equality
   with a supplied positive `expected_ledger_rows`, and that one row overlapping
-  both the trace identity and recipient hash on the same returned event.
+  both the trace identity and recipient hash on the same returned event. The
+  selected ledger row must also carry an unambiguous OCI Email Delivery
+  provider identity. Supported raw provider spellings are normalized into a
+  bounded allowlist; a missing provider identity, a non-OCI identity, or
+  contradictory raw/prehashed provider aliases blocks exact proof.
   Multiple provider lifecycle events may relate to that one ledger row only
   when every returned trace event has the same complete message-id and
   recipient identity. Missing or heterogeneous event identity blocks exact
