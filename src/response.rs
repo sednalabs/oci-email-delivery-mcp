@@ -668,6 +668,7 @@ pub struct TraceabilityAuditReport {
     pub expected_ledger_rows: Option<u64>,
     pub trace_requested: bool,
     pub exact_message_traceable: bool,
+    pub provider_evidence_available: bool,
     pub aggregate_only: bool,
     pub summary: TraceabilitySummary,
     pub components: TraceabilityAuditComponents,

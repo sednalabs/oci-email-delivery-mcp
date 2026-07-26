@@ -1930,7 +1930,8 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
         && ledger_trace_key_overlap
         && recipient_hash_overlap
         && single_ledger_row_overlap;
-    let aggregate_only = !exact_message_traceable;
+    let provider_evidence_available = traceability_provider_evidence_available(&watch_report);
+    let aggregate_only = provider_evidence_available && !exact_message_traceable;
     if !trace_requested {
         findings.push(finding(
             "blocker",
@@ -1994,7 +1995,13 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
         findings.push(finding(
             "warning",
             "traceability_aggregate_only",
-            "This audit has aggregate delivery pressure but not exact message-to-recipient traceability across OCI logs and the local ledger.",
+            "Provider metric or log evidence is available only at aggregate scope; exact message-to-recipient traceability across provider logs and the local ledger is not proven.",
+        ));
+    } else if !exact_message_traceable {
+        findings.push(finding(
+            "blocker",
+            "traceability_provider_evidence_unavailable",
+            "No provider metric datapoints or log events are available for this audit window; provider acceptance, relay, and exact message traceability are not proven.",
         ));
     }
 
@@ -2022,6 +2029,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
         expected_ledger_rows: request.expected_ledger_rows,
         trace_requested,
         exact_message_traceable,
+        provider_evidence_available,
         aggregate_only,
         summary,
         components: TraceabilityAuditComponents {
@@ -2038,17 +2046,19 @@ fn traceability_summary(
     watch_report: &WatchWindowReport,
     ledger_report: Option<&LedgerWindowReport>,
 ) -> TraceabilitySummary {
-    let metrics = watch_report
-        .components
-        .metrics
-        .report
-        .as_ref()
-        .map(|report| &report.totals);
     TraceabilitySummary {
-        aggregate_accepted: metrics.map(|totals| totals.accepted),
-        aggregate_relayed: metrics.map(|totals| totals.relayed),
-        aggregate_hard_bounced: metrics.map(|totals| totals.hard_bounced),
-        aggregate_suppressed: metrics.map(|totals| totals.suppressed),
+        aggregate_accepted: observed_metric_total(watch_report, "accepted", |totals| {
+            totals.accepted
+        }),
+        aggregate_relayed: observed_metric_total(watch_report, "relayed", |totals| {
+            totals.relayed
+        }),
+        aggregate_hard_bounced: observed_metric_total(watch_report, "hard_bounced", |totals| {
+            totals.hard_bounced
+        }),
+        aggregate_suppressed: observed_metric_total(watch_report, "suppressed", |totals| {
+            totals.suppressed
+        }),
         log_events_returned: log_events_returned(watch_report),
         trace_events_returned: trace_events_returned(watch_report),
         ledger_rows_matched: ledger_report
@@ -2061,6 +2071,36 @@ fn traceability_summary(
         recipient_hash_overlap: recipient_hash_overlap(ledger_report, watch_report),
         single_ledger_row_overlap: single_ledger_row_overlap(ledger_report, watch_report),
     }
+}
+
+fn traceability_provider_evidence_available(watch_report: &WatchWindowReport) -> bool {
+    let metric_datapoints_available = watch_report
+        .components
+        .metrics
+        .report
+        .as_ref()
+        .is_some_and(|report| {
+            report
+                .metrics
+                .iter()
+                .any(|metric| metric.status == "ok" && metric.point_count > 0)
+        });
+    metric_datapoints_available || log_events_returned(watch_report) > 0
+}
+
+fn observed_metric_total(
+    watch_report: &WatchWindowReport,
+    metric_name: &str,
+    value: impl FnOnce(&crate::response::MetricTotals) -> f64,
+) -> Option<f64> {
+    let report = watch_report.components.metrics.report.as_ref()?;
+    report
+        .metrics
+        .iter()
+        .any(|metric| {
+            metric.key == metric_name && metric.status == "ok" && metric.point_count > 0
+        })
+        .then(|| value(&report.totals))
 }
 
 fn trace_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {

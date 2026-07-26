@@ -34,7 +34,10 @@ green.
 - `oci_email_traceability_audit` is the preferred exact-proof receipt when an
   operator needs to answer whether a specific message/header trace reached OCI
   logs and overlaps the configured local send ledger. It returns
-  `aggregate_only=true` until exact message and recipient overlap is proven.
+  `provider_evidence_available=false` when neither provider metric datapoints
+  nor log events are available. It returns `aggregate_only=true` only when
+  provider evidence exists but exact message and recipient overlap is not
+  proven.
 - `oci_email_monitoring_snapshot_artifact` writes redacted watch-window,
   send-readiness, or traceability-audit receipts to the configured private
   snapshot root for later replay. It returns a generated filename, root hash,
@@ -204,10 +207,11 @@ matching rows for the window, the ledger is uncapped and valid, and one ledger
 row overlaps both the requested trace key and OCI event recipient hash. The
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
-`single_ledger_row_overlap` is the same-row gate. Otherwise the response is
-blocked or degraded with `aggregate_only=true`; aggregate accepted, relayed,
-suppressed, or bounce totals are useful pressure signals, not per-recipient
-proof.
+`single_ledger_row_overlap` is the same-row gate. Without exact proof, the
+response is blocked or degraded. `aggregate_only=true` means provider metric
+datapoints or log events were actually observed but are not per-recipient
+proof. `provider_evidence_available=false` means acceptance, relay, and exact
+traceability are unproven; unavailable aggregate totals are `null`, not zero.
 
 Use `oci_email_monitoring_snapshot_artifact` whenever the receipt needs to be
 replayable outside the MCP transcript. The tool writes only under

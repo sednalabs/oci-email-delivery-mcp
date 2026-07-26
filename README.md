@@ -150,12 +150,15 @@ contract tests with an OCI profile configured. The live smoke must not use
   and blocks when ledger rows are missing, capped, invalid, or lack trace or
   recipient reconciliation keys.
 - `oci_email_traceability_audit` is the exact-trace boundary. It returns
-  `aggregate_only=true` until a requested message/header trace returns OCI log
-  events and one uncapped local ledger row overlaps both the requested trace
-  key and the OCI event recipient hash. The audit passes the requested trace
-  key into the local ledger read before the row cap, which keeps high-volume
-  windows measurable without weakening exact-proof requirements. Aggregate
-  metrics alone are never reported as per-recipient proof.
+  `provider_evidence_available=true` only when the window contains at least one
+  provider metric datapoint or log event. It returns `aggregate_only=true` when
+  that evidence exists but a requested message/header trace does not overlap
+  one uncapped local ledger row by both trace key and recipient hash. When
+  provider evidence is unavailable, aggregate totals are `null`, not zero, and
+  the response is blocked without claiming aggregate delivery pressure. The
+  audit passes the requested trace key into the local ledger read before the
+  row cap, which keeps high-volume windows measurable without weakening
+  exact-proof requirements.
 
 ## Release And Operations
 

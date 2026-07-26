@@ -672,6 +672,7 @@ fn traceability_audit_distinguishes_exact_overlap_from_aggregate_pressure() {
         .unwrap_or_else(|err| panic!("serialize traceability audit: {err}"));
 
     assert!(report.exact_message_traceable);
+    assert!(report.provider_evidence_available);
     assert!(!report.aggregate_only);
     assert!(!report.send_authorized);
     assert_eq!(report.summary.log_events_returned, 1);
@@ -727,6 +728,7 @@ fn traceability_audit_blocks_when_metrics_exist_but_logs_and_ledger_do_not_match
     assert_eq!(report.status, "blocked");
     assert_eq!(report.decision, "remain_paused");
     assert!(!report.exact_message_traceable);
+    assert!(report.provider_evidence_available);
     assert!(report.aggregate_only);
     assert_eq!(report.summary.aggregate_accepted, Some(10.0));
     assert_eq!(report.summary.log_events_returned, 0);
@@ -744,6 +746,52 @@ fn traceability_audit_blocks_when_metrics_exist_but_logs_and_ledger_do_not_match
             "missing finding {code}"
         );
     }
+}
+
+#[test]
+fn traceability_audit_distinguishes_unavailable_provider_evidence_from_aggregate_evidence() {
+    let backend = UnavailableEvidenceBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("unavailable-evidence traceability audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.send_authorized);
+    assert!(!report.exact_message_traceable);
+    assert!(!report.provider_evidence_available);
+    assert!(!report.aggregate_only);
+    assert_eq!(report.summary.aggregate_accepted, None);
+    assert_eq!(report.summary.aggregate_relayed, None);
+    assert_eq!(report.summary.aggregate_hard_bounced, None);
+    assert_eq!(report.summary.aggregate_suppressed, None);
+    assert_eq!(report.summary.log_events_returned, 0);
+    assert_eq!(report.summary.trace_events_returned, None);
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_aggregate_only"));
+    assert!(report.findings.iter().any(|finding| {
+        finding.code == "traceability_provider_evidence_unavailable"
+            && finding.message.contains("acceptance")
+            && finding.message.contains("not proven")
+    }));
 }
 
 #[test]
@@ -991,6 +1039,55 @@ impl OciEmailBackend for MetricsFailureBackend {
         request: &SuppressionsRequest,
     ) -> Result<SuppressionsReport, OciEmailError> {
         FixtureBackend.suppressions(request)
+    }
+}
+
+struct UnavailableEvidenceBackend;
+
+impl OciEmailBackend for UnavailableEvidenceBackend {
+    fn status(&self, _request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic status evidence unavailable".to_string(),
+        ))
+    }
+
+    fn metrics(&self, _request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic metric evidence unavailable".to_string(),
+        ))
+    }
+
+    fn logging_status(
+        &self,
+        _request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic logging evidence unavailable".to_string(),
+        ))
+    }
+
+    fn events(&self, _request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic log events unavailable".to_string(),
+        ))
+    }
+
+    fn trace_message(
+        &self,
+        _request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic trace events unavailable".to_string(),
+        ))
+    }
+
+    fn suppressions(
+        &self,
+        _request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        Err(OciEmailError::Config(
+            "synthetic suppression evidence unavailable".to_string(),
+        ))
     }
 }
 

@@ -65,9 +65,11 @@ explain its core value.
   raw recipients.
 - The adapter includes `oci_email_traceability_audit` so operators can ask the
   narrower question: does this window prove exact message and recipient
-  overlap across OCI logs and the same configured local ledger row, or only
-  aggregate delivery pressure? The audit is read-only, redacted, and returns
-  `aggregate_only=true` whenever exact overlap is missing.
+  overlap across provider logs and the same configured local ledger row, only
+  aggregate provider evidence, or no provider evidence? The audit is read-only
+  and redacted. It returns `aggregate_only=true` only when provider metric
+  datapoints or log events exist without exact overlap, and keeps unavailable
+  aggregate totals `null`.
 - The adapter includes `oci_email_monitoring_snapshot_artifact` so those
   redacted watch, readiness, or traceability receipts can be persisted
   privately for later replay without scraping MCP transcripts or exposing raw
