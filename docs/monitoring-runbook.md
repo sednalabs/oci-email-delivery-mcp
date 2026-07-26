@@ -224,6 +224,10 @@ case-distinct values must produce different hashes and must not overlap. The
 provider parser checks every present recipient and message-id alias: each must
 be a non-empty string and all aliases for one identity must agree. Null,
 non-string, or conflicting aliases make the event evidence unavailable. The
+same custody rule applies to every present outer/record timestamp alias: each
+must be a strict UTC string and all aliases must represent the same instant.
+Malformed, null, or conflicting timestamp residue makes event evidence
+unavailable before window proof.
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
 `single_ledger_row_overlap` is the same-row gate. Without exact proof, the

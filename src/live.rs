@@ -3017,21 +3017,7 @@ fn email_event_summary(
                 .to_string(),
         ));
     };
-    let datetime = string_field(value, "datetime")
-        .or_else(|| string_field(record, "datetime"))
-        .or_else(|| string_field(record, "time"))
-        .ok_or_else(|| {
-            OciEmailError::Config(
-                "OCI Logging Search returned an Email Delivery event without a timestamp; event evidence is unavailable."
-                    .to_string(),
-            )
-        })?;
-    if parse_strict_utc_time(datetime, "event datetime").is_err() {
-        return Err(OciEmailError::Config(
-            "OCI Logging Search returned an Email Delivery event with an invalid timestamp; event evidence is unavailable."
-                .to_string(),
-        ));
-    }
+    let datetime = consistent_event_timestamp(value, record)?;
     let recipient_identity = consistent_event_identity(
         &[
             (data, "recipient"),
@@ -3055,7 +3041,7 @@ fn email_event_summary(
         .transpose()?
         .flatten();
     Ok(EmailEventSummary {
-        datetime: Some(datetime.to_string()),
+        datetime: Some(datetime),
         log_type: Some(log_type.to_string()),
         action: Some(summarize_email_event_action(action).to_string()),
         source_domain: email_event_source_domain(record, data),
@@ -3073,6 +3059,45 @@ fn email_event_summary(
         smtp_status: nested_string(data, &["smtpStatus"]).map(summarize_smtp_status),
         raw_payload_returned: false,
     })
+}
+
+fn consistent_event_timestamp(value: &Value, record: &Value) -> Result<String, OciEmailError> {
+    let mut timestamp: Option<(String, ParsedUtcTime)> = None;
+    for (container, key) in [(value, "datetime"), (record, "datetime"), (record, "time")] {
+        let Some(claim) = container.get(key) else {
+            continue;
+        };
+        let Some(raw) = claim.as_str() else {
+            return Err(OciEmailError::Config(
+                "OCI Logging Search returned an Email Delivery event with an invalid timestamp alias; event evidence is unavailable."
+                    .to_string(),
+            ));
+        };
+        let parsed = parse_strict_utc_time(raw, "event datetime").map_err(|_| {
+            OciEmailError::Config(
+                "OCI Logging Search returned an Email Delivery event with an invalid timestamp alias; event evidence is unavailable."
+                    .to_string(),
+            )
+        })?;
+        if timestamp
+            .as_ref()
+            .is_some_and(|(_, existing)| existing != &parsed)
+        {
+            return Err(OciEmailError::Config(
+                "OCI Logging Search returned conflicting Email Delivery event timestamp aliases; event evidence is unavailable."
+                    .to_string(),
+            ));
+        }
+        timestamp.get_or_insert_with(|| (raw.to_string(), parsed));
+    }
+    timestamp
+        .map(|(raw, _)| raw)
+        .ok_or_else(|| {
+            OciEmailError::Config(
+                "OCI Logging Search returned an Email Delivery event without a timestamp; event evidence is unavailable."
+                    .to_string(),
+            )
+        })
 }
 
 struct EventIdentity {
@@ -4041,6 +4066,66 @@ mod tests {
 
         assert_eq!(summary.action.as_deref(), Some("unknown"));
         assert!(!payload.contains("person@example.test"));
+    }
+
+    #[test]
+    fn event_summary_accepts_matching_timestamp_aliases() {
+        let value = serde_json::json!({
+            "datetime": "2026-06-30T00:10:00.000Z",
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "datetime": "2026-06-30T00:10:00Z",
+                    "time": "2026-06-30T00:10:00.0Z",
+                    "data": {
+                        "action": "accept",
+                        "messageId": "Trace-AbC",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value, None).expect("matching timestamp aliases");
+
+        assert_eq!(
+            summary.datetime.as_deref(),
+            Some("2026-06-30T00:10:00.000Z")
+        );
+    }
+
+    #[test]
+    fn event_summary_rejects_malformed_or_conflicting_timestamp_aliases() {
+        let baseline = serde_json::json!({
+            "datetime": "2026-06-30T00:10:00Z",
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "time": "2026-06-30T00:10:00Z",
+                    "data": {
+                        "action": "accept",
+                        "messageId": "Trace-AbC",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+        let mut conflicting = baseline.clone();
+        conflicting["data"]["logContent"]["time"] =
+            Value::String("2026-06-30T02:10:00Z".to_string());
+        let mut null_alias = baseline.clone();
+        null_alias["data"]["logContent"]["datetime"] = Value::Null;
+        let mut malformed_alias = baseline;
+        malformed_alias["data"]["logContent"]["datetime"] =
+            Value::String("person@example.test".to_string());
+
+        for value in [conflicting, null_alias, malformed_alias] {
+            let error = email_event_summary(&value, None)
+                .expect_err("malformed or conflicting timestamp aliases must fail closed");
+            assert_eq!(error.code(), "configuration_error");
+            assert!(error.to_string().contains("event evidence is unavailable"));
+            assert!(!error.to_string().contains("person@example.test"));
+        }
     }
 
     #[test]

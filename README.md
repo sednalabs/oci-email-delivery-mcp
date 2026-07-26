@@ -112,8 +112,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   evidence and blocks the component rather than being reshaped as an empty
   result. Every returned row must contain a recognized OutboundAccepted or
   OutboundRelayed record with an object payload, non-empty action, and valid
-  UTC timestamp inside the requested half-open window; an unrecognized or
-  out-of-window row makes the event read unavailable instead of contributing
+  UTC timestamp inside the requested half-open window. Every present outer or
+  record timestamp alias must be a string, parse as strict UTC, and represent
+  the same instant; malformed, null, conflicting, unrecognized, or
+  out-of-window rows make the event read unavailable instead of contributing
   synthetic evidence. Forward-compatible unknown actions are summarized as
   `unknown` rather than copied from the provider payload, and make the event
   evidence partial so they cannot authorize exact traceability.
