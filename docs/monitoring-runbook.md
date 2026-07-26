@@ -75,8 +75,9 @@ Pause the pilot or keep it paused when any of these are true:
   `traceability_expected_ledger_rows_mismatch`,
   `traceability_no_ledger_trace_key_overlap`,
   `traceability_no_recipient_hash_overlap`,
-  `traceability_no_single_ledger_row_overlap`, or `aggregate_only=true` for
-  a send window that is expected to be traceable;
+  `traceability_no_single_ledger_row_overlap`,
+  `traceability_provider_evidence_unavailable`, or `aggregate_only=true` for a
+  send window that is expected to be traceable;
 - any event or suppression response returns exactly the requested limit; narrow
   the window or filters and rerun before treating the result set as complete.
 
@@ -212,6 +213,11 @@ response is blocked or degraded. `aggregate_only=true` means provider metric
 datapoints or log events were actually observed but are not per-recipient
 proof. `provider_evidence_available=false` means acceptance, relay, and exact
 traceability are unproven; unavailable aggregate totals are `null`, not zero.
+The summary fields `log_events_returned`, `ledger_rows_matched`, and
+`ledger_rows_capped` are also nullable: `null` means the corresponding event or
+ledger report was unavailable, while `0` or `false` means a successful empty or
+uncapped read. Treat `traceability_provider_evidence_unavailable` as a stop
+code, not as a successful empty provider result.
 
 Use `oci_email_monitoring_snapshot_artifact` whenever the receipt needs to be
 replayable outside the MCP transcript. The tool writes only under

@@ -1939,7 +1939,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
             "No message id or correlation header trace was requested; exact message traceability cannot be proven from aggregate metrics.",
         ));
     }
-    if log_events_returned == 0 {
+    if log_events_returned.is_none_or(|returned| returned == 0) {
         findings.push(finding(
             "blocker",
             "traceability_no_log_events",
@@ -1971,7 +1971,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
             .report
             .as_ref()
             .is_some_and(|report| report.totals.matched_rows > 0)
-        && log_events_returned > 0
+        && log_events_returned.is_some_and(|returned| returned > 0)
         && !recipient_hash_overlap
     {
         findings.push(finding(
@@ -2059,12 +2059,8 @@ fn traceability_summary(
         }),
         log_events_returned: log_events_returned(watch_report),
         trace_events_returned: trace_events_returned(watch_report),
-        ledger_rows_matched: ledger_report
-            .map(|report| report.totals.matched_rows)
-            .unwrap_or(0),
-        ledger_rows_capped: ledger_report
-            .map(|report| report.totals.rows_capped)
-            .unwrap_or(false),
+        ledger_rows_matched: ledger_report.map(|report| report.totals.matched_rows),
+        ledger_rows_capped: ledger_report.map(|report| report.totals.rows_capped),
         ledger_trace_key_overlap: ledger_trace_key_overlap(ledger_report, watch_report),
         recipient_hash_overlap: recipient_hash_overlap(ledger_report, watch_report),
         single_ledger_row_overlap: single_ledger_row_overlap(ledger_report, watch_report),
@@ -2084,7 +2080,8 @@ fn traceability_provider_evidence_available(watch_report: &WatchWindowReport) ->
                     .iter()
                     .any(|metric| metric.status == "ok" && metric.point_count > 0)
             });
-    metric_datapoints_available || log_events_returned(watch_report) > 0
+    metric_datapoints_available
+        || log_events_returned(watch_report).is_some_and(|returned| returned > 0)
 }
 
 fn observed_metric_total(
@@ -2109,16 +2106,20 @@ fn trace_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {
         .map(|report| report.events.returned)
 }
 
-fn log_events_returned(watch_report: &WatchWindowReport) -> usize {
+fn log_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {
     let events_returned = watch_report
         .components
         .events
         .report
         .as_ref()
         .map(|report| report.returned)
-        .unwrap_or(0);
-    let trace_events_returned = trace_events_returned(watch_report).unwrap_or(0);
-    events_returned.max(trace_events_returned)
+    let trace_events_returned = trace_events_returned(watch_report);
+    match (events_returned, trace_events_returned) {
+        (Some(events), Some(trace)) => Some(events.max(trace)),
+        (Some(events), None) => Some(events),
+        (None, Some(trace)) => Some(trace),
+        (None, None) => None,
+    }
 }
 
 fn ledger_trace_key_overlap(

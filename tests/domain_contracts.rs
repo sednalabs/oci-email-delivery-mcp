@@ -675,9 +675,10 @@ fn traceability_audit_distinguishes_exact_overlap_from_aggregate_pressure() {
     assert!(report.provider_evidence_available);
     assert!(!report.aggregate_only);
     assert!(!report.send_authorized);
-    assert_eq!(report.summary.log_events_returned, 1);
+    assert_eq!(report.summary.log_events_returned, Some(1));
     assert_eq!(report.summary.trace_events_returned, Some(1));
-    assert_eq!(report.summary.ledger_rows_matched, 1);
+    assert_eq!(report.summary.ledger_rows_matched, Some(1));
+    assert_eq!(report.summary.ledger_rows_capped, Some(false));
     assert!(report.summary.ledger_trace_key_overlap);
     assert!(report.summary.recipient_hash_overlap);
     assert!(report.summary.single_ledger_row_overlap);
@@ -731,9 +732,10 @@ fn traceability_audit_blocks_when_metrics_exist_but_logs_and_ledger_do_not_match
     assert!(report.provider_evidence_available);
     assert!(report.aggregate_only);
     assert_eq!(report.summary.aggregate_accepted, Some(10.0));
-    assert_eq!(report.summary.log_events_returned, 0);
+    assert_eq!(report.summary.log_events_returned, Some(0));
     assert_eq!(report.summary.trace_events_returned, Some(0));
-    assert_eq!(report.summary.ledger_rows_matched, 0);
+    assert_eq!(report.summary.ledger_rows_matched, Some(0));
+    assert_eq!(report.summary.ledger_rows_capped, Some(false));
     for code in [
         "traceability_no_log_events",
         "traceability_no_trace_events",
@@ -781,8 +783,10 @@ fn traceability_audit_distinguishes_unavailable_provider_evidence_from_aggregate
     assert_eq!(report.summary.aggregate_relayed, None);
     assert_eq!(report.summary.aggregate_hard_bounced, None);
     assert_eq!(report.summary.aggregate_suppressed, None);
-    assert_eq!(report.summary.log_events_returned, 0);
+    assert_eq!(report.summary.log_events_returned, None);
     assert_eq!(report.summary.trace_events_returned, None);
+    assert_eq!(report.summary.ledger_rows_matched, None);
+    assert_eq!(report.summary.ledger_rows_capped, None);
     assert!(!report
         .findings
         .iter()
