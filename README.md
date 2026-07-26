@@ -162,13 +162,13 @@ contract tests with an OCI profile configured. The live smoke must not use
   successful complete empty read is `0`, while partial or unavailable combined
   log evidence is `null`. A successful uncapped empty provider response remains
   complete even though its nested report carries the expected no-events
-  warning; capped or missing responses do not. Trace scalars are `null` when
-  trace evidence is `not_requested`, unavailable, or incomplete. Ledger scalars
-  are `null` when the ledger is unavailable and otherwise preserve the observed
-  `0`, `false`, or `true` value. In v1 the event, ledger-count, cap, and overlap
-  scalars were non-null and did not carry explicit completeness state. V2
-  consumers must branch on the schema and state fields before interpreting
-  nullable values.
+  warning; blank, malformed, capped, or missing responses do not. Trace scalars
+  are `null` when trace evidence is `not_requested`, unavailable, or
+  incomplete. Ledger scalars are `null` when the ledger is unavailable and
+  otherwise preserve the observed `0`, `false`, or `true` value. In v1 the
+  event, ledger-count, cap, and overlap scalars were non-null and did not carry
+  explicit completeness state. V2 consumers must branch on the schema and state
+  fields before interpreting nullable values.
   `provider_evidence_available=true` only means a provider metric datapoint or
   log event was observed; it is not a completeness, acceptance, relay, or exact
   traceability claim. `aggregate_only=true` means observed provider evidence

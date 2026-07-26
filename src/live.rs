@@ -934,7 +934,7 @@ impl LiveOciEmailBackend {
                     .to_string(),
             ));
         }
-        let raw_events = log_results(&value)
+        let raw_events = log_results(&value)?
             .into_iter()
             .map(email_event_summary)
             .collect::<Vec<_>>();
@@ -1086,13 +1086,18 @@ fn json_items(value: &Value) -> Vec<&Value> {
     Vec::new()
 }
 
-fn log_results(value: &Value) -> Vec<&Value> {
-    value
+fn log_results(value: &Value) -> Result<Vec<&Value>, OciEmailError> {
+    let results = value
         .get("data")
         .and_then(|data| data.get("results"))
         .and_then(Value::as_array)
-        .map(|items| items.iter().collect())
-        .unwrap_or_default()
+        .ok_or_else(|| {
+            OciEmailError::Config(
+                "OCI Logging Search response is missing the required data.results array; event evidence is unavailable."
+                    .to_string(),
+            )
+        })?;
+    Ok(results.iter().collect())
 }
 
 fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -3788,6 +3793,16 @@ mod tests {
         .events(&request)
         .expect_err("null provider output must not become an empty event report");
         assert_eq!(unavailable.code(), "configuration_error");
+
+        let malformed = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {}
+            }))),
+        )
+        .events(&request)
+        .expect_err("malformed provider output must not become an empty event report");
+        assert_eq!(malformed.code(), "configuration_error");
 
         let empty = LiveOciEmailBackend::with_runner(
             test_config(),
