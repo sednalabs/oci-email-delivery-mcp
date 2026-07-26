@@ -873,7 +873,7 @@ fn traceability_audit_keeps_metric_evidence_when_other_components_are_unavailabl
     assert_eq!(report.summary.aggregate_accepted, Some(10.0));
     assert_eq!(report.summary.aggregate_relayed, None);
     assert_eq!(report.summary.log_events_returned, None);
-    assert_eq!(report.summary.log_evidence_state, "partial");
+    assert_eq!(report.summary.log_evidence_state, "unavailable");
     assert_eq!(report.summary.trace_events_returned, None);
     assert_eq!(report.summary.trace_evidence_state, "unavailable");
     assert_eq!(report.summary.ledger_evidence_state, "unavailable");
@@ -910,7 +910,7 @@ fn traceability_audit_keeps_metric_evidence_when_other_components_are_unavailabl
         .any(|finding| finding.code == "traceability_aggregate_only"));
     assert!(payload.contains("\"provider_evidence_available\":true"));
     assert!(payload.contains("\"schema\":\"oci-email-delivery.traceability-audit.v2\""));
-    assert!(payload.contains("\"log_evidence_state\":\"partial\""));
+    assert!(payload.contains("\"log_evidence_state\":\"unavailable\""));
     assert!(payload.contains("\"aggregate_accepted\":10.0"));
     assert!(payload.contains("\"exact_message_traceable\":false"));
     assert!(payload.contains("\"send_authorized\":false"));
