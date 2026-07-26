@@ -455,6 +455,7 @@ fn custodied_recipient_hash_any(
     custodied_hash_any(value, raw_keys, hash_keys, short_hash)
 }
 
+#[cfg(test)]
 fn opaque_hash_any(value: &Value, raw_keys: &[&str], hash_keys: &[&str]) -> Option<String> {
     custodied_opaque_hash_any(value, raw_keys, hash_keys).into_option()
 }
