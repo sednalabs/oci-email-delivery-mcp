@@ -225,8 +225,9 @@ proof. `provider_evidence_available=false` means acceptance, relay, and exact
 traceability are unproven. `log_evidence_state` and `ledger_evidence_state`
 are `complete`, `partial`, or `unavailable`; `trace_evidence_state` also has
 `not_requested`. `log_events_returned` is populated only for complete combined
-general-event plus requested-trace evidence; a complete empty read is `0`, but
-partial or unavailable combined evidence is `null`. Ledger counts/caps/overlap
+general-event plus requested-trace evidence; a successful uncapped empty read
+is `0` even when the nested report carries the expected no-events warning, but
+capped, partial, or unavailable combined evidence is `null`. Ledger counts/caps/overlap
 scalars are `null` when the ledger is unavailable and otherwise retain the
 observed `0`/`false`/`true` value. Treat unavailable or partial evidence codes,
 including `traceability_provider_evidence_unavailable`, as stop codes rather

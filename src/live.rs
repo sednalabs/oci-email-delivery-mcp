@@ -2167,10 +2167,41 @@ fn component_evidence_state<T>(component: &ToolCallOutcome<T>) -> String {
     }
 }
 
+fn events_evidence_state(component: &ToolCallOutcome<EventsReport>) -> String {
+    match component.report.as_ref() {
+        None => "unavailable".to_string(),
+        Some(report)
+            if component.status == "blocked"
+                || report.evidence.iter().any(|item| item.rows_capped)
+                || report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.code == "event_results_capped") =>
+        {
+            "partial".to_string()
+        }
+        Some(_) => "complete".to_string(),
+    }
+}
+
 fn trace_evidence_state(watch_report: &WatchWindowReport) -> String {
     match watch_report.components.trace.as_ref() {
         None => "not_requested".to_string(),
-        Some(trace) => component_evidence_state(trace),
+        Some(trace) => match trace.report.as_ref() {
+            None => "unavailable".to_string(),
+            Some(report)
+                if trace.status == "blocked"
+                    || report.events.evidence.iter().any(|item| item.rows_capped)
+                    || report
+                        .events
+                        .findings
+                        .iter()
+                        .any(|finding| finding.code == "event_results_capped") =>
+            {
+                "partial".to_string()
+            }
+            Some(_) => "complete".to_string(),
+        },
     }
 }
 
@@ -2179,7 +2210,7 @@ fn ledger_evidence_state(ledger: &ToolCallOutcome<LedgerWindowReport>) -> String
 }
 
 fn log_evidence_state(watch_report: &WatchWindowReport) -> String {
-    let events_state = component_evidence_state(&watch_report.components.events);
+    let events_state = events_evidence_state(&watch_report.components.events);
     let trace_state = trace_evidence_state(watch_report);
     if trace_state == "not_requested" {
         return events_state;

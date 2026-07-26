@@ -864,6 +864,49 @@ fn traceability_audit_blocks_when_metrics_exist_but_logs_and_ledger_do_not_match
 }
 
 #[test]
+fn traceability_audit_marks_capped_event_reports_partial() {
+    let backend = CappedEventEvidenceBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("capped-event traceability audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(!report.send_authorized);
+    assert!(!report.exact_message_traceable);
+    assert!(report.provider_evidence_available);
+    assert!(report.aggregate_only);
+    assert_eq!(report.summary.log_evidence_state, "partial");
+    assert_eq!(report.summary.trace_evidence_state, "partial");
+    assert_eq!(report.summary.log_events_returned, None);
+    assert_eq!(report.summary.trace_events_returned, None);
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_log_evidence_partial"));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_trace_evidence_partial"));
+}
+
+#[test]
 fn traceability_audit_distinguishes_unavailable_provider_evidence_from_aggregate_evidence() {
     let backend = UnavailableEvidenceBackend;
     let report = backend
@@ -1683,6 +1726,61 @@ impl OciEmailBackend for AggregateOnlyBackend {
     }
 }
 
+struct CappedEventEvidenceBackend;
+
+impl OciEmailBackend for CappedEventEvidenceBackend {
+    fn status(&self, request: &StatusRequest) -> Result<OciEmailStatusReport, OciEmailError> {
+        FixtureBackend.status(request)
+    }
+
+    fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError> {
+        FixtureBackend.metrics(request)
+    }
+
+    fn logging_status(
+        &self,
+        request: &LoggingStatusRequest,
+    ) -> Result<oci_email_delivery_mcp::LoggingStatusReport, OciEmailError> {
+        FixtureBackend.logging_status(request)
+    }
+
+    fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+        let mut report = FixtureBackend.events(request)?;
+        report.status = "degraded".to_string();
+        if let Some(evidence) = report.evidence.first_mut() {
+            evidence.rows_capped = true;
+        }
+        Ok(report)
+    }
+
+    fn trace_message(
+        &self,
+        request: &TraceMessageRequest,
+    ) -> Result<TraceMessageReport, OciEmailError> {
+        let mut report = FixtureBackend.trace_message(request)?;
+        report.status = "degraded".to_string();
+        report.events.status = "degraded".to_string();
+        if let Some(evidence) = report.events.evidence.first_mut() {
+            evidence.rows_capped = true;
+        }
+        Ok(report)
+    }
+
+    fn suppressions(
+        &self,
+        request: &SuppressionsRequest,
+    ) -> Result<SuppressionsReport, OciEmailError> {
+        FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        FixtureBackend.ledger_window(request)
+    }
+}
+
 struct MismatchedTraceRecipientBackend;
 
 struct TraceUnavailableAfterEmptyEventsBackend;
@@ -1936,7 +2034,7 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
 
 fn empty_events(start_time: &str, end_time: &str, source_domain: Option<String>) -> EventsReport {
     EventsReport {
-        status: "ok".to_string(),
+        status: "degraded".to_string(),
         start_time: start_time.to_string(),
         end_time: end_time.to_string(),
         filters: EventFilters {
@@ -1953,7 +2051,11 @@ fn empty_events(start_time: &str, end_time: &str, source_domain: Option<String>)
         returned: 0,
         counts: EventCounts::default(),
         events: Vec::new(),
-        findings: Vec::new(),
+        findings: vec![oci_email_delivery_mcp::ReadinessFinding {
+            severity: "warning".to_string(),
+            code: "no_log_events_returned".to_string(),
+            message: "No provider log events matched this synthetic window.".to_string(),
+        }],
         evidence: Vec::new(),
     }
 }
