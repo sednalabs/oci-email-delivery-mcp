@@ -335,7 +335,10 @@ from the same contract. If a raw and prehashed form coexist, their hash must
 agree; malformed or contradictory pairs are missing trace evidence rather than
 being rehashed or silently preferring one representation. A malformed or
 contradictory message or correlation claim invalidates all trace proof from
-that row; the other trace key cannot preserve exact proof. Recipient address
+that row; the other trace key cannot preserve exact proof. If a raw or valid
+prehashed alias claims the requested filter, the contradictory row remains
+visible in `invalid_rows` and blocks completeness instead of disappearing
+before row-count evaluation. Recipient address
 and recipient-id raw/prehashed pairs must also agree. A contradiction in either
 pair invalidates all recipient proof from that row. When both valid address and
 recipient-id hashes are present, provider-recipient overlap uses the address

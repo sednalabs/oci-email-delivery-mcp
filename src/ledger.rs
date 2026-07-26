@@ -14,6 +14,35 @@ use std::{
     io::{BufRead, BufReader},
 };
 
+const MESSAGE_ID_RAW_KEYS: &[&str] = &[
+    "message_id",
+    "messageId",
+    "provider_message_id",
+    "providerMessageId",
+];
+const MESSAGE_ID_HASH_KEYS: &[&str] = &[
+    "message_id_hash",
+    "messageIdHash",
+    "provider_message_id_hash",
+    "providerMessageIdHash",
+];
+const CORRELATION_ID_RAW_KEYS: &[&str] = &[
+    "correlation_id",
+    "correlationId",
+    "header_value",
+    "headerValue",
+    "x_campaign_correlation_id",
+    "xCampaignCorrelationId",
+];
+const CORRELATION_ID_HASH_KEYS: &[&str] = &[
+    "correlation_id_hash",
+    "correlationIdHash",
+    "header_value_hash",
+    "headerValueHash",
+    "x_campaign_correlation_id_hash",
+    "xCampaignCorrelationIdHash",
+];
+
 pub fn ledger_window(
     config: &OciEmailConfig,
     request: &LedgerWindowRequest,
@@ -133,14 +162,25 @@ pub fn ledger_window(
                 continue;
             }
         }
-        if message_filter_hash.is_some()
-            && row.message_id_hash.as_deref() != message_filter_hash.as_deref()
-        {
+        if !opaque_claim_matches_filter(
+            &value,
+            MESSAGE_ID_RAW_KEYS,
+            MESSAGE_ID_HASH_KEYS,
+            message_filter_hash.as_deref(),
+        ) {
             continue;
         }
-        if correlation_filter_hash.is_some()
-            && row.correlation_id_hash.as_deref() != correlation_filter_hash.as_deref()
-        {
+        if !opaque_claim_matches_filter(
+            &value,
+            CORRELATION_ID_RAW_KEYS,
+            CORRELATION_ID_HASH_KEYS,
+            correlation_filter_hash.as_deref(),
+        ) {
+            continue;
+        }
+        let (message_claim, correlation_claim) = ledger_trace_claims(&value);
+        if message_claim.is_invalid() || correlation_claim.is_invalid() {
+            invalid_rows += 1;
             continue;
         }
 
@@ -178,7 +218,7 @@ pub fn ledger_window(
         findings.push(finding(
             "warning",
             "ledger_invalid_rows",
-            "One or more local send-ledger rows were not valid JSON objects or lacked a valid UTC submitted_at/timestamp value.",
+            "One or more relevant local send-ledger rows were invalid JSON objects, lacked a valid UTC timestamp, or contained malformed or contradictory trace identity claims.",
         ));
     }
     if rows_capped {
@@ -301,40 +341,7 @@ fn ledger_row_summary(value: &Value) -> Option<LedgerRowSummary> {
     } else {
         (None, None)
     };
-    let message_id_hash = custodied_opaque_hash_any(
-        value,
-        &[
-            "message_id",
-            "messageId",
-            "provider_message_id",
-            "providerMessageId",
-        ],
-        &[
-            "message_id_hash",
-            "messageIdHash",
-            "provider_message_id_hash",
-            "providerMessageIdHash",
-        ],
-    );
-    let correlation_id_hash = custodied_opaque_hash_any(
-        value,
-        &[
-            "correlation_id",
-            "correlationId",
-            "header_value",
-            "headerValue",
-            "x_campaign_correlation_id",
-            "xCampaignCorrelationId",
-        ],
-        &[
-            "correlation_id_hash",
-            "correlationIdHash",
-            "header_value_hash",
-            "headerValueHash",
-            "x_campaign_correlation_id_hash",
-            "xCampaignCorrelationIdHash",
-        ],
-    );
+    let (message_id_hash, correlation_id_hash) = ledger_trace_claims(value);
     let trace_identity_valid = !message_id_hash.is_invalid() && !correlation_id_hash.is_invalid();
     let (message_id_hash, correlation_id_hash) = if trace_identity_valid {
         (
@@ -466,6 +473,35 @@ fn custodied_opaque_hash_any(
     hash_keys: &[&str],
 ) -> CustodiedHash {
     custodied_hash_any(value, raw_keys, hash_keys, opaque_hash)
+}
+
+fn ledger_trace_claims(value: &Value) -> (CustodiedHash, CustodiedHash) {
+    (
+        custodied_opaque_hash_any(value, MESSAGE_ID_RAW_KEYS, MESSAGE_ID_HASH_KEYS),
+        custodied_opaque_hash_any(value, CORRELATION_ID_RAW_KEYS, CORRELATION_ID_HASH_KEYS),
+    )
+}
+
+fn opaque_claim_matches_filter(
+    value: &Value,
+    raw_keys: &[&str],
+    hash_keys: &[&str],
+    filter_hash: Option<&str>,
+) -> bool {
+    let Some(filter_hash) = filter_hash else {
+        return true;
+    };
+    raw_keys.iter().any(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|claim| opaque_hash(claim) == filter_hash)
+    }) || hash_keys.iter().any(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|claim| is_short_hash(claim) && claim.eq_ignore_ascii_case(filter_hash))
+    })
 }
 
 fn custodied_hash_any(
@@ -909,7 +945,13 @@ mod tests {
         )
         .expect("case-preserving trace-filtered ledger report");
 
+        assert_eq!(report.status, "degraded");
         assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 2);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ledger_invalid_rows"));
         assert_eq!(
             report.filters.message_id_hash,
             Some(opaque_hash("Trace-AbC"))
@@ -1216,8 +1258,9 @@ mod tests {
         .expect("trace-row-custody ledger report");
 
         assert_eq!(report.status, "degraded");
-        assert_eq!(report.totals.matched_rows, 3);
-        assert_eq!(report.totals.missing_trace_key_count, 2);
+        assert_eq!(report.totals.matched_rows, 1);
+        assert_eq!(report.totals.invalid_rows, 2);
+        assert_eq!(report.totals.missing_trace_key_count, 0);
         assert_eq!(
             report.rows[0].message_id_hash,
             Some(opaque_hash("message-good"))
@@ -1226,9 +1269,32 @@ mod tests {
             report.rows[0].correlation_id_hash,
             Some(opaque_hash("corr-good"))
         );
-        for row in &report.rows[1..] {
-            assert_eq!(row.message_id_hash, None);
-            assert_eq!(row.correlation_id_hash, None);
+
+        for (message_id, correlation_id) in [
+            (Some("message-bad".to_string()), None),
+            (None, Some("corr-bad".to_string())),
+        ] {
+            let filtered = ledger_window(
+                &config,
+                &LedgerWindowRequest {
+                    start_time: "2026-06-30T00:00:00Z".to_string(),
+                    end_time: "2026-06-30T01:00:00Z".to_string(),
+                    sender_domain: None,
+                    campaign_id: None,
+                    batch_id: None,
+                    message_id,
+                    correlation_id,
+                    limit: Some(20),
+                },
+            )
+            .expect("filtered invalid trace claim report");
+            assert_eq!(filtered.status, "degraded");
+            assert_eq!(filtered.totals.matched_rows, 0);
+            assert_eq!(filtered.totals.invalid_rows, 1);
+            assert!(filtered
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ledger_invalid_rows"));
         }
 
         let _ = fs::remove_file(&path);

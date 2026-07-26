@@ -149,6 +149,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   contradictory pairs fail closed as missing trace evidence. If either a
   message or correlation claim is invalid, all trace proof from that ledger row
   is invalidated; the other key cannot override contradictory row evidence.
+  A contradictory row that claims the requested message or correlation filter
+  is retained in `invalid_rows` and blocks completeness; it cannot disappear
+  before expected-row or exact-proof evaluation.
   Recipient address and recipient-id raw/prehashed pairs follow the same
   custody rule. A
   contradictory pair invalidates all recipient proof from that ledger row, and
