@@ -736,6 +736,81 @@ fn traceability_audit_distinguishes_exact_overlap_from_aggregate_pressure() {
 }
 
 #[test]
+fn traceability_audit_allows_exact_per_message_proof_without_optional_expected_count() {
+    let backend = FixtureBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: None,
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("optional expected-count traceability audit: {err}"));
+
+    assert!(report.exact_message_traceable);
+    assert!(!report.aggregate_only);
+    assert!(!report.send_authorized);
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "traceability_expected_ledger_rows_mismatch"));
+}
+
+#[test]
+fn traceability_audit_keeps_exact_trace_scoped_from_orthogonal_metric_blocker() {
+    let backend = MetricsFailureBackend;
+    let report = backend
+        .traceability_audit(&TraceabilityAuditRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            interval: Some("1h".to_string()),
+            resource_domain: Some("example.com".to_string()),
+            source_domain: Some("example.com".to_string()),
+            resource_id: None,
+            sender_domain: Some("example.com".to_string()),
+            campaign_id: None,
+            batch_id: None,
+            expected_ledger_rows: Some(1),
+            message_id: Some("message-token-789".to_string()),
+            header_name: None,
+            header_value: None,
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("orthogonal metric-blocker traceability audit: {err}"));
+
+    assert_eq!(report.status, "blocked");
+    assert_eq!(report.decision, "remain_paused");
+    assert!(report.exact_message_traceable);
+    assert!(!report.aggregate_only);
+    assert!(!report.send_authorized);
+    assert_eq!(
+        report
+            .components
+            .watch_window
+            .report
+            .as_ref()
+            .map(|watch| watch.components.metrics.status.as_str()),
+        Some("blocked")
+    );
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.code == "metrics_read_blocked"));
+}
+
+#[test]
 fn traceability_audit_blocks_when_metrics_exist_but_logs_and_ledger_do_not_match() {
     let backend = AggregateOnlyBackend;
     let report = backend
@@ -1315,6 +1390,13 @@ impl OciEmailBackend for MetricsFailureBackend {
         request: &SuppressionsRequest,
     ) -> Result<SuppressionsReport, OciEmailError> {
         FixtureBackend.suppressions(request)
+    }
+
+    fn ledger_window(
+        &self,
+        request: &LedgerWindowRequest,
+    ) -> Result<LedgerWindowReport, OciEmailError> {
+        FixtureBackend.ledger_window(request)
     }
 }
 

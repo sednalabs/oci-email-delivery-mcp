@@ -170,7 +170,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   `exact_message_traceable=true` additionally requires complete requested log
   evidence, equality with a supplied positive `expected_ledger_rows`, and one
   uncapped local ledger row overlapping both the requested trace key and event
-  recipient hash. The audit passes the requested trace key
+  recipient hash. Omitting the optional expected count skips only that count
+  comparison. Because this flag is scoped to one message trace, it may be true
+  while the overall receipt remains blocked by an orthogonal profile, metric,
+  logging-status, or suppression finding; neither state authorizes a send. The
+  audit passes the requested trace key
   into the local ledger read before the row cap, which keeps high-volume windows
   measurable without weakening exact-proof requirements.
 
