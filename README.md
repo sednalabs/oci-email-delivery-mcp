@@ -158,11 +158,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   general-event read and, when requested, the trace read both complete; a
   successful complete empty read is `0`, while partial or unavailable combined
   log evidence is `null`. Trace scalars are `null` when trace evidence is
-  unavailable or incomplete. Ledger scalars are `null` when the ledger is
-  unavailable and otherwise preserve the observed `0`, `false`, or `true`
-  value. In v1 these
-  scalars did not carry explicit completeness state; v2 consumers must not
-  infer acceptance, relay, or exact proof from v1-style nullable values.
+  `not_requested`, unavailable, or incomplete. Ledger scalars are `null` when
+  the ledger is unavailable and otherwise preserve the observed `0`, `false`,
+  or `true` value. In v1 the event, ledger-count, cap, and overlap scalars were
+  non-null and did not carry explicit completeness state. V2 consumers must
+  branch on the schema and state fields before interpreting nullable values.
   `provider_evidence_available=true` only means a provider metric datapoint or
   log event was observed; it is not a completeness, acceptance, relay, or exact
   traceability claim. `aggregate_only=true` means observed provider evidence

@@ -8,6 +8,22 @@ use oci_email_delivery_mcp::{
     TraceabilityAuditRequest, WatchWindowRequest,
 };
 
+#[derive(serde::Deserialize)]
+struct TolerantV1TraceabilityConsumer {
+    summary: TolerantV1TraceabilitySummary,
+}
+
+#[derive(serde::Deserialize)]
+struct TolerantV1TraceabilitySummary {
+    log_events_returned: usize,
+    trace_events_returned: Option<usize>,
+    ledger_rows_matched: usize,
+    ledger_rows_capped: bool,
+    ledger_trace_key_overlap: bool,
+    recipient_hash_overlap: bool,
+    single_ledger_row_overlap: bool,
+}
+
 #[test]
 fn status_contract_is_redacted_and_no_send() {
     let backend = FixtureBackend;
@@ -705,6 +721,18 @@ fn traceability_audit_distinguishes_exact_overlap_from_aggregate_pressure() {
     assert!(!payload.contains("batch-private"));
     let fixture_recipient = ["person", "example.net"].join("@");
     assert!(!payload.contains(&fixture_recipient));
+
+    let tolerant_v1: TolerantV1TraceabilityConsumer = serde_json::from_str(&payload)
+        .unwrap_or_else(|err| {
+            panic!("deserialize exact v2 receipt with tolerant v1 consumer: {err}")
+        });
+    assert_eq!(tolerant_v1.summary.log_events_returned, 1);
+    assert_eq!(tolerant_v1.summary.trace_events_returned, Some(1));
+    assert_eq!(tolerant_v1.summary.ledger_rows_matched, 1);
+    assert!(!tolerant_v1.summary.ledger_rows_capped);
+    assert!(tolerant_v1.summary.ledger_trace_key_overlap);
+    assert!(tolerant_v1.summary.recipient_hash_overlap);
+    assert!(tolerant_v1.summary.single_ledger_row_overlap);
 }
 
 #[test]
