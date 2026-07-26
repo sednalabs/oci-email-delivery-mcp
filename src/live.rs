@@ -3032,12 +3032,24 @@ fn email_event_summary(
                 .to_string(),
         ));
     }
-    let email = nested_string(data, &["recipient"])
-        .or_else(|| nested_string(data, &["recipientAddress"]))
-        .or_else(|| nested_string(data, &["emailAddress"]));
-    let message_id = nested_string(data, &["messageId"])
-        .or_else(|| nested_string(data, &["message-id"]))
-        .or_else(|| nested_string(value, &["messageId"]));
+    let recipient_identity = consistent_event_identity(
+        &[
+            (data, "recipient"),
+            (data, "recipientAddress"),
+            (data, "emailAddress"),
+        ],
+        short_hash,
+        "recipient",
+    )?;
+    let message_identity = consistent_event_identity(
+        &[
+            (data, "messageId"),
+            (data, "message-id"),
+            (value, "messageId"),
+        ],
+        opaque_hash,
+        "message",
+    )?;
     let trace_header_value_hash = trace_header_name
         .map(|name| email_event_header_value_hash(data, name))
         .transpose()?
@@ -3050,15 +3062,54 @@ fn email_event_summary(
         receiving_domain: string_field(data, "receivingDomain")
             .filter(|value| is_host_token(value))
             .map(|value| value.to_ascii_lowercase()),
-        recipient_domain: email.and_then(email_domain),
-        recipient_hash: email.map(short_hash),
-        message_id_hash: message_id.map(opaque_hash),
+        recipient_domain: recipient_identity
+            .as_ref()
+            .and_then(|identity| email_domain(&identity.raw)),
+        recipient_hash: recipient_identity.map(|identity| identity.hash),
+        message_id_hash: message_identity.map(|identity| identity.hash),
         trace_header_value_hash,
         error_type: nested_string(data, &["errorType"]).map(redact_sensitive_text),
         bounce_category: nested_string(data, &["bounceCategory"]).map(redact_sensitive_text),
         smtp_status: nested_string(data, &["smtpStatus"]).map(summarize_smtp_status),
         raw_payload_returned: false,
     })
+}
+
+struct EventIdentity {
+    raw: String,
+    hash: String,
+}
+
+fn consistent_event_identity(
+    claims: &[(&Value, &str)],
+    hash_raw: fn(&str) -> String,
+    label: &str,
+) -> Result<Option<EventIdentity>, OciEmailError> {
+    let mut identity: Option<EventIdentity> = None;
+    for (container, key) in claims {
+        let Some(claim) = container.get(*key) else {
+            continue;
+        };
+        let Some(raw) = claim.as_str().filter(|value| !value.is_empty()) else {
+            return Err(OciEmailError::Config(format!(
+                "OCI Logging Search returned an invalid Email Delivery {label} identity alias; event evidence is unavailable."
+            )));
+        };
+        let hash = hash_raw(raw);
+        if identity
+            .as_ref()
+            .is_some_and(|existing| existing.hash != hash)
+        {
+            return Err(OciEmailError::Config(format!(
+                "OCI Logging Search returned conflicting Email Delivery {label} identity aliases; event evidence is unavailable."
+            )));
+        }
+        identity.get_or_insert_with(|| EventIdentity {
+            raw: raw.to_string(),
+            hash,
+        });
+    }
+    Ok(identity)
 }
 
 fn email_event_header_value_hash(
@@ -3817,6 +3868,77 @@ mod tests {
         assert!(!payload.contains("message@example.com"));
         assert!(!payload.contains("203.0.113.4"));
         assert!(!payload.contains("Example Mail Client"));
+    }
+
+    #[test]
+    fn event_summary_accepts_matching_recipient_and_message_aliases() {
+        let value = serde_json::json!({
+            "messageId": "Trace-AbC",
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "time": "2026-06-30T00:10:00Z",
+                    "data": {
+                        "action": "accept",
+                        "recipient": "Person@Recipient.Example",
+                        "recipientAddress": "person@recipient.example",
+                        "emailAddress": "PERSON@RECIPIENT.EXAMPLE",
+                        "messageId": "Trace-AbC",
+                        "message-id": "Trace-AbC"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value, None).expect("matching identity aliases");
+
+        assert_eq!(
+            summary.recipient_hash,
+            Some(short_hash("person@recipient.example"))
+        );
+        assert_eq!(summary.message_id_hash, Some(opaque_hash("Trace-AbC")));
+    }
+
+    #[test]
+    fn event_summary_rejects_malformed_or_conflicting_identity_aliases() {
+        let baseline = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "time": "2026-06-30T00:10:00Z",
+                    "data": {
+                        "action": "accept",
+                        "recipient": "person@recipient.example",
+                        "messageId": "Trace-AbC"
+                    }
+                }
+            }
+        });
+        let mut recipient_conflict = baseline.clone();
+        recipient_conflict["data"]["logContent"]["data"]["recipientAddress"] =
+            Value::String("other@recipient.example".to_string());
+        let mut recipient_null = baseline.clone();
+        recipient_null["data"]["logContent"]["data"]["emailAddress"] = Value::Null;
+        let mut message_conflict = baseline.clone();
+        message_conflict["data"]["logContent"]["data"]["message-id"] =
+            Value::String("trace-abc".to_string());
+        let mut message_type = baseline.clone();
+        message_type["data"]["logContent"]["data"]["message-id"] = serde_json::json!(123);
+        let mut outer_message_conflict = baseline;
+        outer_message_conflict["messageId"] = Value::String("Trace-Other".to_string());
+
+        for value in [
+            recipient_conflict,
+            recipient_null,
+            message_conflict,
+            message_type,
+            outer_message_conflict,
+        ] {
+            let error = email_event_summary(&value, None)
+                .expect_err("malformed or conflicting event identity aliases must fail closed");
+            assert_eq!(error.code(), "configuration_error");
+            assert!(error.to_string().contains("event evidence is unavailable"));
+        }
     }
 
     #[test]

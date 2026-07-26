@@ -221,6 +221,9 @@ match. For a header trace, the returned value hash for the requested header
 name must match; matching only the request criterion is insufficient. Message
 ids and header/correlation values are opaque case-sensitive identities, so
 case-distinct values must produce different hashes and must not overlap. The
+provider parser checks every present recipient and message-id alias: each must
+be a non-empty string and all aliases for one identity must agree. Null,
+non-string, or conflicting aliases make the event evidence unavailable. The
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
 `single_ledger_row_overlap` is the same-row gate. Without exact proof, the
