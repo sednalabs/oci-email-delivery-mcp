@@ -2112,7 +2112,7 @@ fn log_events_returned(watch_report: &WatchWindowReport) -> Option<usize> {
         .events
         .report
         .as_ref()
-        .map(|report| report.returned)
+        .map(|report| report.returned);
     let trace_events_returned = trace_events_returned(watch_report);
     match (events_returned, trace_events_returned) {
         (Some(events), Some(trace)) => Some(events.max(trace)),
