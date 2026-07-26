@@ -33,8 +33,9 @@ fn external_code_quality_reporting_is_capability_and_same_repository_gated() {
 
     assert!(optional_job.contains("vars.CODE_QUALITY_UPLOAD_ENABLED == 'true'"));
     assert!(optional_job.contains("github.event_name != 'pull_request'"));
-    assert!(optional_job
-        .contains("github.event.pull_request.head.repo.full_name == github.repository"));
+    assert!(
+        optional_job.contains("github.event.pull_request.head.repo.full_name == github.repository")
+    );
     assert!(optional_job.contains("name: GitHub Code Quality upload"));
     assert!(optional_job.contains("needs: rust-coverage"));
     assert!(optional_job.contains("code-quality: write"));
