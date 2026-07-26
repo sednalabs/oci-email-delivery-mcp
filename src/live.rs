@@ -1949,6 +1949,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
     let recipient_hash_overlap = recipient_hash_overlap(ledger.report.as_ref(), &watch_report);
     let single_ledger_row_overlap =
         single_ledger_row_overlap(ledger.report.as_ref(), &watch_report);
+    let single_provider_trace_identity = single_provider_trace_identity(&watch_report);
     let log_events_returned = log_events_returned(&watch_report, &log_evidence_state);
     let trace_events_returned = trace_events_returned(&watch_report, &trace_evidence_state);
     let expected_rows_match = expected_rows.is_none_or(|expected| {
@@ -1971,6 +1972,7 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
         && log_evidence_state == "complete"
         && trace_evidence_state == "complete"
         && trace_events_returned.is_some_and(|returned| returned > 0)
+        && single_provider_trace_identity
         && ledger_exact_ready
         && ledger_trace_key_overlap
         && recipient_hash_overlap
@@ -2020,6 +2022,17 @@ fn compose_traceability_audit<B: OciEmailBackend + ?Sized>(
             "blocker",
             "traceability_no_trace_events",
             "The requested message or correlation trace returned no OCI Email Delivery log events.",
+        ));
+    }
+    if trace_requested
+        && trace_evidence_state == "complete"
+        && trace_events_returned.is_some_and(|returned| returned > 0)
+        && !single_provider_trace_identity
+    {
+        findings.push(finding(
+            "blocker",
+            "traceability_provider_trace_identity_incomplete",
+            "Returned provider trace events do not share one complete message and recipient identity; exact message-to-recipient traceability is not proven.",
         ));
     }
     if ledger_evidence_state == "unavailable" {
@@ -2328,6 +2341,31 @@ fn recipient_hash_overlap(
         .any(|row| ledger_row_recipient_hash_overlap(row, watch_report))
 }
 
+fn single_provider_trace_identity(watch_report: &WatchWindowReport) -> bool {
+    let Some(trace) = watch_report
+        .components
+        .trace
+        .as_ref()
+        .and_then(|trace| trace.report.as_ref())
+    else {
+        return false;
+    };
+    let mut events = trace.events.events.iter();
+    let Some(first) = events.next() else {
+        return false;
+    };
+    let (Some(recipient_hash), Some(message_id_hash)) = (
+        first.recipient_hash.as_ref(),
+        first.message_id_hash.as_ref(),
+    ) else {
+        return false;
+    };
+    events.all(|event| {
+        event.recipient_hash.as_ref() == Some(recipient_hash)
+            && event.message_id_hash.as_ref() == Some(message_id_hash)
+    })
+}
+
 fn single_ledger_row_overlap(
     ledger_report: Option<&LedgerWindowReport>,
     watch_report: &WatchWindowReport,
@@ -2341,10 +2379,13 @@ fn single_ledger_row_overlap(
         .as_ref()
         .and_then(|trace| trace.report.as_ref());
     ledger_report.rows.iter().any(|row| match trace {
-        Some(trace) => trace.events.events.iter().any(|event| {
-            event_trace_keys_overlap_row(event, row, &trace.criteria)
-                && event_recipient_hash_overlaps_row(event, row)
-        }),
+        Some(trace) => {
+            !trace.events.events.is_empty()
+                && trace.events.events.iter().all(|event| {
+                    event_trace_keys_overlap_row(event, row, &trace.criteria)
+                        && event_recipient_hash_overlaps_row(event, row)
+                })
+        }
         None => watch_report
             .components
             .events

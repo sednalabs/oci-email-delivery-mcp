@@ -204,9 +204,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   evidence, exactly one matching valid and uncapped local ledger row, equality
   with a supplied positive `expected_ledger_rows`, and that one row overlapping
   both the trace identity and recipient hash on the same returned event.
-  Multiple provider lifecycle events may relate to that one ledger row, but
-  multiple matching ledger rows block exact proof even when the supplied
-  expected count equals the observed count. A message-id trace uses the
+  Multiple provider lifecycle events may relate to that one ledger row only
+  when every returned trace event has the same complete message-id and
+  recipient identity. Missing or heterogeneous event identity blocks exact
+  proof. Multiple matching ledger rows also block exact proof even when the
+  supplied expected count equals the observed count. A message-id trace uses the
   returned event's message-id hash. A correlation-header trace uses only the
   requested header name's returned value hash; the request criterion by itself
   is not event identity. These opaque trace-key hashes preserve case and exact bytes; they

@@ -217,7 +217,9 @@ message/header trace returned OCI log events, the configured local ledger has
 exactly one matching row for the window, the ledger is uncapped and valid, and
 that row overlaps both the trace identity and recipient hash on the same
 returned OCI event. Multiple provider lifecycle events may relate to that one
-row. Multiple matching ledger rows are a blocker even when
+row only when every returned trace event has the same complete message-id and
+recipient identity. Missing or heterogeneous provider trace identity is a
+blocker. Multiple matching ledger rows are also a blocker even when
 `expected_ledger_rows` equals the observed count. For a message-id trace, the
 returned event message-id hash must match. For a header trace, the returned
 value hash for the requested header name must match; matching only the request
@@ -233,10 +235,11 @@ unavailable before window proof.
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
 `single_ledger_row_overlap` is the same-row overlap gate, not a cardinality
-claim; exact proof separately requires `ledger_rows_matched=1`. Without exact
-proof, the response is blocked or degraded. `aggregate_only=true` means provider
-metric datapoints or log events were actually observed but are not
-per-recipient proof. `provider_evidence_available=false` means acceptance, relay, and exact
+claim; exact proof separately requires `ledger_rows_matched=1` and one complete,
+uniform provider trace identity across all returned trace lifecycle events.
+Without exact proof, the response is blocked or degraded. `aggregate_only=true`
+means provider metric datapoints or log events were actually observed but are
+not per-recipient proof. `provider_evidence_available=false` means acceptance, relay, and exact
 traceability are unproven. `log_evidence_state` and `ledger_evidence_state`
 are `complete`, `partial`, or `unavailable`; `trace_evidence_state` also has
 `not_requested`. `log_events_returned` is populated only for complete combined

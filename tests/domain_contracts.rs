@@ -1227,6 +1227,7 @@ fn traceability_audit_requires_exactly_one_matching_ledger_row() {
     for expected_ledger_rows in [None, Some(1), Some(2)] {
         let backend = CardinalityBackend {
             duplicate_ledger_row: true,
+            trace_event_variant: TraceEventVariant::Identical,
         };
         let report = backend
             .traceability_audit(&TraceabilityAuditRequest {
@@ -1283,6 +1284,7 @@ fn traceability_audit_requires_exactly_one_matching_ledger_row() {
 fn traceability_audit_allows_multiple_provider_events_for_one_ledger_row() {
     let backend = CardinalityBackend {
         duplicate_ledger_row: false,
+        trace_event_variant: TraceEventVariant::Identical,
     };
     let report = backend
         .traceability_audit(&TraceabilityAuditRequest {
@@ -1311,6 +1313,51 @@ fn traceability_audit_allows_multiple_provider_events_for_one_ledger_row() {
         .findings
         .iter()
         .any(|finding| finding.code == "traceability_multiple_ledger_rows"));
+}
+
+#[test]
+fn traceability_audit_requires_one_complete_provider_trace_identity() {
+    for (trace_event_variant, use_header_trace) in [
+        (TraceEventVariant::OtherRecipient, false),
+        (TraceEventVariant::MissingRecipient, false),
+        (TraceEventVariant::OtherMessageId, true),
+        (TraceEventVariant::MissingMessageId, true),
+    ] {
+        let backend = CardinalityBackend {
+            duplicate_ledger_row: false,
+            trace_event_variant,
+        };
+        let report = backend
+            .traceability_audit(&TraceabilityAuditRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                interval: Some("1h".to_string()),
+                resource_domain: Some("example.com".to_string()),
+                source_domain: Some("example.com".to_string()),
+                resource_id: None,
+                sender_domain: Some("example.com".to_string()),
+                campaign_id: None,
+                batch_id: None,
+                expected_ledger_rows: Some(1),
+                message_id: (!use_header_trace).then(|| "message-token-789".to_string()),
+                header_name: use_header_trace.then(|| "X-Trace-Example".to_string()),
+                header_value: use_header_trace.then(|| "trace-token-example".to_string()),
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .unwrap_or_else(|err| panic!("mixed provider trace-identity audit: {err}"));
+
+        assert_eq!(report.status, "blocked");
+        assert_eq!(report.decision, "remain_paused");
+        assert!(!report.exact_message_traceable);
+        assert!(report.aggregate_only);
+        assert_eq!(report.summary.trace_events_returned, Some(2));
+        assert_eq!(report.summary.ledger_rows_matched, Some(1));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| { finding.code == "traceability_provider_trace_identity_incomplete" }));
+    }
 }
 
 #[test]
@@ -2216,6 +2263,16 @@ impl OciEmailBackend for SplitLedgerOverlapBackend {
 
 struct CardinalityBackend {
     duplicate_ledger_row: bool,
+    trace_event_variant: TraceEventVariant,
+}
+
+#[derive(Clone, Copy)]
+enum TraceEventVariant {
+    Identical,
+    OtherRecipient,
+    MissingRecipient,
+    OtherMessageId,
+    MissingMessageId,
 }
 
 impl OciEmailBackend for CardinalityBackend {
@@ -2249,25 +2306,62 @@ impl OciEmailBackend for CardinalityBackend {
             .first()
             .cloned()
             .ok_or_else(|| OciEmailError::Config("fixture trace event missing".to_string()))?;
+        let mut duplicate = duplicate;
+        match self.trace_event_variant {
+            TraceEventVariant::Identical => {}
+            TraceEventVariant::OtherRecipient => {
+                duplicate.recipient_hash = Some("other-recipient".to_string());
+            }
+            TraceEventVariant::MissingRecipient => {
+                duplicate.recipient_hash = None;
+            }
+            TraceEventVariant::OtherMessageId => {
+                duplicate.message_id_hash = Some("other-message".to_string());
+            }
+            TraceEventVariant::MissingMessageId => {
+                duplicate.message_id_hash = None;
+            }
+        }
         report.events.events.push(duplicate);
         report.events.provider_returned = 2;
         report.events.source_domain_matched = 2;
         report.events.returned = 2;
         report.events.counts.by_action[0].count = 2;
-        report.events.counts.events_with_recipient_hash = 2;
-        report.events.counts.duplicate_recipient_hash_events = 1;
-        report.events.counts.events_with_message_id_hash = 2;
-        report.events.counts.duplicate_message_id_hash_events = 1;
-        report.events.counts.events_with_recipient_message_pair = 2;
-        report.events.counts.duplicate_recipient_message_pair_events = 1;
+        let (recipient_count, distinct_recipients, duplicate_recipients) =
+            match self.trace_event_variant {
+                TraceEventVariant::OtherRecipient => (2, 2, 0),
+                TraceEventVariant::MissingRecipient => (1, 1, 0),
+                _ => (2, 1, 1),
+            };
+        let (message_count, distinct_messages, duplicate_messages) = match self.trace_event_variant
+        {
+            TraceEventVariant::OtherMessageId => (2, 2, 0),
+            TraceEventVariant::MissingMessageId => (1, 1, 0),
+            _ => (2, 1, 1),
+        };
+        let (pair_count, distinct_pairs, duplicate_pairs) = match self.trace_event_variant {
+            TraceEventVariant::Identical => (2, 1, 1),
+            TraceEventVariant::OtherRecipient | TraceEventVariant::OtherMessageId => (2, 2, 0),
+            TraceEventVariant::MissingRecipient | TraceEventVariant::MissingMessageId => (1, 1, 0),
+        };
+        report.events.counts.events_with_recipient_hash = recipient_count;
+        report.events.counts.distinct_recipient_hashes = distinct_recipients;
+        report.events.counts.duplicate_recipient_hash_events = duplicate_recipients;
+        report.events.counts.events_with_message_id_hash = message_count;
+        report.events.counts.distinct_message_id_hashes = distinct_messages;
+        report.events.counts.duplicate_message_id_hash_events = duplicate_messages;
+        report.events.counts.events_with_recipient_message_pair = pair_count;
+        report.events.counts.distinct_recipient_message_pairs = distinct_pairs;
+        report.events.counts.duplicate_recipient_message_pair_events = duplicate_pairs;
         report
             .events
             .counts
-            .events_with_action_recipient_message_key = 2;
+            .events_with_action_recipient_message_key = pair_count;
+        report.events.counts.distinct_action_recipient_message_keys = distinct_pairs;
         report
             .events
             .counts
-            .duplicate_action_recipient_message_key_events = 1;
+            .duplicate_action_recipient_message_key_events = duplicate_pairs;
         Ok(report)
     }
 
