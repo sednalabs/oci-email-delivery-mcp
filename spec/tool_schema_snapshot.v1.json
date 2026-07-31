@@ -72,50 +72,6 @@
       "name": "oci_email_events"
     },
     {
-      "description": "Summarize exact OCI Email Delivery open, click, and list-unsubscribe evidence for one Message-ID without sending.",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "properties": {
-          "compartment_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "end_time": {
-            "type": "string"
-          },
-          "limit": {
-            "format": "uint32",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "message_id": {
-            "type": "string"
-          },
-          "source_domain": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "start_time": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "start_time",
-          "end_time",
-          "message_id"
-        ],
-        "type": "object"
-      },
-      "name": "oci_email_message_engagement"
-    },
-    {
       "description": "Summarize configured local OCI send-ledger rows for a UTC window without raw recipients.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -244,6 +200,50 @@
         "type": "object"
       },
       "name": "oci_email_logging_status"
+    },
+    {
+      "description": "Summarize exact OCI Email Delivery open, click, and list-unsubscribe evidence for one Message-ID without sending.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "source_domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_time",
+          "end_time",
+          "message_id"
+        ],
+        "type": "object"
+      },
+      "name": "oci_email_message_engagement"
     },
     {
       "description": "Query fixed OCI Email Delivery Monitoring metrics for a UTC window.",
