@@ -1162,12 +1162,17 @@ fn compose_message_engagement<B: OciEmailBackend + ?Sized>(
     }
     if let Some(source_domain) = request.source_domain.as_deref() {
         validate_domain(source_domain, "source_domain")?;
+    } else {
+        let mut report = unavailable_message_engagement(request, limit_for_request(request));
+        report.findings = vec![finding(
+            "warning",
+            "source_domain_scope_required",
+            "A validated source_domain is required before exact Message-ID engagement can prove a newsletter lane.",
+        )];
+        return Ok(report);
     }
 
-    let limit = cap_limit(
-        request.limit.unwrap_or(DEFAULT_EVENT_LIMIT),
-        HARD_EVENT_LIMIT,
-    );
+    let limit = limit_for_request(request);
     let events_request = EventsRequest {
         start_time: request.start_time.clone(),
         end_time: request.end_time.clone(),
@@ -1226,7 +1231,7 @@ fn compose_message_engagement<B: OciEmailBackend + ?Sized>(
     findings.push(finding(
         "warning",
         "transport_ingress_unavailable",
-        "Authenticated OCI evidence did not expose a recognized SMTP or SubmitEmail transport value; engagement evidence does not identify the sending path.",
+        "This tool does not parse or attest OCI transport ingress; engagement evidence cannot identify SMTP versus SubmitEmail.",
     ));
 
     Ok(MessageEngagementReport {
@@ -1245,6 +1250,13 @@ fn compose_message_engagement<B: OciEmailBackend + ?Sized>(
         evidence: events.evidence,
         raw_payload_returned: false,
     })
+}
+
+fn limit_for_request(request: &MessageEngagementRequest) -> u32 {
+    cap_limit(
+        request.limit.unwrap_or(DEFAULT_EVENT_LIMIT),
+        HARD_EVENT_LIMIT,
+    )
 }
 
 fn message_engagement_events_are_exact(
@@ -3724,7 +3736,7 @@ fn build_search_query(
     if let Some(message_id) = request.message_id.as_deref() {
         filters.push(format!(
             "data.messageId='{}'",
-            safe_query_value(message_id)?
+            safe_message_id_query_value(message_id)?
         ));
     }
     if let (Some(name), Some(value)) = (
@@ -4035,6 +4047,28 @@ fn safe_query_value(value: &str) -> Result<String, OciEmailError> {
     }
 }
 
+fn safe_message_id_query_value(value: &str) -> Result<String, OciEmailError> {
+    let candidate = value
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(value);
+    let bracketed = candidate.len() != value.len();
+    let valid = !candidate.is_empty()
+        && value.len() <= 256
+        && candidate.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '@' | ':' | '/')
+        })
+        && (!bracketed || (!candidate.contains('<') && !candidate.contains('>')));
+    if valid {
+        Ok(value.to_string())
+    } else {
+        Err(OciEmailError::InvalidInput(
+            "message_id may use conservative identifier characters with one optional enclosing angle-bracket pair"
+                .to_string(),
+        ))
+    }
+}
+
 fn cap_limit(value: u32, hard_limit: u32) -> u32 {
     value.clamp(1, hard_limit)
 }
@@ -4103,6 +4137,10 @@ mod tests {
     fn rejects_unsafe_log_query_value() {
         assert!(safe_query_value("abc| count").is_err());
         assert!(safe_query_value("abc@example.com").is_ok());
+        assert!(safe_message_id_query_value("<message@example.com>").is_ok());
+        assert!(safe_message_id_query_value("message@example.com").is_ok());
+        assert!(safe_message_id_query_value("<<message@example.com>>").is_err());
+        assert!(safe_message_id_query_value("<message@example.com>' | count").is_err());
     }
 
     #[test]
@@ -4591,6 +4629,28 @@ mod tests {
     }
 
     #[test]
+    fn event_search_accepts_one_conventional_bracketed_message_id() {
+        let query = build_search_query(
+            "ocid1.tenancy.oc1.example",
+            &EventsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                action: None,
+                message_id: Some("<message@example.com>".to_string()),
+                header_name: None,
+                header_value: None,
+                receiving_domain: None,
+                source_domain: Some("sender.example".to_string()),
+                limit: Some(20),
+                compartment_id: None,
+            },
+        )
+        .expect("bracketed Message-ID query");
+
+        assert!(query.contains("data.messageId='<message@example.com>'"));
+    }
+
+    #[test]
     fn event_search_filters_source_domain_after_redacted_summary() {
         let backend =
             LiveOciEmailBackend::with_runner(test_config(), Arc::new(FixtureEventSearchRunner));
@@ -5022,6 +5082,18 @@ mod tests {
             backend.message_engagement(&reversed),
             Err(OciEmailError::InvalidInput(_))
         ));
+
+        let mut unscoped = engagement_request();
+        unscoped.source_domain = None;
+        let unscoped_report = backend
+            .message_engagement(&unscoped)
+            .expect("unscoped engagement report");
+        assert_eq!(unscoped_report.status, "unavailable");
+        assert_eq!(unscoped_report.open.count, None);
+        assert!(unscoped_report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "source_domain_scope_required"));
     }
 
     #[test]

@@ -132,6 +132,10 @@ contract tests with an OCI profile configured. The live smoke must not use
 - `oci_email_message_engagement` narrows the same read-only Logging Search path
   to one exact non-blank Message-ID and bounded UTC window, then reports
   per-signal `open`, `click`, and `list_unsubscribe` states with nullable counts.
+  A validated `source_domain` is required for any proven or not-observed lane
+  result; an unscoped request returns `unavailable` without querying the
+  provider. Conventional Message-ID values may use one enclosing `<...>` pair
+  around the conservative identifier grammar.
   A complete uncapped exact read reports `proven_active` for a signal with one
   or more events and `not_observed` only with a complete zero count. Null or
   unavailable provider output, capped results, unknown actions, source-domain
@@ -144,9 +148,9 @@ contract tests with an OCI profile configured. The live smoke must not use
   Message-ID hash, UTC window, source scope, limit, uncapped evidence, complete
   redacted event set, and recomputed counts; a contradictory report is
   `unavailable`.
-  Transport ingress remains explicitly `unavailable` unless authenticated OCI
-  evidence exposes a recognized `SMTP` or `SubmitEmail` value. This tool never
-  sends mail or authorizes a send.
+  Transport ingress remains explicitly `unavailable`: this version does not
+  parse or attest an OCI SMTP/SubmitEmail ingress field. This tool never sends
+  mail or authorizes a send.
 - `oci_email_suppressions` fetches all pages for totals and timestamp bounds
   with a provider-friendly page size while returning only a bounded redacted
   sample in `suppressions`. Use `total_matched` and `count_state` for counts;
