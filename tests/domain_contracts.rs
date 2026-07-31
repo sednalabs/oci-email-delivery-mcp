@@ -159,8 +159,8 @@ fn message_engagement_contract_is_read_only_redacted_and_zero_aware() {
             compartment_id: None,
         })
         .unwrap_or_else(|err| panic!("fixture engagement: {err}"));
-    let payload = serde_json::to_string(&report)
-        .unwrap_or_else(|err| panic!("serialize engagement: {err}"));
+    let payload =
+        serde_json::to_string(&report).unwrap_or_else(|err| panic!("serialize engagement: {err}"));
 
     assert_eq!(report.status, "not_observed");
     assert!(!report.send_authorized);

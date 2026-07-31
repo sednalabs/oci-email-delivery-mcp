@@ -8,21 +8,20 @@ use crate::{
         EmailDeliveryLogSummary, EmailEventSummary, EventCount, EventCounts, EventFilters,
         EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowReport,
         LedgerWindowRequest, LogGroupSummary, LoggingEnablementPlanReport,
-        LoggingEnablementPlanRequest, LoggingStatusReport, LoggingStatusRequest, MetricRates,
+        LoggingEnablementPlanRequest, LoggingStatusReport, LoggingStatusRequest,
         MessageEngagementIngress, MessageEngagementReport, MessageEngagementRequest,
-        MessageEngagementSignal, MetricResult, MetricTotals, MetricsFilters, MetricsReport,
-        MetricsRequest,
-        OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
-        SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
-        SnapshotArtifactRequest, StatusRequest, StopThresholds, SuppressionCount,
-        SuppressionDeltaComponents, SuppressionDeltaReport, SuppressionDeltaRequest,
-        SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals, SuppressionsReport,
-        SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
-        TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
-        TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
-        WatchWindowRequest, DEFAULT_EVENT_LIMIT, DEFAULT_LOGGING_STATUS_LIMIT,
-        DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT, HARD_LOGGING_STATUS_LIMIT,
-        HARD_SUPPRESSION_LIMIT,
+        MessageEngagementSignal, MetricRates, MetricResult, MetricTotals, MetricsFilters,
+        MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding,
+        RedactedIdentifier, SendReadinessComponents, SendReadinessReport, SendReadinessRequest,
+        SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest, StopThresholds,
+        SuppressionCount, SuppressionDeltaComponents, SuppressionDeltaReport,
+        SuppressionDeltaRequest, SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals,
+        SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
+        TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents,
+        TraceabilityAuditReport, TraceabilityAuditRequest, TraceabilitySummary,
+        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
+        DEFAULT_LOGGING_STATUS_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT,
+        HARD_LOGGING_STATUS_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -1165,7 +1164,10 @@ fn compose_message_engagement<B: OciEmailBackend + ?Sized>(
         validate_domain(source_domain, "source_domain")?;
     }
 
-    let limit = cap_limit(request.limit.unwrap_or(DEFAULT_EVENT_LIMIT), HARD_EVENT_LIMIT);
+    let limit = cap_limit(
+        request.limit.unwrap_or(DEFAULT_EVENT_LIMIT),
+        HARD_EVENT_LIMIT,
+    );
     let events_request = EventsRequest {
         start_time: request.start_time.clone(),
         end_time: request.end_time.clone(),
@@ -1191,13 +1193,16 @@ fn compose_message_engagement<B: OciEmailBackend + ?Sized>(
     let observed_counts = event_counts(&events.events);
     let open = message_engagement_signal(&observed_counts, "open", complete);
     let click = message_engagement_signal(&observed_counts, "click", complete);
-    let list_unsubscribe =
-        message_engagement_signal(&observed_counts, "unsubscribe", complete);
+    let list_unsubscribe = message_engagement_signal(&observed_counts, "unsubscribe", complete);
     let status = if !complete {
         "unavailable"
-    } else if [open.status.as_str(), click.status.as_str(), list_unsubscribe.status.as_str()]
-        .iter()
-        .all(|status| *status == "proven_active")
+    } else if [
+        open.status.as_str(),
+        click.status.as_str(),
+        list_unsubscribe.status.as_str(),
+    ]
+    .iter()
+    .all(|status| *status == "proven_active")
     {
         "proven_active"
     } else {
@@ -1281,7 +1286,10 @@ fn message_engagement_events_are_exact(
                 "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted"
                     | "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed"
             )
-        ) && event.action.as_deref().is_some_and(|action| action != "unknown")
+        ) && event
+            .action
+            .as_deref()
+            .is_some_and(|action| action != "unknown")
             && !event.raw_payload_returned
             && event_matches_source_domain(event, request.source_domain.as_deref())
             && validate_returned_event_matches_request(event, request).is_ok()

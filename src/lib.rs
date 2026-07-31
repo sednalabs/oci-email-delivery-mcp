@@ -59,14 +59,14 @@ pub use response::{
     LoggingStatusRequest, MessageEngagementIngress, MessageEngagementReport,
     MessageEngagementRequest, MessageEngagementSignal, MetricRates, MetricResult, MetricTotals,
     MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
-    ReadinessFinding, RedactedIdentifier,
-    SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
-    SnapshotArtifactRequest, SnapshotArtifactSummary, StatusRequest, StopThresholds,
-    SuppressionCount, SuppressionDeltaComponents, SuppressionDeltaReport, SuppressionDeltaRequest,
-    SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals, SuppressionsReport,
-    SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
-    TraceabilityAuditComponents, TraceabilityAuditReport, TraceabilityAuditRequest,
-    TraceabilitySummary, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
+    ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
+    SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, SnapshotArtifactSummary,
+    StatusRequest, StopThresholds, SuppressionCount, SuppressionDeltaComponents,
+    SuppressionDeltaReport, SuppressionDeltaRequest, SuppressionDeltaSummary, SuppressionSummary,
+    SuppressionTotals, SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
+    TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
+    TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
+    WatchWindowRequest,
 };
 
 #[derive(Clone)]
@@ -486,8 +486,7 @@ pub mod tests_support {
                     event.receiving_domain = Some(receiving_domain.clone());
                 }
                 if let Some(header_value) = request.header_value.as_deref() {
-                    event.trace_header_value_hash =
-                        Some(crate::redact::opaque_hash(header_value));
+                    event.trace_header_value_hash = Some(crate::redact::opaque_hash(header_value));
                 }
             }
             Ok(events)
