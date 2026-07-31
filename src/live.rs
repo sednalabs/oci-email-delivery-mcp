@@ -3429,7 +3429,7 @@ fn email_event_summary(
         datetime: Some(datetime),
         log_type: Some(log_type.to_string()),
         action: Some(summarize_email_event_action(action).to_string()),
-        source_domain: email_event_source_domain(record, data),
+        source_domain: consistent_event_source_domain(record, data)?,
         receiving_domain: string_field(data, "receivingDomain")
             .filter(|value| is_host_token(value))
             .map(|value| value.to_ascii_lowercase()),
@@ -3448,32 +3448,23 @@ fn email_event_summary(
 
 fn consistent_event_timestamp(value: &Value, record: &Value) -> Result<String, OciEmailError> {
     let mut timestamp: Option<(String, ParsedUtcTime)> = None;
-    for (container, key) in [(value, "datetime"), (record, "datetime"), (record, "time")] {
-        let Some(claim) = container.get(key) else {
-            continue;
-        };
-        let Some(raw) = claim.as_str() else {
-            return Err(OciEmailError::Config(
-                "OCI Logging Search returned an Email Delivery event with an invalid timestamp alias; event evidence is unavailable."
-                    .to_string(),
-            ));
-        };
-        let parsed = parse_strict_utc_time(raw, "event datetime").map_err(|_| {
-            OciEmailError::Config(
-                "OCI Logging Search returned an Email Delivery event with an invalid timestamp alias; event evidence is unavailable."
-                    .to_string(),
-            )
-        })?;
-        if timestamp
-            .as_ref()
-            .is_some_and(|(_, existing)| existing != &parsed)
-        {
-            return Err(OciEmailError::Config(
-                "OCI Logging Search returned conflicting Email Delivery event timestamp aliases; event evidence is unavailable."
-                    .to_string(),
-            ));
+    let outer_datetime = value.get("datetime");
+    let outer_datetime_is_numeric = outer_datetime.is_some_and(Value::is_number);
+    if let Some(claim) = outer_datetime {
+        merge_event_timestamp(&mut timestamp, claim, true)?;
+    }
+    if !std::ptr::eq(value, record) {
+        if let Some(claim) = record.get("datetime") {
+            merge_event_timestamp(&mut timestamp, claim, false)?;
         }
-        timestamp.get_or_insert_with(|| (raw.to_string(), parsed));
+    }
+    if let Some(claim) = record.get("time") {
+        merge_event_timestamp(&mut timestamp, claim, false)?;
+    } else if outer_datetime_is_numeric {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned a numeric outer event timestamp without a canonical nested UTC time; event evidence is unavailable."
+                .to_string(),
+        ));
     }
     timestamp
         .map(|(raw, _)| raw)
@@ -3483,6 +3474,109 @@ fn consistent_event_timestamp(value: &Value, record: &Value) -> Result<String, O
                     .to_string(),
             )
         })
+}
+
+fn merge_event_timestamp(
+    timestamp: &mut Option<(String, ParsedUtcTime)>,
+    claim: &Value,
+    allow_epoch_milliseconds: bool,
+) -> Result<(), OciEmailError> {
+    let (raw, parsed) = parse_event_timestamp_claim(claim, allow_epoch_milliseconds)?;
+    if timestamp
+        .as_ref()
+        .is_some_and(|(_, existing)| existing != &parsed)
+    {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned conflicting Email Delivery event timestamp aliases; event evidence is unavailable."
+                .to_string(),
+        ));
+    }
+    timestamp.get_or_insert((raw, parsed));
+    Ok(())
+}
+
+fn parse_event_timestamp_claim(
+    claim: &Value,
+    allow_epoch_milliseconds: bool,
+) -> Result<(String, ParsedUtcTime), OciEmailError> {
+    if let Some(raw) = claim.as_str() {
+        let parsed = parse_strict_utc_time(raw, "event datetime").map_err(|_| {
+            OciEmailError::Config(
+                "OCI Logging Search returned an Email Delivery event with an invalid timestamp alias; event evidence is unavailable."
+                    .to_string(),
+            )
+        })?;
+        return Ok((raw.to_string(), parsed));
+    }
+    if !allow_epoch_milliseconds {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned an Email Delivery event with an invalid timestamp alias; event evidence is unavailable."
+                .to_string(),
+        ));
+    }
+    let Some(milliseconds) = claim.as_u64() else {
+        return Err(OciEmailError::Config(
+            "OCI Logging Search returned an Email Delivery event with an invalid timestamp alias; event evidence is unavailable."
+                .to_string(),
+        ));
+    };
+    utc_time_from_epoch_milliseconds(milliseconds).ok_or_else(|| {
+        OciEmailError::Config(
+            "OCI Logging Search returned an Email Delivery event with an invalid timestamp alias; event evidence is unavailable."
+                .to_string(),
+        )
+    })
+}
+
+fn utc_time_from_epoch_milliseconds(milliseconds: u64) -> Option<(String, ParsedUtcTime)> {
+    const MILLIS_PER_DAY: u64 = 86_400_000;
+    const MAX_SUPPORTED_EPOCH_MILLIS: u64 = 253_402_300_799_999;
+    if milliseconds > MAX_SUPPORTED_EPOCH_MILLIS {
+        return None;
+    }
+    let days_since_epoch = i64::try_from(milliseconds / MILLIS_PER_DAY).ok()?;
+    let millis_in_day = milliseconds % MILLIS_PER_DAY;
+    let (year, month, day) = civil_date_from_unix_days(days_since_epoch)?;
+    let hour = u32::try_from(millis_in_day / 3_600_000).ok()?;
+    let minute = u32::try_from((millis_in_day % 3_600_000) / 60_000).ok()?;
+    let second = u32::try_from((millis_in_day % 60_000) / 1_000).ok()?;
+    let millis = u32::try_from(millis_in_day % 1_000).ok()?;
+    let parsed = ParsedUtcTime {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        nanos: millis * 1_000_000,
+    };
+    Some((
+        format!(
+            "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"
+        ),
+        parsed,
+    ))
+}
+
+fn civil_date_from_unix_days(days_since_epoch: i64) -> Option<(u32, u32, u32)> {
+    let shifted = days_since_epoch.checked_add(719_468)?;
+    let era = shifted / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096)
+            / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year =
+        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += if month <= 2 { 1 } else { 0 };
+    Some((
+        u32::try_from(year).ok()?,
+        u32::try_from(month).ok()?,
+        u32::try_from(day).ok()?,
+    ))
 }
 
 struct EventIdentity {
@@ -3796,41 +3890,66 @@ fn validate_event_request(request: &EventsRequest) -> Result<(), OciEmailError> 
     if let Some(domain) = request.source_domain.as_deref() {
         validate_domain(domain, "source_domain")?;
     }
-    for (label, value) in [
-        ("message_id", request.message_id.as_deref()),
-        ("header_value", request.header_value.as_deref()),
-    ] {
-        if let Some(value) = value {
-            safe_query_value(value).map_err(|_| {
-                OciEmailError::InvalidInput(format!("{label} contains unsupported query syntax"))
-            })?;
-        }
+    if let Some(message_id) = request.message_id.as_deref() {
+        safe_message_id_query_value(message_id).map_err(|_| {
+            OciEmailError::InvalidInput(
+                "message_id contains unsupported query syntax".to_string(),
+            )
+        })?;
+    }
+    if let Some(header_value) = request.header_value.as_deref() {
+        safe_query_value(header_value).map_err(|_| {
+            OciEmailError::InvalidInput(
+                "header_value contains unsupported query syntax".to_string(),
+            )
+        })?;
     }
     Ok(())
 }
 
-fn email_event_source_domain(record: &Value, data: &Value) -> Option<String> {
-    string_field(data, "sender")
-        .and_then(email_domain)
-        .or_else(|| string_field(data, "envelopeSender").and_then(email_domain))
-        .or_else(|| string_field(data, "envelope-sender").and_then(email_domain))
-        .or_else(|| {
-            string_field(data, "sourceDomain")
-                .filter(|value| is_host_token(value))
-                .or_else(|| {
-                    string_field(data, "source-domain").filter(|value| is_host_token(value))
-                })
-                .or_else(|| string_field(data, "senderDomain").filter(|value| is_host_token(value)))
-                .or_else(|| {
-                    string_field(data, "sender-domain").filter(|value| is_host_token(value))
-                })
-                .map(|value| value.to_ascii_lowercase())
-        })
-        .or_else(|| {
-            string_field(record, "source")
+fn consistent_event_source_domain(
+    record: &Value,
+    data: &Value,
+) -> Result<Option<String>, OciEmailError> {
+    let source = match record.get("source") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
                 .filter(|value| is_host_token(value))
                 .map(|value| value.to_ascii_lowercase())
-        })
+                .ok_or_else(|| {
+                    OciEmailError::Config(
+                        "OCI Logging Search returned an Email Delivery event with an invalid authoritative source domain; event evidence is unavailable."
+                            .to_string(),
+                    )
+                })?,
+        ),
+    };
+    for key in ["sourceDomain", "source-domain"] {
+        let Some(claim) = data.get(key) else {
+            continue;
+        };
+        let alias = claim
+            .as_str()
+            .filter(|value| is_host_token(value))
+            .ok_or_else(|| {
+                OciEmailError::Config(
+                    "OCI Logging Search returned an Email Delivery event with an invalid source-domain alias; event evidence is unavailable."
+                        .to_string(),
+                )
+            })?;
+        if source
+            .as_deref()
+            .is_none_or(|authoritative| !authoritative.eq_ignore_ascii_case(alias))
+        {
+            return Err(OciEmailError::Config(
+                "OCI Logging Search returned an Email Delivery event with a source-domain alias that did not match the authoritative record source; event evidence is unavailable."
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(source)
 }
 
 fn event_matches_source_domain(event: &EmailEventSummary, source_domain: Option<&str>) -> bool {
@@ -4378,40 +4497,18 @@ mod tests {
     }
 
     #[test]
-    fn event_source_domain_falls_back_after_invalid_sender() {
+    fn event_source_domain_uses_authoritative_record_source_not_sender_address() {
         let value = serde_json::json!({
             "data": {
                 "logContent": {
                     "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
-                    "source": "oci.emaildelivery",
+                    "source": "source.example",
                     "time": "2026-06-30T00:10:00Z",
                     "data": {
                         "action": "accept",
-                        "sender": "not-an-email",
-                        "envelopeSender": "bounce@envelope.example",
-                        "recipient": "person@recipient.example"
-                    }
-                }
-            }
-        });
-
-        let summary = email_event_summary(&value, None).expect("recognized event");
-
-        assert_eq!(summary.source_domain.as_deref(), Some("envelope.example"));
-    }
-
-    #[test]
-    fn event_source_domain_falls_back_after_invalid_source_domain() {
-        let value = serde_json::json!({
-            "data": {
-                "logContent": {
-                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
-                    "source": "oci.emaildelivery",
-                    "time": "2026-06-30T00:10:00Z",
-                    "data": {
-                        "action": "accept",
-                        "sourceDomain": "bad domain token",
-                        "source-domain": "source.example",
+                        "sender": "person@different.example",
+                        "envelopeSender": "bounce@another.example",
+                        "sourceDomain": "SOURCE.EXAMPLE",
                         "recipient": "person@recipient.example"
                     }
                 }
@@ -4421,6 +4518,110 @@ mod tests {
         let summary = email_event_summary(&value, None).expect("recognized event");
 
         assert_eq!(summary.source_domain.as_deref(), Some("source.example"));
+    }
+
+    #[test]
+    fn event_source_domain_rejects_conflicting_or_invalid_aliases() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "source": "source.example",
+                    "time": "2026-06-30T00:10:00Z",
+                    "data": {
+                        "action": "accept",
+                        "sourceDomain": "different.example",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+
+        let conflict = email_event_summary(&value, None)
+            .expect_err("conflicting source-domain alias must fail closed");
+        assert_eq!(conflict.code(), "configuration_error");
+
+        let mut invalid = value;
+        invalid["data"]["logContent"]["data"]["sourceDomain"] =
+            Value::String("bad domain token".to_string());
+        let invalid =
+            email_event_summary(&invalid, None).expect_err("invalid source-domain alias");
+        assert_eq!(invalid.code(), "configuration_error");
+    }
+
+    #[test]
+    fn event_source_domain_does_not_fall_back_when_record_source_is_absent() {
+        let value = serde_json::json!({
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                    "time": "2026-06-30T00:10:00Z",
+                    "data": {
+                        "action": "accept",
+                        "sender": "person@sender.example",
+                        "recipient": "person@recipient.example"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value, None).expect("recognized unscoped event");
+
+        assert_eq!(summary.source_domain, None);
+    }
+
+    #[test]
+    fn event_timestamp_reconciles_oci_numeric_epoch_with_nested_utc_time() {
+        let value = serde_json::json!({
+            "datetime": 1718719068280_u64,
+            "data": {
+                "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "source": "example.com",
+                    "time": "2024-06-18T13:57:48.280Z",
+                    "data": {
+                        "action": "unsubscribe",
+                        "messageId": "message@example.com",
+                        "recipient": "person@example.net"
+                    }
+                }
+            }
+        });
+
+        let summary = email_event_summary(&value, None).expect("native unsubscribe event");
+
+        assert_eq!(
+            summary.datetime.as_deref(),
+            Some("2024-06-18T13:57:48.280Z")
+        );
+        assert_eq!(summary.action.as_deref(), Some("unsubscribe"));
+        assert_eq!(summary.source_domain.as_deref(), Some("example.com"));
+
+        let mut conflict = value.clone();
+        conflict["data"]["logContent"]["time"] =
+            Value::String("2024-06-18T13:57:48.281Z".to_string());
+        assert!(email_event_summary(&conflict, None).is_err());
+
+        let mut numeric_nested = value.clone();
+        numeric_nested["data"]["logContent"]["time"] = serde_json::json!(1718719068280_u64);
+        assert!(email_event_summary(&numeric_nested, None).is_err());
+
+        let mut missing_nested = value.clone();
+        missing_nested["data"]["logContent"]
+            .as_object_mut()
+            .expect("logContent object")
+            .remove("time");
+        assert!(email_event_summary(&missing_nested, None).is_err());
+
+        for invalid_datetime in [
+            serde_json::json!(-1),
+            serde_json::json!(1718719068280.5),
+            serde_json::json!(253402300800000_u64),
+        ] {
+            let mut invalid = value.clone();
+            invalid["datetime"] = invalid_datetime;
+            assert!(email_event_summary(&invalid, None).is_err());
+        }
     }
 
     #[test]
@@ -4648,6 +4849,49 @@ mod tests {
         .expect("bracketed Message-ID query");
 
         assert!(query.contains("data.messageId='<message@example.com>'"));
+    }
+
+    #[test]
+    fn event_search_executes_one_conventional_bracketed_message_id() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": {
+                            "logContent": {
+                                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                                "source": "sender.example",
+                                "time": "2026-06-30T00:10:00Z",
+                                "data": {
+                                    "action": "open",
+                                    "messageId": "<message@example.com>",
+                                    "recipient": "person@recipient.example"
+                                }
+                            }
+                        }
+                    }]
+                }
+            }))),
+        );
+        let report = backend
+            .events(&EventsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                action: None,
+                message_id: Some("<message@example.com>".to_string()),
+                header_name: None,
+                header_value: None,
+                receiving_domain: None,
+                source_domain: Some("sender.example".to_string()),
+                limit: Some(20),
+                compartment_id: None,
+            })
+            .expect("bracketed Message-ID event search");
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.returned, 1);
     }
 
     #[test]
@@ -4969,8 +5213,21 @@ mod tests {
             .expect("serialize report")
             .contains("message-one"));
 
+        let native_unsubscribe = serde_json::json!({
+            "datetime": 1782778320000_u64,
+            "data": { "logContent": {
+                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                "source": "sender.example",
+                "time": "2026-06-30T00:12:00.000Z",
+                "data": {
+                    "action": "unsubscribe",
+                    "messageId": "message-one",
+                    "recipient": "person@recipient.example"
+                }
+            }}
+        });
         let full_output = serde_json::json!({
-            "data": { "results": [event("open"), event("click"), event("unsubscribe")] }
+            "data": { "results": [event("open"), event("click"), native_unsubscribe] }
         });
         let full_backend = LiveOciEmailBackend::with_runner(
             test_config(),
@@ -5847,7 +6104,7 @@ mod tests {
                                 "data": {
                                     "logContent": {
                                         "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
-                                        "source": "oci.emaildelivery",
+                                        "source": "sender.example",
                                         "time": "2026-06-30T00:10:00Z",
                                         "data": {
                                             "action": "accept",
@@ -5863,7 +6120,7 @@ mod tests {
                                 "data": {
                                     "logContent": {
                                         "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
-                                        "source": "oci.emaildelivery",
+                                        "source": "other.example",
                                         "time": "2026-06-30T00:11:00Z",
                                         "data": {
                                             "action": "accept",
@@ -5908,7 +6165,7 @@ mod tests {
                                 "data": {
                                     "logContent": {
                                         "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
-                                        "source": "oci.emaildelivery",
+                                        "source": "sender.example",
                                         "time": "2026-06-30T00:10:00Z",
                                         "data": {
                                             "action": "complaint",
@@ -5924,7 +6181,7 @@ mod tests {
                                 "data": {
                                     "logContent": {
                                         "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
-                                        "source": "oci.emaildelivery",
+                                        "source": "sender.example",
                                         "time": "2026-06-30T00:11:00Z",
                                         "data": {
                                             "action": "complaint",
@@ -5940,7 +6197,7 @@ mod tests {
                                 "data": {
                                     "logContent": {
                                         "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
-                                        "source": "oci.emaildelivery",
+                                        "source": "sender.example",
                                         "time": "2026-06-30T00:12:00Z",
                                         "data": {
                                             "action": "complaint",

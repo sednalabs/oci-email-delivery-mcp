@@ -24,7 +24,10 @@ green.
   open/click/list-unsubscribe evidence. Always supply the validated sender
   `source_domain`; an unscoped request is `unavailable` and does not query the
   provider. One conventional enclosing angle-bracket pair is accepted around
-  an otherwise conservative Message-ID. Require a complete uncapped exact read
+  an otherwise conservative Message-ID. The lane domain is read only from the
+  OCI event record's authoritative `source`; sender and envelope addresses are
+  not lane authority. Numeric outer `datetime` epoch milliseconds must agree
+  with the nested canonical UTC `time`. Require a complete uncapped exact read
   before treating a signal as `not_observed`; positive counts are
   `proven_active`, while provider errors, null output, capped/partial reads,
   unknown actions, source mismatch, or malformed identity/timestamp evidence
@@ -254,10 +257,11 @@ ids and header/correlation values are opaque case-sensitive identities, so case-
 provider parser checks every present recipient and message-id alias: each must
 be a non-empty string and all aliases for one identity must agree. Null,
 non-string, or conflicting aliases make the event evidence unavailable. The
-same custody rule applies to every present outer/record timestamp alias: each
-must be a strict UTC string and all aliases must represent the same instant.
-Malformed, null, or conflicting timestamp residue makes event evidence
-unavailable before window proof.
+same custody rule applies to every present outer/record timestamp alias: string
+aliases must be strict UTC, while OCI's numeric outer `datetime` must be a
+non-negative integer epoch-millisecond value; all aliases must represent the
+same instant. Malformed, null, or conflicting timestamp residue makes event
+evidence unavailable before window proof.
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
 `single_ledger_row_overlap` is the same-row overlap gate, not a cardinality
@@ -533,8 +537,10 @@ Check:
   action text is copied into the receipt, and their presence makes event
   evidence partial so it cannot support exact traceability;
 - `source_domain` is matched after the MCP parses redacted event summaries,
-  so an empty result means no matching summarized event evidence was found; it
-  does not prove the provider emitted no events for the broader compartment.
+  using only the record-level authoritative Email Domain `source`, never the
+  message sender or envelope address. An empty result means no matching
+  summarized event evidence was found; it does not prove the provider emitted
+  no events for the broader compartment.
 - compare `provider_returned`, `source_domain_matched`, and `returned` to
   separate no provider rows from source-domain post-filter mismatch; when no
   `source_domain` is requested, `source_domain_matched` equals `returned`.

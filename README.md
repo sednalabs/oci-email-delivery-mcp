@@ -106,18 +106,20 @@ contract tests with an OCI profile configured. The live smoke must not use
   marking an OCI logging mutation as required.
 - `oci_email_events` keeps the provider query scoped to Email Delivery event
   types plus exact action/message/header/recipient-domain filters, then applies
-  `source_domain` after redacted event summaries are parsed. This avoids hiding
-  valid events if OCI varies the top-level log `source` field; a successful
-  JSON empty result with `source_domain` is still missing event evidence, not
-  proof of no sends. Blank or JSON-null Logging Search output is unavailable
+  `source_domain` after redacted event summaries are parsed. The authoritative
+  lane value is the Email Domain in the record-level `source`; message sender
+  and envelope addresses are never substitutes. A successful JSON empty result
+  with `source_domain` is still missing event evidence, not proof of no sends.
+  Blank or JSON-null Logging Search output is unavailable
   evidence and blocks the component rather than being reshaped as an empty
   result. Every returned row must contain a recognized OutboundAccepted or
   OutboundRelayed record with an object payload, non-empty action, and valid
-  UTC timestamp inside the requested half-open window. Every present outer or
-  record timestamp alias must be a string, parse as strict UTC, and represent
-  the same instant; malformed, null, conflicting, unrecognized, or
-  out-of-window rows make the event read unavailable instead of contributing
-  synthetic evidence. Forward-compatible unknown actions are summarized as
+  UTC timestamp inside the requested half-open window. String timestamp aliases
+  must parse as strict UTC; OCI's numeric outer `datetime` is accepted only as
+  non-negative integer epoch milliseconds. Every alias must represent the same
+  instant; malformed, null, conflicting, unrecognized, or out-of-window rows
+  make the event read unavailable instead of contributing synthetic evidence.
+  Forward-compatible unknown actions are summarized as
   `unknown` rather than copied from the provider payload, and make the event
   evidence partial so they cannot authorize exact traceability.
   `provider_returned` and `source_domain_matched` distinguish no provider
@@ -135,7 +137,11 @@ contract tests with an OCI profile configured. The live smoke must not use
   A validated `source_domain` is required for any proven or not-observed lane
   result; an unscoped request returns `unavailable` without querying the
   provider. Conventional Message-ID values may use one enclosing `<...>` pair
-  around the conservative identifier grammar.
+  around the conservative identifier grammar. Lane scope is bound to the
+  Email Domain in the OCI log record's authoritative `source` field, never
+  inferred from the message `sender` or envelope address. OCI's numeric outer
+  `datetime` epoch milliseconds are reconciled with the nested canonical UTC
+  `time`; malformed or conflicting aliases fail closed.
   A complete uncapped exact read reports `proven_active` for a signal with one
   or more events and `not_observed` only with a complete zero count. Null or
   unavailable provider output, capped results, unknown actions, source-domain
