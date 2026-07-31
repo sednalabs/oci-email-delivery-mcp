@@ -3551,9 +3551,7 @@ fn utc_time_from_epoch_milliseconds(milliseconds: u64) -> Option<(String, Parsed
         nanos: millis * 1_000_000,
     };
     Some((
-        format!(
-            "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"
-        ),
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"),
         parsed,
     ))
 }
@@ -3563,11 +3561,9 @@ fn civil_date_from_unix_days(days_since_epoch: i64) -> Option<(u32, u32, u32)> {
     let era = shifted / 146_097;
     let day_of_era = shifted - era * 146_097;
     let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096)
-            / 365;
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
-    let day_of_year =
-        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
     let month = month_prime + if month_prime < 10 { 3 } else { -9 };
@@ -3892,9 +3888,7 @@ fn validate_event_request(request: &EventsRequest) -> Result<(), OciEmailError> 
     }
     if let Some(message_id) = request.message_id.as_deref() {
         safe_message_id_query_value(message_id).map_err(|_| {
-            OciEmailError::InvalidInput(
-                "message_id contains unsupported query syntax".to_string(),
-            )
+            OciEmailError::InvalidInput("message_id contains unsupported query syntax".to_string())
         })?;
     }
     if let Some(header_value) = request.header_value.as_deref() {
@@ -4544,8 +4538,7 @@ mod tests {
         let mut invalid = value;
         invalid["data"]["logContent"]["data"]["sourceDomain"] =
             Value::String("bad domain token".to_string());
-        let invalid =
-            email_event_summary(&invalid, None).expect_err("invalid source-domain alias");
+        let invalid = email_event_summary(&invalid, None).expect_err("invalid source-domain alias");
         assert_eq!(invalid.code(), "configuration_error");
     }
 
