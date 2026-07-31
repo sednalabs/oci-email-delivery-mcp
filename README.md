@@ -5,7 +5,7 @@ read-only; the only local write surface is a configured private artifact tool
 for redacted monitoring snapshots. The first operator goal is to let agents
 query OCI programmatically before production or cohort sends go live.
 
-The server exposes thirteen curated intent tools:
+The server exposes fourteen curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -13,6 +13,7 @@ The server exposes thirteen curated intent tools:
 | `oci_email_metrics` | Query fixed `oci_emaildelivery` Monitoring metrics for an explicit UTC window. |
 | `oci_email_ledger_window` | Summarize configured local send-ledger rows for a UTC window without raw recipients. |
 | `oci_email_events` | Search Email Delivery logs with whitelisted filters and redacted event summaries. |
+| `oci_email_message_engagement` | Summarize exact-Message-ID open, click, and list-unsubscribe evidence without returning raw events or authorizing a send. |
 | `oci_email_logging_status` | Check whether Email Delivery service logs are configured and visible without enabling or changing logs. |
 | `oci_email_logging_enablement_plan` | Build a read-only operator plan for enabling Email Delivery service-log visibility and post-enable proof. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
@@ -128,6 +129,24 @@ contract tests with an OCI profile configured. The live smoke must not use
   distinct versus duplicate redacted recipient, message, recipient/message, and
   action/recipient/message keys. Use those counts to avoid treating repeated
   log records for the same recipient/message as distinct recipient outcomes.
+- `oci_email_message_engagement` narrows the same read-only Logging Search path
+  to one exact non-blank Message-ID and bounded UTC window, then reports
+  per-signal `open`, `click`, and `list_unsubscribe` states with nullable counts.
+  A complete uncapped exact read reports `proven_active` for a signal with one
+  or more events and `not_observed` only with a complete zero count. Null or
+  unavailable provider output, capped results, unknown actions, source-domain
+  mismatch, malformed identity/timestamp data, and other incomplete reads report
+  `unavailable` with no inferred zero. Overall `proven_active` additionally
+  requires all three signals to be proven active, so a subset remains
+  `not_observed`. Duplicate event summaries retain their provider count and are
+  called out without turning presence into absence. Before accepting either
+  state, the tool independently rebinds the backend report to the requested
+  Message-ID hash, UTC window, source scope, limit, uncapped evidence, complete
+  redacted event set, and recomputed counts; a contradictory report is
+  `unavailable`.
+  Transport ingress remains explicitly `unavailable` unless authenticated OCI
+  evidence exposes a recognized `SMTP` or `SubmitEmail` value. This tool never
+  sends mail or authorizes a send.
 - `oci_email_suppressions` fetches all pages for totals and timestamp bounds
   with a provider-friendly page size while returning only a bounded redacted
   sample in `suppressions`. Use `total_matched` and `count_state` for counts;

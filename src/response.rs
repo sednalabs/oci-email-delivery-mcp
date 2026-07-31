@@ -44,6 +44,16 @@ pub struct EventsRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct MessageEngagementRequest {
+    pub start_time: String,
+    pub end_time: String,
+    pub message_id: String,
+    pub source_domain: Option<String>,
+    pub limit: Option<u32>,
+    pub compartment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct LoggingStatusRequest {
     pub compartment_id: Option<String>,
     pub resource_domain: Option<String>,
@@ -455,6 +465,36 @@ pub struct EventCounts {
 pub struct EventCount {
     pub key: String,
     pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MessageEngagementSignal {
+    pub status: String,
+    pub count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MessageEngagementIngress {
+    pub status: String,
+    pub observed: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MessageEngagementReport {
+    pub status: String,
+    pub send_authorized: bool,
+    pub start_time: String,
+    pub end_time: String,
+    pub message_id_hash: String,
+    pub source_domain: Option<String>,
+    pub limit: u32,
+    pub open: MessageEngagementSignal,
+    pub click: MessageEngagementSignal,
+    pub list_unsubscribe: MessageEngagementSignal,
+    pub ingress: MessageEngagementIngress,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
+    pub raw_payload_returned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

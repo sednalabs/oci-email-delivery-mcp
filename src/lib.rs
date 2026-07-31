@@ -56,8 +56,10 @@ pub use response::{
     EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowFilters,
     LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals, LogGroupSummary,
     LoggingEnablementPlanReport, LoggingEnablementPlanRequest, LoggingStatusReport,
-    LoggingStatusRequest, MetricRates, MetricResult, MetricTotals, MetricsFilters, MetricsReport,
-    MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
+    LoggingStatusRequest, MessageEngagementIngress, MessageEngagementReport,
+    MessageEngagementRequest, MessageEngagementSignal, MetricRates, MetricResult, MetricTotals,
+    MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
+    ReadinessFinding, RedactedIdentifier,
     SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
     SnapshotArtifactRequest, SnapshotArtifactSummary, StatusRequest, StopThresholds,
     SuppressionCount, SuppressionDeltaComponents, SuppressionDeltaReport, SuppressionDeltaRequest,
@@ -103,6 +105,11 @@ impl OciEmailMcpServer {
                     "oci_email_events",
                     "Search OCI Email Delivery logs with redacted event summaries.",
                     ["oci", "email", "logs", "events"],
+                ),
+                read_capability(
+                    "oci_email_message_engagement",
+                    "Summarize exact-Message-ID OCI open, click, and list-unsubscribe evidence without sending or returning raw events.",
+                    ["oci", "email", "message", "engagement", "events"],
                 ),
                 read_capability(
                     "oci_email_logging_status",
@@ -203,6 +210,16 @@ impl OciEmailMcpServer {
     #[tool(description = "Search OCI Email Delivery logs with redacted event summaries.")]
     fn oci_email_events(&self, Parameters(request): Parameters<EventsRequest>) -> String {
         response::tool_json(self.backend.events(&request))
+    }
+
+    #[tool(
+        description = "Summarize exact OCI Email Delivery open, click, and list-unsubscribe evidence for one Message-ID without sending."
+    )]
+    fn oci_email_message_engagement(
+        &self,
+        Parameters(request): Parameters<MessageEngagementRequest>,
+    ) -> String {
+        response::tool_json(self.backend.message_engagement(&request))
     }
 
     #[tool(
@@ -324,6 +341,7 @@ mod tests {
                 "oci_email_ledger_window",
                 "oci_email_logging_enablement_plan",
                 "oci_email_logging_status",
+                "oci_email_message_engagement",
                 "oci_email_metrics",
                 "oci_email_monitoring_snapshot_artifact",
                 "oci_email_send_readiness",
@@ -440,8 +458,39 @@ pub mod tests_support {
             })
         }
 
-        fn events(&self, _request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
-            Ok(fixture_events())
+        fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError> {
+            let mut events = fixture_events();
+            events.start_time = request.start_time.clone();
+            events.end_time = request.end_time.clone();
+            events.limit = request.limit.unwrap_or(20);
+            events.filters.action = request.action.clone();
+            events.filters.message_id_hash = request
+                .message_id
+                .as_deref()
+                .map(crate::redact::opaque_hash);
+            events.filters.header_name = request.header_name.clone();
+            events.filters.header_value_hash = request
+                .header_value
+                .as_deref()
+                .map(crate::redact::opaque_hash);
+            events.filters.receiving_domain = request.receiving_domain.clone();
+            events.filters.source_domain = request.source_domain.clone();
+            for event in &mut events.events {
+                if let Some(message_id) = request.message_id.as_deref() {
+                    event.message_id_hash = Some(crate::redact::opaque_hash(message_id));
+                }
+                if let Some(source_domain) = request.source_domain.as_ref() {
+                    event.source_domain = Some(source_domain.clone());
+                }
+                if let Some(receiving_domain) = request.receiving_domain.as_ref() {
+                    event.receiving_domain = Some(receiving_domain.clone());
+                }
+                if let Some(header_value) = request.header_value.as_deref() {
+                    event.trace_header_value_hash =
+                        Some(crate::redact::opaque_hash(header_value));
+                }
+            }
+            Ok(events)
         }
 
         fn logging_status(

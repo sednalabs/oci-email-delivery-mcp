@@ -20,6 +20,15 @@ green.
   gates, but it does not authorize or apply the OCI change.
 - `oci_email_events` returns real Email Delivery log events for a seed/proof
   window before cohort expansion.
+- `oci_email_message_engagement` is the narrow exact-Message-ID read for
+  open/click/list-unsubscribe evidence. Require a complete uncapped exact read
+  before treating a signal as `not_observed`; positive counts are
+  `proven_active`, while provider errors, null output, capped/partial reads,
+  unknown actions, source mismatch, or malformed identity/timestamp evidence
+  are `unavailable`. Its nullable counts never turn unavailable evidence into
+  zero, and its `ingress` field remains explicitly unavailable unless
+  authenticated OCI evidence exposes a recognized SMTP or SubmitEmail value.
+  It never authorizes or performs a send.
 - `oci_email_suppressions` is callable and returns either a normal empty list
   or redacted suppression summaries with aggregate reason/domain totals.
 - `oci_email_suppression_delta` compares the full active suppression set with
@@ -60,6 +69,10 @@ Pause the pilot or keep it paused when any of these are true:
   cannot match the requested resource id for the sender lane;
 - log search returns no events for a send window that should have accepted or
   relayed mail;
+- `oci_email_message_engagement` returns `unavailable`, including when the
+  exact Message-ID is missing/blank, provider output is null, results are
+  capped, actions are unknown, or source-domain filtering removes every
+  returned row;
 - suppression readback is blocked;
 - `oci_email_suppression_delta` reports new active hard-bounce or complaint
   suppressions, or reports no-sample/lower-bound evidence when clean suppression

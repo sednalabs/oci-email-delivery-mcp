@@ -9,7 +9,9 @@ use crate::{
         EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowReport,
         LedgerWindowRequest, LogGroupSummary, LoggingEnablementPlanReport,
         LoggingEnablementPlanRequest, LoggingStatusReport, LoggingStatusRequest, MetricRates,
-        MetricResult, MetricTotals, MetricsFilters, MetricsReport, MetricsRequest,
+        MessageEngagementIngress, MessageEngagementReport, MessageEngagementRequest,
+        MessageEngagementSignal, MetricResult, MetricTotals, MetricsFilters, MetricsReport,
+        MetricsRequest,
         OciEmailStatusReport, QueryProbe, ReadinessFinding, RedactedIdentifier,
         SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
         SnapshotArtifactRequest, StatusRequest, StopThresholds, SuppressionCount,
@@ -55,6 +57,12 @@ pub trait OciEmailBackend: Send + Sync {
     ) -> Result<OciEmailStatusReport, OciEmailError>;
     fn metrics(&self, request: &MetricsRequest) -> Result<MetricsReport, OciEmailError>;
     fn events(&self, request: &EventsRequest) -> Result<EventsReport, OciEmailError>;
+    fn message_engagement(
+        &self,
+        request: &MessageEngagementRequest,
+    ) -> Result<MessageEngagementReport, OciEmailError> {
+        compose_message_engagement(self, request)
+    }
     fn logging_status(
         &self,
         _request: &LoggingStatusRequest,
@@ -1135,6 +1143,223 @@ fn finding(severity: &str, code: &str, message: &str) -> ReadinessFinding {
         severity: severity.to_string(),
         code: code.to_string(),
         message: message.to_string(),
+    }
+}
+
+fn compose_message_engagement<B: OciEmailBackend + ?Sized>(
+    backend: &B,
+    request: &MessageEngagementRequest,
+) -> Result<MessageEngagementReport, OciEmailError> {
+    validate_utc_window(&request.start_time, &request.end_time)?;
+    if request.message_id.trim().is_empty() {
+        return Err(OciEmailError::InvalidInput(
+            "message_id must be a non-blank exact Message-ID value".to_string(),
+        ));
+    }
+    if request.message_id != request.message_id.trim() {
+        return Err(OciEmailError::InvalidInput(
+            "message_id must not have surrounding whitespace".to_string(),
+        ));
+    }
+    if let Some(source_domain) = request.source_domain.as_deref() {
+        validate_domain(source_domain, "source_domain")?;
+    }
+
+    let limit = cap_limit(request.limit.unwrap_or(DEFAULT_EVENT_LIMIT), HARD_EVENT_LIMIT);
+    let events_request = EventsRequest {
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        action: None,
+        message_id: Some(request.message_id.clone()),
+        header_name: None,
+        header_value: None,
+        receiving_domain: None,
+        source_domain: request.source_domain.clone(),
+        limit: Some(limit),
+        compartment_id: request.compartment_id.clone(),
+    };
+    let events = match backend.events(&events_request) {
+        Ok(events) => events,
+        Err(error) if matches!(&error, OciEmailError::InvalidInput(_)) => return Err(error),
+        Err(_) => {
+            return Ok(unavailable_message_engagement(request, limit));
+        }
+    };
+
+    let exact_binding = message_engagement_events_are_exact(&events, &events_request, limit);
+    let complete = message_engagement_events_are_complete(&events, exact_binding);
+    let observed_counts = event_counts(&events.events);
+    let open = message_engagement_signal(&observed_counts, "open", complete);
+    let click = message_engagement_signal(&observed_counts, "click", complete);
+    let list_unsubscribe =
+        message_engagement_signal(&observed_counts, "unsubscribe", complete);
+    let status = if !complete {
+        "unavailable"
+    } else if [open.status.as_str(), click.status.as_str(), list_unsubscribe.status.as_str()]
+        .iter()
+        .all(|status| *status == "proven_active")
+    {
+        "proven_active"
+    } else {
+        "not_observed"
+    };
+    let mut findings = events.findings;
+    if !exact_binding {
+        findings.push(finding(
+            "warning",
+            "event_report_binding_unavailable",
+            "Returned event evidence did not rebind exactly to the requested Message-ID, UTC window, source scope, limit, counts, or uncapped redacted event set.",
+        ));
+    }
+    if observed_counts.duplicate_action_recipient_message_key_events > 0 {
+        findings.push(finding(
+            "warning",
+            "duplicate_event_summary",
+            "The exact Message-ID window contained duplicate action/recipient summaries; counts retain each provider event and presence is not inferred from uniqueness.",
+        ));
+    }
+    findings.push(finding(
+        "warning",
+        "transport_ingress_unavailable",
+        "Authenticated OCI evidence did not expose a recognized SMTP or SubmitEmail transport value; engagement evidence does not identify the sending path.",
+    ));
+
+    Ok(MessageEngagementReport {
+        status: status.to_string(),
+        send_authorized: false,
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        message_id_hash: opaque_hash(&request.message_id),
+        source_domain: request.source_domain.clone(),
+        limit: events.limit,
+        open,
+        click,
+        list_unsubscribe,
+        ingress: unavailable_ingress(),
+        findings,
+        evidence: events.evidence,
+        raw_payload_returned: false,
+    })
+}
+
+fn message_engagement_events_are_exact(
+    events: &EventsReport,
+    request: &EventsRequest,
+    limit: u32,
+) -> bool {
+    let expected_message_id_hash = request.message_id.as_deref().map(opaque_hash);
+    let source_filter_matches = match (
+        events.filters.source_domain.as_deref(),
+        request.source_domain.as_deref(),
+    ) {
+        (Some(actual), Some(expected)) => actual.eq_ignore_ascii_case(expected),
+        (None, None) => true,
+        _ => false,
+    };
+    let filters_match = events.start_time == request.start_time
+        && events.end_time == request.end_time
+        && events.limit == limit
+        && events.filters.action.is_none()
+        && events.filters.message_id_hash == expected_message_id_hash
+        && events.filters.header_name.is_none()
+        && events.filters.header_value_hash.is_none()
+        && events.filters.receiving_domain.is_none()
+        && source_filter_matches;
+    let shape_matches = events.provider_returned == events.source_domain_matched
+        && events.source_domain_matched == events.returned
+        && events.returned == events.events.len()
+        && events.counts == event_counts(&events.events)
+        && !events.evidence.is_empty()
+        && events
+            .evidence
+            .iter()
+            .all(|item| !item.rows_capped && !item.raw_payload_returned);
+    let event_set_matches = events.events.iter().all(|event| {
+        matches!(
+            event.log_type.as_deref(),
+            Some(
+                "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted"
+                    | "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed"
+            )
+        ) && event.action.as_deref().is_some_and(|action| action != "unknown")
+            && !event.raw_payload_returned
+            && event_matches_source_domain(event, request.source_domain.as_deref())
+            && validate_returned_event_matches_request(event, request).is_ok()
+    });
+    filters_match && shape_matches && event_set_matches
+}
+
+fn message_engagement_events_are_complete(events: &EventsReport, exact_binding: bool) -> bool {
+    exact_binding
+        && ((events.status == "ok" && events.findings.is_empty())
+            || (events.status == "degraded"
+                && events.provider_returned == 0
+                && events.returned == 0
+                && events.findings.len() == 1
+                && events.findings[0].code == "no_log_events_returned"))
+}
+
+fn message_engagement_signal(
+    counts: &EventCounts,
+    action: &str,
+    complete: bool,
+) -> MessageEngagementSignal {
+    if !complete {
+        return MessageEngagementSignal {
+            status: "unavailable".to_string(),
+            count: None,
+        };
+    }
+    let count = counts
+        .by_action
+        .iter()
+        .find(|item| item.key == action)
+        .map(|item| item.count)
+        .unwrap_or(0);
+    MessageEngagementSignal {
+        status: if count > 0 {
+            "proven_active".to_string()
+        } else {
+            "not_observed".to_string()
+        },
+        count: Some(count),
+    }
+}
+
+fn unavailable_ingress() -> MessageEngagementIngress {
+    MessageEngagementIngress {
+        status: "unavailable".to_string(),
+        observed: Vec::new(),
+    }
+}
+
+fn unavailable_message_engagement(
+    request: &MessageEngagementRequest,
+    limit: u32,
+) -> MessageEngagementReport {
+    let unavailable_signal = || MessageEngagementSignal {
+        status: "unavailable".to_string(),
+        count: None,
+    };
+    MessageEngagementReport {
+        status: "unavailable".to_string(),
+        send_authorized: false,
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        message_id_hash: opaque_hash(&request.message_id),
+        source_domain: request.source_domain.clone(),
+        limit,
+        open: unavailable_signal(),
+        click: unavailable_signal(),
+        list_unsubscribe: unavailable_signal(),
+        ingress: unavailable_ingress(),
+        findings: vec![finding(
+            "warning",
+            "event_evidence_unavailable",
+            "OCI Email Delivery event evidence was unavailable; no engagement count is inferred.",
+        )],
+        evidence: Vec::new(),
+        raw_payload_returned: false,
     }
 }
 
@@ -4621,6 +4846,255 @@ mod tests {
             events_evidence_state(&ToolCallOutcome::ok(empty.status.clone(), empty)),
             "complete"
         );
+    }
+
+    fn engagement_request() -> MessageEngagementRequest {
+        MessageEngagementRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            message_id: "message-one".to_string(),
+            source_domain: Some("sender.example".to_string()),
+            limit: Some(20),
+            compartment_id: None,
+        }
+    }
+
+    #[test]
+    fn message_engagement_preserves_signal_counts_and_duplicate_presence() {
+        let event = |action: &str| {
+            serde_json::json!({
+                "datetime": "2026-06-30T00:10:00Z",
+                "data": { "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "source": "sender.example",
+                    "data": {
+                        "action": action,
+                        "messageId": "message-one",
+                        "recipient": "person@recipient.example"
+                    }
+                }}
+            })
+        };
+        let output = serde_json::json!({
+            "data": { "results": [event("open"), event("open"), event("click")] }
+        });
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(output)),
+        );
+        let report = backend
+            .message_engagement(&engagement_request())
+            .expect("engagement report");
+
+        assert_eq!(report.status, "not_observed");
+        assert_eq!(report.open.status, "proven_active");
+        assert_eq!(report.open.count, Some(2));
+        assert_eq!(report.click.count, Some(1));
+        assert_eq!(report.list_unsubscribe.status, "not_observed");
+        assert_eq!(report.list_unsubscribe.count, Some(0));
+        assert_eq!(report.ingress.status, "unavailable");
+        assert!(report
+            .findings
+            .iter()
+            .any(|item| item.code == "duplicate_event_summary"));
+        assert!(!serde_json::to_string(&report)
+            .expect("serialize report")
+            .contains("message-one"));
+
+        let full_output = serde_json::json!({
+            "data": { "results": [event("open"), event("click"), event("unsubscribe")] }
+        });
+        let full_backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(full_output)),
+        );
+        let full_report = full_backend
+            .message_engagement(&engagement_request())
+            .expect("full engagement report");
+        assert_eq!(full_report.status, "proven_active");
+        assert_eq!(full_report.list_unsubscribe.status, "proven_active");
+    }
+
+    #[test]
+    fn message_engagement_maps_null_provider_and_partial_evidence_to_unavailable() {
+        let request = engagement_request();
+        let null_backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(Value::Null)),
+        );
+        let null_report = null_backend
+            .message_engagement(&request)
+            .expect("unavailable report");
+        assert_eq!(null_report.status, "unavailable");
+        assert_eq!(null_report.open.count, None);
+        assert_eq!(null_report.click.count, None);
+
+        let empty_backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": { "results": [] }
+            }))),
+        );
+        let empty_report = empty_backend
+            .message_engagement(&request)
+            .expect("complete empty report");
+        assert_eq!(empty_report.status, "not_observed");
+        assert_eq!(empty_report.open.count, Some(0));
+
+        let capped_request = MessageEngagementRequest {
+            limit: Some(1),
+            ..request.clone()
+        };
+        let capped_output = serde_json::json!({
+            "data": { "results": [{
+                "datetime": "2026-06-30T00:10:00Z",
+                "data": { "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "source": "sender.example",
+                    "data": {
+                        "action": "open",
+                        "messageId": "message-one",
+                        "recipient": "person@recipient.example"
+                    }
+                }}
+            }] }
+        });
+        let capped_backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(capped_output)),
+        );
+        let capped_report = capped_backend
+            .message_engagement(&capped_request)
+            .expect("capped report");
+        assert_eq!(capped_report.status, "unavailable");
+        assert_eq!(capped_report.open.count, None);
+
+        let unknown = serde_json::json!({
+            "data": { "results": [{
+                "datetime": "2026-06-30T00:10:00Z",
+                "data": { "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "source": "sender.example",
+                    "data": {
+                        "action": "future-action",
+                        "messageId": "message-one",
+                        "recipient": "person@recipient.example"
+                    }
+                }}
+            }] }
+        });
+        let unknown_backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(unknown)),
+        );
+        let unknown_report = unknown_backend
+            .message_engagement(&request)
+            .expect("unavailable partial report");
+        assert_eq!(unknown_report.status, "unavailable");
+        assert_eq!(unknown_report.open.count, None);
+    }
+
+    #[test]
+    fn message_engagement_rejects_blank_or_reversed_request() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": { "results": [] }
+            }))),
+        );
+        let mut blank = engagement_request();
+        blank.message_id = "  ".to_string();
+        assert!(matches!(
+            backend.message_engagement(&blank),
+            Err(OciEmailError::InvalidInput(_))
+        ));
+        let mut reversed = engagement_request();
+        reversed.start_time = "2026-06-30T02:00:00Z".to_string();
+        assert!(matches!(
+            backend.message_engagement(&reversed),
+            Err(OciEmailError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn message_engagement_rebinds_backend_reports_before_accepting_evidence() {
+        let request = engagement_request();
+        let events_request = EventsRequest {
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            action: None,
+            message_id: Some(request.message_id.clone()),
+            header_name: None,
+            header_value: None,
+            receiving_domain: None,
+            source_domain: request.source_domain.clone(),
+            limit: request.limit,
+            compartment_id: request.compartment_id.clone(),
+        };
+        let output = serde_json::json!({
+            "data": { "results": [{
+                "datetime": "2026-06-30T00:10:00Z",
+                "data": { "logContent": {
+                    "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                    "source": "sender.example",
+                    "data": {
+                        "action": "open",
+                        "messageId": "message-one",
+                        "recipient": "person@recipient.example"
+                    }
+                }}
+            }] }
+        });
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(output)),
+        );
+        let report = backend.events(&events_request).expect("exact event report");
+        assert!(message_engagement_events_are_exact(
+            &report,
+            &events_request,
+            20
+        ));
+
+        let mut mismatched_filter = report.clone();
+        mismatched_filter.filters.message_id_hash = Some("mismatch".to_string());
+        assert!(!message_engagement_events_are_exact(
+            &mismatched_filter,
+            &events_request,
+            20
+        ));
+
+        let mut contradictory_count = report.clone();
+        contradictory_count.counts.by_action[0].count += 1;
+        assert!(!message_engagement_events_are_exact(
+            &contradictory_count,
+            &events_request,
+            20
+        ));
+
+        let mut capped_evidence = report;
+        capped_evidence.evidence[0].rows_capped = true;
+        assert!(!message_engagement_events_are_exact(
+            &capped_evidence,
+            &events_request,
+            20
+        ));
+
+        let mut contradictory_findings = capped_evidence;
+        contradictory_findings.evidence[0].rows_capped = false;
+        contradictory_findings.status = "ok".to_string();
+        contradictory_findings.findings.push(finding(
+            "warning",
+            "event_results_capped",
+            "Synthetic contradictory evidence.",
+        ));
+        let exact_binding =
+            message_engagement_events_are_exact(&contradictory_findings, &events_request, 20);
+        assert!(exact_binding);
+        assert!(!message_engagement_events_are_complete(
+            &contradictory_findings,
+            exact_binding
+        ));
     }
 
     #[test]
