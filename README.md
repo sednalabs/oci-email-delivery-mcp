@@ -5,7 +5,7 @@ read-only; the only local write surface is a configured private artifact tool
 for redacted monitoring snapshots. The first operator goal is to let agents
 query OCI programmatically before production or cohort sends go live.
 
-The server exposes thirteen curated intent tools:
+The server exposes fourteen curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -13,6 +13,7 @@ The server exposes thirteen curated intent tools:
 | `oci_email_metrics` | Query fixed `oci_emaildelivery` Monitoring metrics for an explicit UTC window. |
 | `oci_email_ledger_window` | Summarize configured local send-ledger rows for a UTC window without raw recipients. |
 | `oci_email_events` | Search Email Delivery logs with whitelisted filters and redacted event summaries. |
+| `oci_email_message_engagement` | Summarize exact-Message-ID open, click, and list-unsubscribe evidence without returning raw events or authorizing a send. |
 | `oci_email_logging_status` | Check whether Email Delivery service logs are configured and visible without enabling or changing logs. |
 | `oci_email_logging_enablement_plan` | Build a read-only operator plan for enabling Email Delivery service-log visibility and post-enable proof. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
@@ -105,18 +106,20 @@ contract tests with an OCI profile configured. The live smoke must not use
   marking an OCI logging mutation as required.
 - `oci_email_events` keeps the provider query scoped to Email Delivery event
   types plus exact action/message/header/recipient-domain filters, then applies
-  `source_domain` after redacted event summaries are parsed. This avoids hiding
-  valid events if OCI varies the top-level log `source` field; a successful
-  JSON empty result with `source_domain` is still missing event evidence, not
-  proof of no sends. Blank or JSON-null Logging Search output is unavailable
+  `source_domain` after redacted event summaries are parsed. The authoritative
+  lane value is the Email Domain in the record-level `source`; message sender
+  and envelope addresses are never substitutes. A successful JSON empty result
+  with `source_domain` is still missing event evidence, not proof of no sends.
+  Blank or JSON-null Logging Search output is unavailable
   evidence and blocks the component rather than being reshaped as an empty
   result. Every returned row must contain a recognized OutboundAccepted or
   OutboundRelayed record with an object payload, non-empty action, and valid
-  UTC timestamp inside the requested half-open window. Every present outer or
-  record timestamp alias must be a string, parse as strict UTC, and represent
-  the same instant; malformed, null, conflicting, unrecognized, or
-  out-of-window rows make the event read unavailable instead of contributing
-  synthetic evidence. Forward-compatible unknown actions are summarized as
+  UTC timestamp inside the requested half-open window. String timestamp aliases
+  must parse as strict UTC; OCI's numeric outer `datetime` is accepted only as
+  non-negative integer epoch milliseconds. Every alias must represent the same
+  instant; malformed, null, conflicting, unrecognized, or out-of-window rows
+  make the event read unavailable instead of contributing synthetic evidence.
+  Forward-compatible unknown actions are summarized as
   `unknown` rather than copied from the provider payload, and make the event
   evidence partial so they cannot authorize exact traceability.
   `provider_returned` and `source_domain_matched` distinguish no provider
@@ -128,6 +131,32 @@ contract tests with an OCI profile configured. The live smoke must not use
   distinct versus duplicate redacted recipient, message, recipient/message, and
   action/recipient/message keys. Use those counts to avoid treating repeated
   log records for the same recipient/message as distinct recipient outcomes.
+- `oci_email_message_engagement` narrows the same read-only Logging Search path
+  to one exact non-blank Message-ID and bounded UTC window, then reports
+  per-signal `open`, `click`, and `list_unsubscribe` states with nullable counts.
+  A validated `source_domain` is required for any proven or not-observed lane
+  result; an unscoped request returns `unavailable` without querying the
+  provider. Conventional Message-ID values may use one enclosing `<...>` pair
+  around the conservative identifier grammar. Lane scope is bound to the
+  Email Domain in the OCI log record's authoritative `source` field, never
+  inferred from the message `sender` or envelope address. OCI's numeric outer
+  `datetime` epoch milliseconds are reconciled with the nested canonical UTC
+  `time`; malformed or conflicting aliases fail closed.
+  A complete uncapped exact read reports `proven_active` for a signal with one
+  or more events and `not_observed` only with a complete zero count. Null or
+  unavailable provider output, capped results, unknown actions, source-domain
+  mismatch, malformed identity/timestamp data, and other incomplete reads report
+  `unavailable` with no inferred zero. Overall `proven_active` additionally
+  requires all three signals to be proven active, so a subset remains
+  `not_observed`. Duplicate event summaries retain their provider count and are
+  called out without turning presence into absence. Before accepting either
+  state, the tool independently rebinds the backend report to the requested
+  Message-ID hash, UTC window, source scope, limit, uncapped evidence, complete
+  redacted event set, and recomputed counts; a contradictory report is
+  `unavailable`.
+  Transport ingress remains explicitly `unavailable`: this version does not
+  parse or attest an OCI SMTP/SubmitEmail ingress field. This tool never sends
+  mail or authorizes a send.
 - `oci_email_suppressions` fetches all pages for totals and timestamp bounds
   with a provider-friendly page size while returning only a bounded redacted
   sample in `suppressions`. Use `total_matched` and `count_state` for counts;

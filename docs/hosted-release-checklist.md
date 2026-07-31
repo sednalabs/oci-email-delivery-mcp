@@ -77,7 +77,7 @@ promotion gate after the reviewed commit is selected.
 9. Restart the MCP client process after changing the binary or environment.
 10. Verify the configured alias initializes and lists exactly:
    `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`,
-   `oci_email_events`, `oci_email_logging_status`,
+   `oci_email_events`, `oci_email_message_engagement`, `oci_email_logging_status`,
    `oci_email_logging_enablement_plan`, `oci_email_trace_message`,
    `oci_email_suppressions`, `oci_email_suppression_delta`,
    `oci_email_watch_window`,

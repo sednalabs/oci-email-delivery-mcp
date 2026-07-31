@@ -20,6 +20,21 @@ green.
   gates, but it does not authorize or apply the OCI change.
 - `oci_email_events` returns real Email Delivery log events for a seed/proof
   window before cohort expansion.
+- `oci_email_message_engagement` is the narrow exact-Message-ID read for
+  open/click/list-unsubscribe evidence. Always supply the validated sender
+  `source_domain`; an unscoped request is `unavailable` and does not query the
+  provider. One conventional enclosing angle-bracket pair is accepted around
+  an otherwise conservative Message-ID. The lane domain is read only from the
+  OCI event record's authoritative `source`; sender and envelope addresses are
+  not lane authority. Numeric outer `datetime` epoch milliseconds must agree
+  with the nested canonical UTC `time`. Require a complete uncapped exact read
+  before treating a signal as `not_observed`; positive counts are
+  `proven_active`, while provider errors, null output, capped/partial reads,
+  unknown actions, source mismatch, or malformed identity/timestamp evidence
+  are `unavailable`. Its nullable counts never turn unavailable evidence into
+  zero. Its `ingress` field remains explicitly unavailable because this
+  version does not parse or attest an OCI SMTP/SubmitEmail ingress field. It
+  never authorizes or performs a send.
 - `oci_email_suppressions` is callable and returns either a normal empty list
   or redacted suppression summaries with aggregate reason/domain totals.
 - `oci_email_suppression_delta` compares the full active suppression set with
@@ -60,6 +75,10 @@ Pause the pilot or keep it paused when any of these are true:
   cannot match the requested resource id for the sender lane;
 - log search returns no events for a send window that should have accepted or
   relayed mail;
+- `oci_email_message_engagement` returns `unavailable`, including when the
+  exact Message-ID is missing/blank, provider output is null, results are
+  capped, actions are unknown, source scope is absent, or source-domain
+  filtering removes every returned row;
 - suppression readback is blocked;
 - `oci_email_suppression_delta` reports new active hard-bounce or complaint
   suppressions, or reports no-sample/lower-bound evidence when clean suppression
@@ -238,10 +257,11 @@ ids and header/correlation values are opaque case-sensitive identities, so case-
 provider parser checks every present recipient and message-id alias: each must
 be a non-empty string and all aliases for one identity must agree. Null,
 non-string, or conflicting aliases make the event evidence unavailable. The
-same custody rule applies to every present outer/record timestamp alias: each
-must be a strict UTC string and all aliases must represent the same instant.
-Malformed, null, or conflicting timestamp residue makes event evidence
-unavailable before window proof.
+same custody rule applies to every present outer/record timestamp alias: string
+aliases must be strict UTC, while OCI's numeric outer `datetime` must be a
+non-negative integer epoch-millisecond value; all aliases must represent the
+same instant. Malformed, null, or conflicting timestamp residue makes event
+evidence unavailable before window proof.
 ledger component's `filters.message_id_hash` or `filters.correlation_id_hash`
 confirms which trace key was used for the narrowed local read. The summary field
 `single_ledger_row_overlap` is the same-row overlap gate, not a cardinality
@@ -517,8 +537,10 @@ Check:
   action text is copied into the receipt, and their presence makes event
   evidence partial so it cannot support exact traceability;
 - `source_domain` is matched after the MCP parses redacted event summaries,
-  so an empty result means no matching summarized event evidence was found; it
-  does not prove the provider emitted no events for the broader compartment.
+  using only the record-level authoritative Email Domain `source`, never the
+  message sender or envelope address. An empty result means no matching
+  summarized event evidence was found; it does not prove the provider emitted
+  no events for the broader compartment.
 - compare `provider_returned`, `source_domain_matched`, and `returned` to
   separate no provider rows from source-domain post-filter mismatch; when no
   `source_domain` is requested, `source_domain_matched` equals `returned`.

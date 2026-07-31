@@ -1,11 +1,11 @@
 use oci_email_delivery_mcp::{
     tests_support::FixtureBackend, EventCounts, EventFilters, EventsReport, EventsRequest,
     LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest,
-    LedgerWindowTotals, LoggingEnablementPlanRequest, LoggingStatusRequest, MetricsReport,
-    MetricsRequest, OciEmailBackend, OciEmailError, OciEmailStatusReport, SendReadinessRequest,
-    StatusRequest, SuppressionDeltaRequest, SuppressionTotals, SuppressionsReport,
-    SuppressionsRequest, TraceCriteria, TraceMessageReport, TraceMessageRequest,
-    TraceabilityAuditRequest, WatchWindowRequest,
+    LedgerWindowTotals, LoggingEnablementPlanRequest, LoggingStatusRequest,
+    MessageEngagementRequest, MetricsReport, MetricsRequest, OciEmailBackend, OciEmailError,
+    OciEmailStatusReport, SendReadinessRequest, StatusRequest, SuppressionDeltaRequest,
+    SuppressionTotals, SuppressionsReport, SuppressionsRequest, TraceCriteria, TraceMessageReport,
+    TraceMessageRequest, TraceabilityAuditRequest, WatchWindowRequest,
 };
 
 #[derive(serde::Deserialize)]
@@ -142,6 +142,34 @@ fn events_contract_does_not_return_raw_recipient_or_message_id() {
 
     assert!(!report.events[0].raw_payload_returned);
     assert!(!payload.contains("message@example.com"));
+    assert!(!payload.contains("person@example.net"));
+}
+
+#[test]
+fn message_engagement_contract_is_read_only_redacted_and_zero_aware() {
+    let backend = FixtureBackend;
+    let message_id = "message@example.com";
+    let report = backend
+        .message_engagement(&MessageEngagementRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            message_id: message_id.to_string(),
+            source_domain: Some("example.com".to_string()),
+            limit: Some(20),
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture engagement: {err}"));
+    let payload =
+        serde_json::to_string(&report).unwrap_or_else(|err| panic!("serialize engagement: {err}"));
+
+    assert_eq!(report.status, "not_observed");
+    assert!(!report.send_authorized);
+    assert!(!report.raw_payload_returned);
+    assert_eq!(report.open.count, Some(0));
+    assert_eq!(report.click.count, Some(0));
+    assert_eq!(report.list_unsubscribe.count, Some(0));
+    assert_eq!(report.ingress.status, "unavailable");
+    assert!(!payload.contains(message_id));
     assert!(!payload.contains("person@example.net"));
 }
 
