@@ -13,6 +13,7 @@ fn stdio_initializes_and_lists_tools() {
             "oci_email_message_engagement",
             "oci_email_metrics",
             "oci_email_monitoring_snapshot_artifact",
+            "oci_email_return_paths",
             "oci_email_send_readiness",
             "oci_email_status",
             "oci_email_suppression_delta",
@@ -37,7 +38,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list array");
-    assert_eq!(tools.len(), 14);
+    assert_eq!(tools.len(), 15);
 
     for tool in tools {
         let name = tool["name"].as_str().expect("tool name");
@@ -85,6 +86,17 @@ fn stdio_tools_list_includes_input_schemas() {
     assert!(logging_status_properties.contains_key("resource_domain"));
     assert!(logging_status_properties.contains_key("resource_id"));
     assert!(logging_status_properties.contains_key("compartment_id"));
+
+    let return_paths = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_return_paths")
+        .expect("return-path inventory tool");
+    assert!(return_paths["inputSchema"]["required"].is_null());
+    let return_path_properties = return_paths["inputSchema"]["properties"]
+        .as_object()
+        .expect("return-path properties");
+    assert!(return_path_properties.contains_key("parent_resource_id"));
+    assert!(return_path_properties.contains_key("compartment_id"));
 
     let logging_enablement_plan = tools
         .iter()

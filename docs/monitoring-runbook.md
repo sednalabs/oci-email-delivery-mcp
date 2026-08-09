@@ -15,6 +15,14 @@ green.
 - `oci_email_logging_status` sees at least one ACTIVE Email Delivery service
   log in the selected compartment, and when an Email Domain/resource OCID is
   supplied it matches at least one visible service log.
+- `oci_email_return_paths` is the read-only routing check for branded bounce
+  handling. A result with `routing_mode="active_branded_custom_return_path"`
+  proves an ACTIVE custom return path is visible only for the requested parent
+  Email Domain and a complete uncapped response. An empty or non-ACTIVE result
+  is classified as `default_oci_bounce_handling` only under that same exact
+  scope; unscoped, capped, malformed, or mismatched responses remain
+  indeterminate/unavailable. CNAME values are hashed and OCIDs are redacted,
+  so DNS changes remain an operator-owned step.
 - `oci_email_logging_enablement_plan` is the no-mutation fallback when logging
   status is blocked. It can prepare the operator checklist and post-enable
   gates, but it does not authorize or apply the OCI change.
@@ -73,6 +81,8 @@ Pause the pilot or keep it paused when any of these are true:
   log evidence does not cover the gap;
 - `oci_email_logging_status` returns no active Email Delivery service logs or
   cannot match the requested resource id for the sender lane;
+- `oci_email_return_paths` is capped, unavailable, or reports no active custom
+  path when the lane requires branded return-path routing;
 - log search returns no events for a send window that should have accepted or
   relayed mail;
 - `oci_email_message_engagement` returns `unavailable`, including when the

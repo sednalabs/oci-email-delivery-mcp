@@ -404,6 +404,36 @@
       "name": "oci_email_monitoring_snapshot_artifact"
     },
     {
+      "description": "Inventory OCI Email Delivery custom return paths and distinguish active branded routing from default OCI bounce handling without returning raw DNS targets.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "compartment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "parent_resource_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "oci_email_return_paths"
+    },
+    {
       "description": "Build one read-only OCI Email Delivery send-readiness receipt from monitoring and local send-ledger proof.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

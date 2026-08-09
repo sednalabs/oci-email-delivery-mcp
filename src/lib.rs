@@ -59,14 +59,14 @@ pub use response::{
     LoggingStatusRequest, MessageEngagementIngress, MessageEngagementReport,
     MessageEngagementRequest, MessageEngagementSignal, MetricRates, MetricResult, MetricTotals,
     MetricsFilters, MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe,
-    ReadinessFinding, RedactedIdentifier, SendReadinessComponents, SendReadinessReport,
-    SendReadinessRequest, SnapshotArtifactReport, SnapshotArtifactRequest, SnapshotArtifactSummary,
-    StatusRequest, StopThresholds, SuppressionCount, SuppressionDeltaComponents,
-    SuppressionDeltaReport, SuppressionDeltaRequest, SuppressionDeltaSummary, SuppressionSummary,
-    SuppressionTotals, SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
-    TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
-    TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
-    WatchWindowRequest,
+    ReadinessFinding, RedactedIdentifier, ReturnPathSummary, ReturnPathsReport, ReturnPathsRequest,
+    SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
+    SnapshotArtifactRequest, SnapshotArtifactSummary, StatusRequest, StopThresholds,
+    SuppressionCount, SuppressionDeltaComponents, SuppressionDeltaReport, SuppressionDeltaRequest,
+    SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals, SuppressionsReport,
+    SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport, TraceMessageRequest,
+    TraceabilityAuditComponents, TraceabilityAuditReport, TraceabilityAuditRequest,
+    TraceabilitySummary, WatchWindowComponents, WatchWindowReport, WatchWindowRequest,
 };
 
 #[derive(Clone)]
@@ -115,6 +115,11 @@ impl OciEmailMcpServer {
                     "oci_email_logging_status",
                     "Check whether OCI Email Delivery service logs are configured and visible without enabling or changing logs.",
                     ["oci", "email", "logs", "logging", "status"],
+                ),
+                read_capability(
+                    "oci_email_return_paths",
+                    "Inventory OCI Email Delivery custom return paths and distinguish active branded routing from default OCI bounce handling.",
+                    ["oci", "email", "return", "path", "dns", "routing"],
                 ),
                 read_capability(
                     "oci_email_logging_enablement_plan",
@@ -233,6 +238,16 @@ impl OciEmailMcpServer {
     }
 
     #[tool(
+        description = "Inventory OCI Email Delivery custom return paths and distinguish active branded routing from default OCI bounce handling without returning raw DNS targets."
+    )]
+    fn oci_email_return_paths(
+        &self,
+        Parameters(request): Parameters<ReturnPathsRequest>,
+    ) -> String {
+        response::tool_json(self.backend.return_paths(&request))
+    }
+
+    #[tool(
         description = "Build a read-only OCI Email Delivery service-log enablement plan without enabling or changing logs."
     )]
     fn oci_email_logging_enablement_plan(
@@ -344,6 +359,7 @@ mod tests {
                 "oci_email_message_engagement",
                 "oci_email_metrics",
                 "oci_email_monitoring_snapshot_artifact",
+                "oci_email_return_paths",
                 "oci_email_send_readiness",
                 "oci_email_status",
                 "oci_email_suppression_delta",

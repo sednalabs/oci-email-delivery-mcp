@@ -12,6 +12,8 @@ pub const DEFAULT_LEDGER_LIMIT: u32 = 100;
 pub const HARD_LEDGER_LIMIT: u32 = 1000;
 pub const DEFAULT_LOGGING_STATUS_LIMIT: u32 = 20;
 pub const HARD_LOGGING_STATUS_LIMIT: u32 = 100;
+pub const DEFAULT_RETURN_PATH_LIMIT: u32 = 20;
+pub const HARD_RETURN_PATH_LIMIT: u32 = 100;
 pub const DEFAULT_SNAPSHOT_PREFIX: &str = "oci-email-monitoring";
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -58,6 +60,13 @@ pub struct LoggingStatusRequest {
     pub compartment_id: Option<String>,
     pub resource_domain: Option<String>,
     pub resource_id: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct ReturnPathsRequest {
+    pub compartment_id: Option<String>,
+    pub parent_resource_id: Option<String>,
     pub limit: Option<u32>,
 }
 
@@ -282,6 +291,35 @@ pub struct EmailDeliveryLogSummary {
     pub source_resource: RedactedIdentifier,
     pub source_category: Option<String>,
     pub source_kind: Option<String>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ReturnPathSummary {
+    pub return_path_id: RedactedIdentifier,
+    pub parent_resource_id: RedactedIdentifier,
+    pub name: Option<String>,
+    pub lifecycle_state: Option<String>,
+    pub dns_subdomain_name: Option<String>,
+    pub cname_record_present: bool,
+    pub cname_record_hash: Option<String>,
+    pub raw_payload_returned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ReturnPathsReport {
+    pub status: String,
+    pub send_authorized: bool,
+    pub compartment: RedactedIdentifier,
+    pub requested_parent_resource_id: RedactedIdentifier,
+    pub limit: u32,
+    pub returned: usize,
+    pub rows_capped: bool,
+    pub active_custom_return_path_count: usize,
+    pub routing_mode: String,
+    pub return_paths: Vec<ReturnPathSummary>,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
     pub raw_payload_returned: bool,
 }
 
