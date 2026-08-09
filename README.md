@@ -5,7 +5,7 @@ read-only; the only local write surface is a configured private artifact tool
 for redacted monitoring snapshots. The first operator goal is to let agents
 query OCI programmatically before production or cohort sends go live.
 
-The server exposes fourteen curated intent tools:
+The server exposes fifteen curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -15,6 +15,7 @@ The server exposes fourteen curated intent tools:
 | `oci_email_events` | Search Email Delivery logs with whitelisted filters and redacted event summaries. |
 | `oci_email_message_engagement` | Summarize exact-Message-ID open, click, and list-unsubscribe evidence without returning raw events or authorizing a send. |
 | `oci_email_logging_status` | Check whether Email Delivery service logs are configured and visible without enabling or changing logs. |
+| `oci_email_return_paths` | Inventory custom return paths, reporting whether an active branded path is present or OCI default bounce handling applies, without returning raw DNS targets. |
 | `oci_email_logging_enablement_plan` | Build a read-only operator plan for enabling Email Delivery service-log visibility and post-enable proof. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
 | `oci_email_suppressions` | Summarize OCI suppressions with reason/domain totals and no raw recipient addresses. |
