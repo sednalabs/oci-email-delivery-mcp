@@ -73,6 +73,12 @@ contract tests with an OCI profile configured. The live smoke must not use
 ## Safety Notes
 
 - Raw OCI JSON is not returned by tools.
+- `oci_email_return_paths` classifies routing only when a specific
+  `parent_resource_id` is supplied and the complete inventory is not capped.
+  Unscoped, capped, mismatched-parent, null, missing, and non-array provider
+  responses remain indeterminate or unavailable; they never prove default OCI
+  bounce handling. CNAME values are represented by presence plus an opaque
+  hash, not by the DNS target itself.
 - Recipient addresses are reduced to domain plus a short stable hash.
 - Suppression reports include aggregate `totals` by reason and recipient
   domain, `total_matched`, count confidence, timestamp bounds, plus a
