@@ -832,9 +832,10 @@ impl OciEmailBackend for LiveOciEmailBackend {
                     string_field_any(item, &["cname-record-value", "cnameRecordValue"]);
                 ReturnPathSummary {
                     return_path_id: RedactedIdentifier::from_optional(string_field(item, "id")),
-                    parent_resource_id: RedactedIdentifier::from_optional(
-                        exact_string_field(item, &["parent-resource-id", "parentResourceId"]),
-                    ),
+                    parent_resource_id: RedactedIdentifier::from_optional(exact_string_field(
+                        item,
+                        &["parent-resource-id", "parentResourceId"],
+                    )),
                     name: string_field_any(item, &["name", "return-path", "returnPath"])
                         .and_then(safe_dns_name)
                         .map(ToString::to_string),
