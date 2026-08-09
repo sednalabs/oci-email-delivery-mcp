@@ -797,62 +797,32 @@ impl OciEmailBackend for LiveOciEmailBackend {
         let items = match return_path_items(&value) {
             Ok(items) => items,
             Err(()) => {
-                return Ok(ReturnPathsReport {
-                    status: "unavailable".to_string(),
-                    send_authorized: false,
-                    compartment: RedactedIdentifier::from_optional(Some(&compartment_id)),
-                    requested_parent_resource_id: RedactedIdentifier::from_optional(
-                        request.parent_resource_id.as_deref(),
-                    ),
+                return Ok(unavailable_return_paths_report(
+                    &compartment_id,
+                    request,
                     limit,
-                    returned: 0,
-                    rows_capped: false,
-                    active_custom_return_path_count: 0,
-                    routing_mode: "indeterminate_unavailable".to_string(),
-                    return_paths: Vec::new(),
-                    findings: vec![finding(
-                        "blocker",
-                        "return_path_inventory_unavailable",
-                        "OCI did not return a usable custom return-path list; routing mode is indeterminate.",
-                    )],
-                    evidence: vec![Evidence::new(
-                        "oci_cli",
-                        "email email-return-path list",
-                        false,
-                    )],
-                    raw_payload_returned: false,
-                })
+                    "return_path_inventory_unavailable",
+                    "OCI did not return a usable custom return-path list; routing mode is indeterminate.",
+                ));
             }
         };
         let rows_capped = rows_may_be_capped(items.len(), limit);
         let return_paths = items
             .iter()
-            .map(|item| {
-                let cname_record =
-                    string_field_any(item, &["cname-record-value", "cnameRecordValue"]);
-                ReturnPathSummary {
-                    return_path_id: RedactedIdentifier::from_optional(string_field(item, "id")),
-                    parent_resource_id: RedactedIdentifier::from_optional(exact_string_field(
-                        item,
-                        &["parent-resource-id", "parentResourceId"],
-                    )),
-                    name: string_field_any(item, &["name", "return-path", "returnPath"])
-                        .and_then(safe_dns_name)
-                        .map(ToString::to_string),
-                    lifecycle_state: string_field_any(item, &["lifecycle-state", "lifecycleState"])
-                        .map(ToString::to_string),
-                    dns_subdomain_name: string_field_any(
-                        item,
-                        &["dns-subdomain-name", "dnsSubdomainName"],
-                    )
-                    .and_then(safe_dns_name)
-                    .map(ToString::to_string),
-                    cname_record_present: cname_record.is_some(),
-                    cname_record_hash: cname_record.map(opaque_hash),
-                    raw_payload_returned: false,
-                }
-            })
-            .collect::<Vec<_>>();
+            .map(|item| parse_return_path_summary(item).map_err(|()| item))
+            .collect::<Result<Vec<_>, _>>();
+        let return_paths = match return_paths {
+            Ok(return_paths) => return_paths,
+            Err(_invalid_item) => {
+                return Ok(unavailable_return_paths_report(
+                    &compartment_id,
+                    request,
+                    limit,
+                    "return_path_row_invalid",
+                    "OCI returned a custom return-path row with missing, malformed, or unsupported routing fields; routing mode is indeterminate.",
+                ));
+            }
+        };
         let active_custom_return_path_count = return_paths
             .iter()
             .filter(|item| {
@@ -1303,6 +1273,77 @@ fn return_path_items(value: &Value) -> Result<Vec<&Value>, ()> {
             _ => Err(()),
         },
         _ => Err(()),
+    }
+}
+
+fn parse_return_path_summary(value: &Value) -> Result<ReturnPathSummary, ()> {
+    let return_path_id = exact_string_field(value, &["id"])
+        .filter(|value| !value.is_empty())
+        .ok_or(())?;
+    let parent_resource_id = exact_string_field(value, &["parent-resource-id", "parentResourceId"])
+        .filter(|value| !value.is_empty())
+        .ok_or(())?;
+    let name = exact_string_field(value, &["name", "return-path", "returnPath"])
+        .and_then(safe_dns_name)
+        .ok_or(())?;
+    let lifecycle_state = exact_string_field(value, &["lifecycle-state", "lifecycleState"])
+        .filter(|value| {
+            matches!(
+                value.to_ascii_uppercase().as_str(),
+                "ACTIVE"
+                    | "CREATING"
+                    | "DELETED"
+                    | "DELETING"
+                    | "FAILED"
+                    | "NEEDS_ATTENTION"
+                    | "UPDATING"
+                    | "UNKNOWN_ENUM_VALUE"
+            )
+        })
+        .ok_or(())?;
+    let cname_record = exact_string_field(value, &["cname-record-value", "cnameRecordValue"]);
+    let dns_subdomain_name = exact_string_field(value, &["dns-subdomain-name", "dnsSubdomainName"])
+        .and_then(safe_dns_name)
+        .map(ToString::to_string);
+    Ok(ReturnPathSummary {
+        return_path_id: RedactedIdentifier::from_optional(Some(return_path_id)),
+        parent_resource_id: RedactedIdentifier::from_optional(Some(parent_resource_id)),
+        name: Some(name.to_string()),
+        lifecycle_state: Some(lifecycle_state.to_string()),
+        dns_subdomain_name,
+        cname_record_present: cname_record.is_some(),
+        cname_record_hash: cname_record.map(opaque_hash),
+        raw_payload_returned: false,
+    })
+}
+
+fn unavailable_return_paths_report(
+    compartment_id: &str,
+    request: &ReturnPathsRequest,
+    limit: u32,
+    finding_code: &str,
+    finding_message: &str,
+) -> ReturnPathsReport {
+    ReturnPathsReport {
+        status: "unavailable".to_string(),
+        send_authorized: false,
+        compartment: RedactedIdentifier::from_optional(Some(compartment_id)),
+        requested_parent_resource_id: RedactedIdentifier::from_optional(
+            request.parent_resource_id.as_deref(),
+        ),
+        limit,
+        returned: 0,
+        rows_capped: false,
+        active_custom_return_path_count: 0,
+        routing_mode: "indeterminate_unavailable".to_string(),
+        return_paths: Vec::new(),
+        findings: vec![finding("blocker", finding_code, finding_message)],
+        evidence: vec![Evidence::new(
+            "oci_cli",
+            "email email-return-path list",
+            false,
+        )],
+        raw_payload_returned: false,
     }
 }
 
@@ -6128,6 +6169,101 @@ mod tests {
                 .findings
                 .iter()
                 .any(|finding| finding.code == "return_path_inventory_unavailable"));
+        }
+    }
+
+    #[test]
+    fn return_paths_rejects_missing_null_or_non_string_lifecycle_state() {
+        for lifecycle_state in [Value::Null, serde_json::json!(42)] {
+            let backend = LiveOciEmailBackend::with_runner(
+                test_config(),
+                Arc::new(FixtureReturnPathRunner {
+                    items: serde_json::json!({
+                        "data": [{
+                            "id": "ocid1.emailreturnpath.oc1.secret",
+                            "parent-resource-id": "ocid1.emaildomain.oc1.example",
+                            "name": "rp.example.com",
+                            "lifecycle-state": lifecycle_state
+                        }]
+                    }),
+                }),
+            );
+            let report = backend
+                .return_paths(&ReturnPathsRequest {
+                    compartment_id: None,
+                    parent_resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
+                    limit: Some(10),
+                })
+                .unwrap_or_else(|err| panic!("return paths: {err}"));
+            assert_eq!(report.status, "unavailable");
+            assert_eq!(report.routing_mode, "indeterminate_unavailable");
+            assert!(report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "return_path_row_invalid"));
+        }
+
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureReturnPathRunner {
+                items: serde_json::json!({
+                    "data": [{
+                        "id": "ocid1.emailreturnpath.oc1.secret",
+                        "parent-resource-id": "ocid1.emaildomain.oc1.example",
+                        "name": "rp.example.com"
+                    }]
+                }),
+            }),
+        );
+        let report = backend
+            .return_paths(&ReturnPathsRequest {
+                compartment_id: None,
+                parent_resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
+                limit: Some(10),
+            })
+            .unwrap_or_else(|err| panic!("return paths: {err}"));
+        assert_eq!(report.status, "unavailable");
+        assert_eq!(report.routing_mode, "indeterminate_unavailable");
+    }
+
+    #[test]
+    fn return_paths_rejects_rows_missing_required_identity_or_scope_fields() {
+        for row in [
+            serde_json::json!({
+                "parent-resource-id": "ocid1.emaildomain.oc1.example",
+                "name": "rp.example.com",
+                "lifecycle-state": "ACTIVE"
+            }),
+            serde_json::json!({
+                "id": "ocid1.emailreturnpath.oc1.secret",
+                "name": "rp.example.com",
+                "lifecycle-state": "ACTIVE"
+            }),
+            serde_json::json!({
+                "id": "ocid1.emailreturnpath.oc1.secret",
+                "parent-resource-id": "ocid1.emaildomain.oc1.example",
+                "lifecycle-state": "ACTIVE"
+            }),
+        ] {
+            let backend = LiveOciEmailBackend::with_runner(
+                test_config(),
+                Arc::new(FixtureReturnPathRunner {
+                    items: serde_json::json!({"data": [row]}),
+                }),
+            );
+            let report = backend
+                .return_paths(&ReturnPathsRequest {
+                    compartment_id: None,
+                    parent_resource_id: Some("ocid1.emaildomain.oc1.example".to_string()),
+                    limit: Some(10),
+                })
+                .unwrap_or_else(|err| panic!("return paths: {err}"));
+            assert_eq!(report.status, "unavailable");
+            assert_eq!(report.routing_mode, "indeterminate_unavailable");
+            assert!(report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "return_path_row_invalid"));
         }
     }
 
