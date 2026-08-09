@@ -13,17 +13,16 @@ use crate::{
         MessageEngagementSignal, MetricRates, MetricResult, MetricTotals, MetricsFilters,
         MetricsReport, MetricsRequest, OciEmailStatusReport, QueryProbe, ReadinessFinding,
         RedactedIdentifier, ReturnPathSummary, ReturnPathsReport, ReturnPathsRequest,
-        SendReadinessComponents, SendReadinessReport, SendReadinessRequest,
-        SnapshotArtifactReport, SnapshotArtifactRequest, StatusRequest, StopThresholds,
-        SuppressionCount, SuppressionDeltaComponents, SuppressionDeltaReport,
-        SuppressionDeltaRequest, SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals,
-        SuppressionsReport, SuppressionsRequest, ToolCallOutcome, TraceCriteria,
-        TraceMessageReport, TraceMessageRequest, TraceabilityAuditComponents,
-        TraceabilityAuditReport, TraceabilityAuditRequest, TraceabilitySummary,
-        WatchWindowComponents, WatchWindowReport, WatchWindowRequest, DEFAULT_EVENT_LIMIT,
-        DEFAULT_LOGGING_STATUS_LIMIT, DEFAULT_RETURN_PATH_LIMIT, DEFAULT_SUPPRESSION_LIMIT,
-        HARD_EVENT_LIMIT, HARD_LOGGING_STATUS_LIMIT, HARD_RETURN_PATH_LIMIT,
-        HARD_SUPPRESSION_LIMIT,
+        SendReadinessComponents, SendReadinessReport, SendReadinessRequest, SnapshotArtifactReport,
+        SnapshotArtifactRequest, StatusRequest, StopThresholds, SuppressionCount,
+        SuppressionDeltaComponents, SuppressionDeltaReport, SuppressionDeltaRequest,
+        SuppressionDeltaSummary, SuppressionSummary, SuppressionTotals, SuppressionsReport,
+        SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
+        TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
+        TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
+        WatchWindowRequest, DEFAULT_EVENT_LIMIT, DEFAULT_LOGGING_STATUS_LIMIT,
+        DEFAULT_RETURN_PATH_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT,
+        HARD_LOGGING_STATUS_LIMIT, HARD_RETURN_PATH_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
 use serde_json::Value;
@@ -800,23 +799,19 @@ impl OciEmailBackend for LiveOciEmailBackend {
         let return_paths = items
             .iter()
             .map(|item| {
-                let cname_record = string_field_any(
-                    item,
-                    &["cname-record-value", "cnameRecordValue"],
-                );
+                let cname_record =
+                    string_field_any(item, &["cname-record-value", "cnameRecordValue"]);
                 ReturnPathSummary {
                     return_path_id: RedactedIdentifier::from_optional(string_field(item, "id")),
-                    parent_resource_id: RedactedIdentifier::from_optional(
-                        string_field_any(item, &["parent-resource-id", "parentResourceId"]),
-                    ),
+                    parent_resource_id: RedactedIdentifier::from_optional(string_field_any(
+                        item,
+                        &["parent-resource-id", "parentResourceId"],
+                    )),
                     name: string_field_any(item, &["name", "return-path", "returnPath"])
                         .and_then(safe_dns_name)
                         .map(ToString::to_string),
-                    lifecycle_state: string_field_any(
-                        item,
-                        &["lifecycle-state", "lifecycleState"],
-                    )
-                    .map(ToString::to_string),
+                    lifecycle_state: string_field_any(item, &["lifecycle-state", "lifecycleState"])
+                        .map(ToString::to_string),
                     dns_subdomain_name: string_field_any(
                         item,
                         &["dns-subdomain-name", "dnsSubdomainName"],
@@ -1255,7 +1250,9 @@ fn safe_dns_name(value: &str) -> Option<&str> {
     (!value.is_empty()
         && value.len() <= 253
         && !value.to_ascii_lowercase().contains("ocid1.")
-        && value.chars().all(|ch| !ch.is_control() && !ch.is_whitespace()))
+        && value
+            .chars()
+            .all(|ch| !ch.is_control() && !ch.is_whitespace()))
     .then_some(value)
 }
 
@@ -5936,7 +5933,11 @@ mod tests {
         fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
             assert_eq!(command_label(args), "email email-return-path list");
             assert!(args.windows(2).any(|window| {
-                window == ["--parent-resource-id".to_string(), "ocid1.emaildomain.oc1.example".to_string()]
+                window
+                    == [
+                        "--parent-resource-id".to_string(),
+                        "ocid1.emaildomain.oc1.example".to_string(),
+                    ]
             }));
             Ok(self.items.clone())
         }
@@ -5969,7 +5970,10 @@ mod tests {
         let payload = serde_json::to_string(&report).expect("serialize return paths");
         assert_eq!(report.routing_mode, "active_branded_custom_return_path");
         assert_eq!(report.active_custom_return_path_count, 1);
-        assert_eq!(report.return_paths[0].name.as_deref(), Some("rp.example.com"));
+        assert_eq!(
+            report.return_paths[0].name.as_deref(),
+            Some("rp.example.com")
+        );
         assert!(report.return_paths[0].cname_record_present);
         assert_ne!(
             report.return_paths[0].cname_record_hash.as_deref(),
