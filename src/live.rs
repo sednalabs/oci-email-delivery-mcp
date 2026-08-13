@@ -5740,6 +5740,154 @@ mod tests {
     }
 
     #[test]
+    fn bulk_trace_maps_provider_and_malformed_evidence_failures_to_all_input_unavailable() {
+        let malformed_outputs = [
+            serde_json::json!({}),
+            serde_json::json!({ "data": { "results": [{}] } }),
+            serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T01:00:00Z",
+                        "data": { "logContent": {
+                            "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                            "source": "sender.example",
+                            "time": "2026-06-30T01:00:00Z",
+                            "data": {
+                                "action": "accept",
+                                "messageId": "message-one"
+                            }
+                        }}
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": { "logContent": {
+                            "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                            "source": "sender.example",
+                            "time": "2026-06-30T00:10:00Z",
+                            "data": { "action": "accept" }
+                        }}
+                    }]
+                }
+            }),
+        ];
+        for output in malformed_outputs {
+            let backend = LiveOciEmailBackend::with_runner(
+                test_config(),
+                Arc::new(FixtureEventOutputRunner(output)),
+            );
+            let report = backend
+                .bulk_trace_messages(&BulkTraceMessagesRequest {
+                    start_time: "2026-06-30T00:00:00Z".to_string(),
+                    end_time: "2026-06-30T01:00:00Z".to_string(),
+                    message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                    source_domain: Some("sender.example".to_string()),
+                    limit: None,
+                    compartment_id: None,
+                })
+                .expect("structured unavailable report");
+
+            assert_eq!(report.status, "logging_unavailable");
+            assert_eq!(report.totals.logging_unavailable, 2);
+            assert!(report
+                .messages
+                .iter()
+                .all(|message| message.event_count.is_none()));
+        }
+
+        let backend = LiveOciEmailBackend::with_runner(test_config(), Arc::new(FixtureErrorRunner));
+        let report = backend
+            .bulk_trace_messages(&BulkTraceMessagesRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                source_domain: Some("sender.example".to_string()),
+                limit: None,
+                compartment_id: None,
+            })
+            .expect("runner failure becomes structured unavailable report");
+        let payload = serde_json::to_string(&report).expect("serialize unavailable report");
+
+        assert_eq!(report.status, "logging_unavailable");
+        assert_eq!(report.totals.logging_unavailable, 2);
+        assert!(!payload.contains("provider-private-error"));
+    }
+
+    #[test]
+    fn bulk_trace_keeps_clean_source_mismatch_unavailable_and_unknown_actions_redacted() {
+        let mismatch_backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": { "logContent": {
+                            "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                            "source": "other.example",
+                            "time": "2026-06-30T00:10:00Z",
+                            "data": {
+                                "action": "accept",
+                                "messageId": "message-one"
+                            }
+                        }}
+                    }]
+                }
+            }))),
+        );
+        let request = BulkTraceMessagesRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+            source_domain: Some("sender.example".to_string()),
+            limit: None,
+            compartment_id: None,
+        };
+        let mismatch = mismatch_backend
+            .bulk_trace_messages(&request)
+            .expect("source mismatch report");
+
+        assert_eq!(mismatch.status, "logging_unavailable");
+        assert_eq!(mismatch.totals.logging_unavailable, 2);
+        assert_eq!(mismatch.totals.no_match, 0);
+
+        let unknown_backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": { "logContent": {
+                            "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                            "source": "sender.example",
+                            "time": "2026-06-30T00:10:00Z",
+                            "data": {
+                                "action": "private-future-action",
+                                "messageId": "message-one"
+                            }
+                        }}
+                    }]
+                }
+            }))),
+        );
+        let unknown = unknown_backend
+            .bulk_trace_messages(&request)
+            .expect("unknown action report");
+        let payload = serde_json::to_string(&unknown).expect("serialize unknown action report");
+
+        assert_eq!(unknown.messages[0].status, "matched");
+        assert_eq!(unknown.messages[0].by_action[0].key, "unknown");
+        assert_eq!(unknown.messages[1].status, "no_match");
+        assert!(unknown
+            .findings
+            .iter()
+            .any(|finding| finding.code == "bulk_trace_unknown_event_action"));
+        assert!(!payload.contains("private-future-action"));
+    }
+
+    #[test]
     fn bulk_trace_capped_results_do_not_turn_unobserved_ids_into_no_match() {
         let output = serde_json::json!({
             "data": {
@@ -5827,6 +5975,7 @@ mod tests {
         for message_ids in [
             Vec::new(),
             vec!["message-one".to_string(), "message-one".to_string()],
+            vec!["message-one' | count".to_string()],
             (0..=HARD_BULK_TRACE_MESSAGE_IDS)
                 .map(|index| format!("message-{index}"))
                 .collect::<Vec<_>>(),
@@ -7403,6 +7552,14 @@ mod tests {
                 return Ok(self.0.clone());
             }
             panic!("unexpected OCI command: {label}")
+        }
+    }
+
+    struct FixtureErrorRunner;
+
+    impl OciCliRunner for FixtureErrorRunner {
+        fn run_json(&self, _args: &[String]) -> Result<Value, OciEmailError> {
+            Err(OciEmailError::Config("provider-private-error".to_string()))
         }
     }
 
