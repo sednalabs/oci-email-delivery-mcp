@@ -6,6 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_EVENT_LIMIT: u32 = 20;
 pub const HARD_EVENT_LIMIT: u32 = 100;
+pub const DEFAULT_BULK_TRACE_EVENT_LIMIT: u32 = 1000;
+pub const HARD_BULK_TRACE_EVENT_LIMIT: u32 = 1000;
+pub const HARD_BULK_TRACE_MESSAGE_IDS: usize = 100;
 pub const DEFAULT_SUPPRESSION_LIMIT: u32 = 20;
 pub const HARD_SUPPRESSION_LIMIT: u32 = 100;
 pub const DEFAULT_LEDGER_LIMIT: u32 = 100;
@@ -86,6 +89,18 @@ pub struct TraceMessageRequest {
     pub header_name: Option<String>,
     pub header_value: Option<String>,
     pub source_domain: Option<String>,
+    pub limit: Option<u32>,
+    pub compartment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct BulkTraceMessagesRequest {
+    pub start_time: String,
+    pub end_time: String,
+    #[schemars(length(min = 1, max = 100))]
+    pub message_ids: Vec<String>,
+    pub source_domain: Option<String>,
+    #[schemars(range(min = 1, max = 1000))]
     pub limit: Option<u32>,
     pub compartment_id: Option<String>,
 }
@@ -540,6 +555,42 @@ pub struct TraceMessageReport {
     pub status: String,
     pub criteria: TraceCriteria,
     pub events: EventsReport,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct BulkTraceMessageSummary {
+    pub message_id_hash: String,
+    pub status: String,
+    pub event_count: Option<usize>,
+    pub by_action: Vec<EventCount>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct BulkTraceMessagesTotals {
+    pub requested: usize,
+    pub matched: usize,
+    pub no_match: usize,
+    pub capped: usize,
+    pub logging_unavailable: usize,
+    pub provider_returned: Option<usize>,
+    pub source_domain_matched: Option<usize>,
+    pub by_action: Vec<EventCount>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct BulkTraceMessagesReport {
+    pub status: String,
+    pub send_authorized: bool,
+    pub start_time: String,
+    pub end_time: String,
+    pub source_domain: Option<String>,
+    pub limit: u32,
+    pub rows_capped: bool,
+    pub totals: BulkTraceMessagesTotals,
+    pub messages: Vec<BulkTraceMessageSummary>,
+    pub findings: Vec<ReadinessFinding>,
+    pub evidence: Vec<Evidence>,
+    pub raw_payload_returned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

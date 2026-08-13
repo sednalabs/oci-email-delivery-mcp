@@ -5,7 +5,7 @@ read-only; the only local write surface is a configured private artifact tool
 for redacted monitoring snapshots. The first operator goal is to let agents
 query OCI programmatically before production or cohort sends go live.
 
-The server exposes fifteen curated intent tools:
+The server exposes sixteen curated intent tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -18,6 +18,7 @@ The server exposes fifteen curated intent tools:
 | `oci_email_return_paths` | Inventory custom return paths, reporting whether an active branded path is present or OCI default bounce handling applies, without returning raw DNS targets. |
 | `oci_email_logging_enablement_plan` | Build a read-only operator plan for enabling Email Delivery service-log visibility and post-enable proof. |
 | `oci_email_trace_message` | Trace one message id or correlation header through Email Delivery logs, optionally scoped by source domain. |
+| `oci_email_bulk_trace_messages` | Reconcile up to 100 exact message ids with one bounded Logging Search request, returning hashes and compact per-id states only. |
 | `oci_email_suppressions` | Summarize OCI suppressions with reason/domain totals and no raw recipient addresses. |
 | `oci_email_suppression_delta` | Compare full active suppressions with a bounded window and classify clean, incomplete, or blocked evidence. |
 | `oci_email_watch_window` | Build one read-only monitoring receipt from status, logging configuration, metrics, logs, optional trace, and suppressions. |
@@ -139,6 +140,23 @@ contract tests with an OCI profile configured. The live smoke must not use
   distinct versus duplicate redacted recipient, message, recipient/message, and
   action/recipient/message keys. Use those counts to avoid treating repeated
   log records for the same recipient/message as distinct recipient outcomes.
+- `oci_email_bulk_trace_messages` accepts one to 100 unique exact Message-ID
+  values and performs one OCI Logging Search OR-query for the bounded UTC
+  window. It returns the inputs in request order as case-preserving opaque
+  hashes with `matched`, `no_match`, `capped`, or `logging_unavailable` state,
+  nullable event counts, and compact action totals. The provider row limit
+  defaults to and is capped at 1,000. When that limit is reached, observed
+  identities remain `matched`, but every unobserved identity is `capped`
+  rather than falsely reported absent. `no_match` is emitted only when the
+  same complete query returned at least one in-scope provider event; a wholly
+  empty or source-mismatched read cannot prove logging availability. Null,
+  empty, malformed, permission-denied, or otherwise unusable Logging Search evidence returns
+  `logging_unavailable` for every input without exposing raw provider errors.
+  The tool never returns recipients, raw Message-IDs, headers, events, OCIDs,
+  or provider payloads, and `send_authorized` is always false. The bounded
+  request and response deliberately remain stateless: batches larger than 100
+  use deterministic client-side chunks, so a toolkit scratchpad would add
+  expiry/replay/privacy state without reducing provider calls or response size.
 - `oci_email_message_engagement` narrows the same read-only Logging Search path
   to one exact non-blank Message-ID and bounded UTC window, then reports
   per-signal `open`, `click`, and `list_unsubscribe` states with nullable counts.

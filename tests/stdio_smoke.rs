@@ -6,6 +6,7 @@ fn stdio_initializes_and_lists_tools() {
     assert_stdio_tools_list(
         env!("CARGO_BIN_EXE_oci-email-delivery-mcp"),
         &[
+            "oci_email_bulk_trace_messages",
             "oci_email_events",
             "oci_email_ledger_window",
             "oci_email_logging_enablement_plan",
@@ -38,7 +39,7 @@ fn stdio_tools_list_includes_input_schemas() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list array");
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), 16);
 
     for tool in tools {
         let name = tool["name"].as_str().expect("tool name");
@@ -74,6 +75,21 @@ fn stdio_tools_list_includes_input_schemas() {
         .as_object()
         .expect("engagement properties")
         .contains_key("source_domain"));
+
+    let bulk_trace = tools
+        .iter()
+        .find(|tool| tool["name"] == "oci_email_bulk_trace_messages")
+        .expect("bulk trace tool");
+    assert_eq!(
+        bulk_trace["inputSchema"]["required"],
+        json!(["start_time", "end_time", "message_ids"])
+    );
+    let bulk_trace_properties = bulk_trace["inputSchema"]["properties"]
+        .as_object()
+        .expect("bulk trace properties");
+    assert!(bulk_trace_properties.contains_key("source_domain"));
+    assert!(bulk_trace_properties.contains_key("limit"));
+    assert!(bulk_trace_properties.contains_key("compartment_id"));
 
     let logging_status = tools
         .iter()

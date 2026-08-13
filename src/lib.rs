@@ -52,8 +52,9 @@ use mcp_toolkit_core::{
     tool_inventory::{ToolCapability, ToolDiscoveryMetadata, ToolInventory, ToolInventoryError},
 };
 pub use response::{
-    EmailDeliveryLogSummary, EmailEventSummary, EventCount, EventCounts, EventFilters,
-    EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowFilters,
+    BulkTraceMessageSummary, BulkTraceMessagesReport, BulkTraceMessagesRequest,
+    BulkTraceMessagesTotals, EmailDeliveryLogSummary, EmailEventSummary, EventCount, EventCounts,
+    EventFilters, EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowFilters,
     LedgerWindowReport, LedgerWindowRequest, LedgerWindowTotals, LogGroupSummary,
     LoggingEnablementPlanReport, LoggingEnablementPlanRequest, LoggingStatusReport,
     LoggingStatusRequest, MessageEngagementIngress, MessageEngagementReport,
@@ -130,6 +131,11 @@ impl OciEmailMcpServer {
                     "oci_email_trace_message",
                     "Trace one message id or correlation header through OCI Email Delivery logs.",
                     ["oci", "email", "trace", "message"],
+                ),
+                read_capability(
+                    "oci_email_bulk_trace_messages",
+                    "Trace a bounded set of exact message ids through one OCI Email Delivery log search and return compact redacted reconciliation evidence.",
+                    ["oci", "email", "trace", "message", "bulk", "reconciliation"],
                 ),
                 read_capability(
                     "oci_email_suppression_delta",
@@ -267,6 +273,16 @@ impl OciEmailMcpServer {
         response::tool_json(self.backend.trace_message(&request))
     }
 
+    #[tool(
+        description = "Trace up to 100 exact message ids through one OCI Email Delivery log search and return per-id hashes plus compact matched, no-match, capped, or logging-unavailable evidence."
+    )]
+    fn oci_email_bulk_trace_messages(
+        &self,
+        Parameters(request): Parameters<BulkTraceMessagesRequest>,
+    ) -> String {
+        response::tool_json(self.backend.bulk_trace_messages(&request))
+    }
+
     #[tool(description = "Summarize OCI Email Delivery suppressions without raw recipients.")]
     fn oci_email_suppressions(
         &self,
@@ -352,6 +368,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "oci_email_bulk_trace_messages",
                 "oci_email_events",
                 "oci_email_ledger_window",
                 "oci_email_logging_enablement_plan",

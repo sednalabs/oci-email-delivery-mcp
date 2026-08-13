@@ -5,9 +5,10 @@ use crate::{
         email_domain, is_host_token, opaque_hash, redact_email, redact_sensitive_text, short_hash,
     },
     response::{
-        EmailDeliveryLogSummary, EmailEventSummary, EventCount, EventCounts, EventFilters,
-        EventsReport, EventsRequest, Evidence, LedgerRowSummary, LedgerWindowReport,
-        LedgerWindowRequest, LogGroupSummary, LoggingEnablementPlanReport,
+        BulkTraceMessageSummary, BulkTraceMessagesReport, BulkTraceMessagesRequest,
+        BulkTraceMessagesTotals, EmailDeliveryLogSummary, EmailEventSummary, EventCount,
+        EventCounts, EventFilters, EventsReport, EventsRequest, Evidence, LedgerRowSummary,
+        LedgerWindowReport, LedgerWindowRequest, LogGroupSummary, LoggingEnablementPlanReport,
         LoggingEnablementPlanRequest, LoggingStatusReport, LoggingStatusRequest,
         MessageEngagementIngress, MessageEngagementReport, MessageEngagementRequest,
         MessageEngagementSignal, MetricRates, MetricResult, MetricTotals, MetricsFilters,
@@ -20,8 +21,9 @@ use crate::{
         SuppressionsRequest, ToolCallOutcome, TraceCriteria, TraceMessageReport,
         TraceMessageRequest, TraceabilityAuditComponents, TraceabilityAuditReport,
         TraceabilityAuditRequest, TraceabilitySummary, WatchWindowComponents, WatchWindowReport,
-        WatchWindowRequest, DEFAULT_EVENT_LIMIT, DEFAULT_LOGGING_STATUS_LIMIT,
-        DEFAULT_RETURN_PATH_LIMIT, DEFAULT_SUPPRESSION_LIMIT, HARD_EVENT_LIMIT,
+        WatchWindowRequest, DEFAULT_BULK_TRACE_EVENT_LIMIT, DEFAULT_EVENT_LIMIT,
+        DEFAULT_LOGGING_STATUS_LIMIT, DEFAULT_RETURN_PATH_LIMIT, DEFAULT_SUPPRESSION_LIMIT,
+        HARD_BULK_TRACE_EVENT_LIMIT, HARD_BULK_TRACE_MESSAGE_IDS, HARD_EVENT_LIMIT,
         HARD_LOGGING_STATUS_LIMIT, HARD_RETURN_PATH_LIMIT, HARD_SUPPRESSION_LIMIT,
     },
 };
@@ -36,6 +38,7 @@ const NAMESPACE: &str = "oci_emaildelivery";
 const SUPPRESSION_DOMAIN_BUCKET_LIMIT: usize = 50;
 const SUPPRESSION_FETCH_PAGE_SIZE: u32 = 1000;
 const SMTP_STATUS_MAX_CHARS: usize = 240;
+const BULK_TRACE_QUERY_MAX_BYTES: usize = 32 * 1024;
 
 const STANDARD_METRICS: &[(&str, &str)] = &[
     ("accepted", "EmailsAccepted"),
@@ -90,6 +93,18 @@ pub trait OciEmailBackend: Send + Sync {
         &self,
         request: &TraceMessageRequest,
     ) -> Result<TraceMessageReport, OciEmailError>;
+    fn bulk_trace_messages(
+        &self,
+        request: &BulkTraceMessagesRequest,
+    ) -> Result<BulkTraceMessagesReport, OciEmailError> {
+        validate_bulk_trace_request(request)?;
+        Ok(unavailable_bulk_trace_messages(
+            request,
+            bulk_trace_limit(request),
+            "bulk_trace_backend_unavailable",
+            "Bulk exact-message trace is not available for this backend.",
+        ))
+    }
     fn suppressions(
         &self,
         request: &SuppressionsRequest,
@@ -956,6 +971,24 @@ impl OciEmailBackend for LiveOciEmailBackend {
         })
     }
 
+    fn bulk_trace_messages(
+        &self,
+        request: &BulkTraceMessagesRequest,
+    ) -> Result<BulkTraceMessagesReport, OciEmailError> {
+        validate_bulk_trace_request(request)?;
+        let limit = bulk_trace_limit(request);
+        match self.bulk_trace_messages_inner(request, limit) {
+            Ok(report) => Ok(report),
+            Err(error) if matches!(&error, OciEmailError::InvalidInput(_)) => Err(error),
+            Err(_) => Ok(unavailable_bulk_trace_messages(
+                request,
+                limit,
+                "bulk_trace_logging_unavailable",
+                "OCI Logging Search did not provide usable bulk exact-message evidence.",
+            )),
+        }
+    }
+
     fn suppressions(
         &self,
         request: &SuppressionsRequest,
@@ -1175,6 +1208,192 @@ impl LiveOciEmailBackend {
                 "logging-search search-logs",
                 rows_capped,
             )],
+        })
+    }
+
+    fn bulk_trace_messages_inner(
+        &self,
+        request: &BulkTraceMessagesRequest,
+        limit: u32,
+    ) -> Result<BulkTraceMessagesReport, OciEmailError> {
+        let compartment_id = self.compartment_id(request.compartment_id.as_deref())?;
+        let search_query = build_bulk_trace_search_query(&compartment_id, request)?;
+        let args = vec![
+            "logging-search".to_string(),
+            "search-logs".to_string(),
+            "--time-start".to_string(),
+            request.start_time.clone(),
+            "--time-end".to_string(),
+            request.end_time.clone(),
+            "--search-query".to_string(),
+            search_query,
+            "--limit".to_string(),
+            limit.to_string(),
+        ];
+        let value = self.runner.run_optional_json(&args)?;
+        if value.is_null() {
+            return Err(OciEmailError::Config(
+                "OCI Logging Search returned empty or null output; bulk trace evidence is unavailable."
+                    .to_string(),
+            ));
+        }
+
+        let validation_request = EventsRequest {
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            action: None,
+            message_id: None,
+            header_name: None,
+            header_value: None,
+            receiving_domain: None,
+            source_domain: request.source_domain.clone(),
+            limit: Some(limit),
+            compartment_id: request.compartment_id.clone(),
+        };
+        let requested_hashes = request
+            .message_ids
+            .iter()
+            .map(|message_id| opaque_hash(message_id))
+            .collect::<BTreeSet<_>>();
+        let raw_events = log_results(&value)?
+            .into_iter()
+            .map(|value| email_event_summary(value, None))
+            .collect::<Result<Vec<_>, _>>()?;
+        for event in &raw_events {
+            validate_returned_event_matches_request(event, &validation_request)?;
+            let Some(message_id_hash) = event.message_id_hash.as_ref() else {
+                return Err(OciEmailError::Config(
+                    "OCI Logging Search returned a bulk-trace event without a message identity; evidence is unavailable."
+                        .to_string(),
+                ));
+            };
+            if !requested_hashes.contains(message_id_hash) {
+                return Err(OciEmailError::Config(
+                    "OCI Logging Search returned a bulk-trace event outside the requested exact-message set; evidence is unavailable."
+                        .to_string(),
+                ));
+            }
+        }
+
+        let provider_returned = raw_events.len();
+        let rows_capped = rows_may_be_capped(provider_returned, limit);
+        let events = raw_events
+            .into_iter()
+            .filter(|event| event_matches_source_domain(event, request.source_domain.as_deref()))
+            .collect::<Vec<_>>();
+        let source_domain_matched = events.len();
+        let scoped_logging_observed = source_domain_matched > 0;
+        let mut per_message_actions = BTreeMap::<String, BTreeMap<String, usize>>::new();
+        let mut aggregate_actions = BTreeMap::<String, usize>::new();
+        for event in &events {
+            let message_id_hash = event
+                .message_id_hash
+                .as_ref()
+                .expect("bulk trace validates message identity before aggregation");
+            let action = event.action.as_deref().unwrap_or("unknown").to_string();
+            *per_message_actions
+                .entry(message_id_hash.clone())
+                .or_default()
+                .entry(action.clone())
+                .or_default() += 1;
+            *aggregate_actions.entry(action).or_default() += 1;
+        }
+
+        let mut totals = BulkTraceMessagesTotals {
+            requested: request.message_ids.len(),
+            provider_returned: Some(provider_returned),
+            source_domain_matched: Some(source_domain_matched),
+            by_action: event_count_vec(aggregate_actions),
+            ..BulkTraceMessagesTotals::default()
+        };
+        let messages = request
+            .message_ids
+            .iter()
+            .map(|message_id| {
+                let message_id_hash = opaque_hash(message_id);
+                let actions = per_message_actions
+                    .remove(&message_id_hash)
+                    .unwrap_or_default();
+                let event_count = actions.values().sum::<usize>();
+                let status = if event_count > 0 {
+                    totals.matched += 1;
+                    "matched"
+                } else if rows_capped {
+                    totals.capped += 1;
+                    "capped"
+                } else if !scoped_logging_observed {
+                    totals.logging_unavailable += 1;
+                    "logging_unavailable"
+                } else {
+                    totals.no_match += 1;
+                    "no_match"
+                };
+                BulkTraceMessageSummary {
+                    message_id_hash,
+                    status: status.to_string(),
+                    event_count: (status != "logging_unavailable").then_some(event_count),
+                    by_action: event_count_vec(actions),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut findings = Vec::new();
+        if rows_capped {
+            findings.push(finding(
+                "warning",
+                "bulk_trace_results_capped",
+                "The provider returned the requested row limit; unobserved message ids are capped, not proven absent.",
+            ));
+        }
+        if events
+            .iter()
+            .any(|event| event.action.as_deref() == Some("unknown"))
+        {
+            findings.push(finding(
+                "warning",
+                "bulk_trace_unknown_event_action",
+                "One or more matched events used an unrecognized action; the event remains counted under the unknown bucket.",
+            ));
+        }
+        if provider_returned > 0 && request.source_domain.is_some() && source_domain_matched == 0 {
+            findings.push(finding(
+                "warning",
+                "bulk_trace_source_domain_post_filter_no_match",
+                "The provider returned events for the exact-message query, but none matched the requested source domain.",
+            ));
+        }
+        if provider_returned == 0 {
+            findings.push(finding(
+                "warning",
+                "bulk_trace_no_log_evidence",
+                "The exact-message query returned no events, so logging availability is not proven and no input is classified as absent.",
+            ));
+        }
+
+        Ok(BulkTraceMessagesReport {
+            status: if rows_capped {
+                "capped"
+            } else if !scoped_logging_observed {
+                "logging_unavailable"
+            } else {
+                "complete"
+            }
+            .to_string(),
+            send_authorized: false,
+            start_time: request.start_time.clone(),
+            end_time: request.end_time.clone(),
+            source_domain: request.source_domain.clone(),
+            limit,
+            rows_capped,
+            totals,
+            messages,
+            findings,
+            evidence: vec![Evidence::new(
+                "oci_cli",
+                "logging-search search-logs bulk exact-message query",
+                rows_capped,
+            )],
+            raw_payload_returned: false,
         })
     }
 }
@@ -4119,6 +4338,123 @@ fn build_search_query(
     ))
 }
 
+fn build_bulk_trace_search_query(
+    compartment_id: &str,
+    request: &BulkTraceMessagesRequest,
+) -> Result<String, OciEmailError> {
+    let message_filter = request
+        .message_ids
+        .iter()
+        .map(|message_id| {
+            safe_message_id_query_value(message_id).map(|value| format!("data.messageId='{value}'"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join(" or ");
+    let query = format!(
+        "search \"{}\" | type='com.oraclecloud.emaildelivery.emaildomain.outbound*' and ({message_filter}) | sort by datetime desc",
+        safe_query_value(compartment_id)?
+    );
+    if query.len() > BULK_TRACE_QUERY_MAX_BYTES {
+        return Err(OciEmailError::InvalidInput(format!(
+            "bulk exact-message query exceeds the {BULK_TRACE_QUERY_MAX_BYTES}-byte safety limit; submit a smaller bounded list"
+        )));
+    }
+    Ok(query)
+}
+
+fn bulk_trace_limit(request: &BulkTraceMessagesRequest) -> u32 {
+    cap_limit(
+        request.limit.unwrap_or(DEFAULT_BULK_TRACE_EVENT_LIMIT),
+        HARD_BULK_TRACE_EVENT_LIMIT,
+    )
+}
+
+fn validate_bulk_trace_request(request: &BulkTraceMessagesRequest) -> Result<(), OciEmailError> {
+    validate_utc_window(&request.start_time, &request.end_time)?;
+    if request.message_ids.is_empty() {
+        return Err(OciEmailError::InvalidInput(
+            "message_ids must contain at least one exact Message-ID".to_string(),
+        ));
+    }
+    if request.message_ids.len() > HARD_BULK_TRACE_MESSAGE_IDS {
+        return Err(OciEmailError::InvalidInput(format!(
+            "message_ids exceeds the maximum of {HARD_BULK_TRACE_MESSAGE_IDS} entries"
+        )));
+    }
+    if let Some(source_domain) = request.source_domain.as_deref() {
+        validate_domain(source_domain, "source_domain")?;
+    }
+    let mut exact_values = BTreeSet::new();
+    let mut hashes = BTreeSet::new();
+    for message_id in &request.message_ids {
+        safe_message_id_query_value(message_id).map_err(|_| {
+            OciEmailError::InvalidInput(
+                "message_ids contains an entry with unsupported query syntax".to_string(),
+            )
+        })?;
+        if !exact_values.insert(message_id.as_str()) {
+            return Err(OciEmailError::InvalidInput(
+                "message_ids must not contain duplicate exact values".to_string(),
+            ));
+        }
+        if !hashes.insert(opaque_hash(message_id)) {
+            return Err(OciEmailError::InvalidInput(
+                "message_ids produced a duplicate redacted identity; split the request before tracing"
+                    .to_string(),
+            ));
+        }
+    }
+    build_bulk_trace_search_query("compartment", request)?;
+    Ok(())
+}
+
+fn unavailable_bulk_trace_messages(
+    request: &BulkTraceMessagesRequest,
+    limit: u32,
+    finding_code: &str,
+    finding_message: &str,
+) -> BulkTraceMessagesReport {
+    let messages = request
+        .message_ids
+        .iter()
+        .map(|message_id| BulkTraceMessageSummary {
+            message_id_hash: opaque_hash(message_id),
+            status: "logging_unavailable".to_string(),
+            event_count: None,
+            by_action: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    BulkTraceMessagesReport {
+        status: "logging_unavailable".to_string(),
+        send_authorized: false,
+        start_time: request.start_time.clone(),
+        end_time: request.end_time.clone(),
+        source_domain: request.source_domain.clone(),
+        limit,
+        rows_capped: false,
+        totals: BulkTraceMessagesTotals {
+            requested: messages.len(),
+            logging_unavailable: messages.len(),
+            ..BulkTraceMessagesTotals::default()
+        },
+        messages,
+        findings: vec![finding("blocker", finding_code, finding_message)],
+        evidence: vec![Evidence::new(
+            "oci_cli",
+            "logging-search search-logs bulk exact-message query",
+            false,
+        )],
+        raw_payload_returned: false,
+    }
+}
+
+fn event_count_vec(counts: BTreeMap<String, usize>) -> Vec<EventCount> {
+    counts
+        .into_iter()
+        .map(|(key, count)| EventCount { key, count })
+        .collect()
+}
+
 fn validate_event_request(request: &EventsRequest) -> Result<(), OciEmailError> {
     if let Some(action) = request.action.as_deref() {
         let allowed = [
@@ -4458,7 +4794,11 @@ fn rows_may_be_capped(returned: usize, limit: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     #[test]
     fn metric_query_filters_dimensions() {
@@ -5150,6 +5490,177 @@ mod tests {
 
         assert_eq!(report.status, "ok");
         assert_eq!(report.returned, 1);
+    }
+
+    #[test]
+    fn bulk_trace_executes_one_provider_query_and_returns_only_hashed_identities() {
+        let runner = Arc::new(FixtureBulkTraceRunner {
+            calls: AtomicUsize::new(0),
+            output: serde_json::json!({
+                "data": {
+                    "results": [
+                        {
+                            "datetime": "2026-06-30T00:10:00Z",
+                            "data": { "logContent": {
+                                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                "source": "sender.example",
+                                "time": "2026-06-30T00:10:00Z",
+                                "data": {
+                                    "action": "accept",
+                                    "messageId": "message-one",
+                                    "recipient": "person@recipient.example"
+                                }
+                            }}
+                        },
+                        {
+                            "datetime": "2026-06-30T00:11:00Z",
+                            "data": { "logContent": {
+                                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundrelayed",
+                                "source": "sender.example",
+                                "time": "2026-06-30T00:11:00Z",
+                                "data": {
+                                    "action": "relay",
+                                    "messageId": "message-one",
+                                    "recipient": "person@recipient.example"
+                                }
+                            }}
+                        }
+                    ]
+                }
+            }),
+        });
+        let backend = LiveOciEmailBackend::with_runner(test_config(), runner.clone());
+        let report = backend
+            .bulk_trace_messages(&BulkTraceMessagesRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                source_domain: Some("sender.example".to_string()),
+                limit: None,
+                compartment_id: None,
+            })
+            .expect("bulk trace report");
+        let payload = serde_json::to_string(&report).expect("serialize bulk trace report");
+
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(report.status, "complete");
+        assert_eq!(report.totals.requested, 2);
+        assert_eq!(report.totals.matched, 1);
+        assert_eq!(report.totals.no_match, 1);
+        assert_eq!(report.messages[0].status, "matched");
+        assert_eq!(report.messages[0].event_count, Some(2));
+        assert_eq!(report.messages[1].status, "no_match");
+        assert_eq!(report.messages[1].event_count, Some(0));
+        assert!(!payload.contains("message-one"));
+        assert!(!payload.contains("message-two"));
+        assert!(!payload.contains("person@recipient.example"));
+    }
+
+    #[test]
+    fn bulk_trace_capped_results_do_not_turn_unobserved_ids_into_no_match() {
+        let output = serde_json::json!({
+            "data": {
+                "results": [{
+                    "datetime": "2026-06-30T00:10:00Z",
+                    "data": { "logContent": {
+                        "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                        "source": "sender.example",
+                        "time": "2026-06-30T00:10:00Z",
+                        "data": {
+                            "action": "accept",
+                            "messageId": "message-one",
+                            "recipient": "person@recipient.example"
+                        }
+                    }}
+                }]
+            }
+        });
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureBulkTraceRunner {
+                calls: AtomicUsize::new(0),
+                output,
+            }),
+        );
+        let report = backend
+            .bulk_trace_messages(&BulkTraceMessagesRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                source_domain: Some("sender.example".to_string()),
+                limit: Some(1),
+                compartment_id: None,
+            })
+            .expect("capped bulk trace report");
+
+        assert_eq!(report.status, "capped");
+        assert_eq!(report.totals.matched, 1);
+        assert_eq!(report.totals.no_match, 0);
+        assert_eq!(report.totals.capped, 1);
+        assert_eq!(report.messages[1].status, "capped");
+    }
+
+    #[test]
+    fn bulk_trace_null_or_empty_provider_evidence_is_explicit_logging_unavailable() {
+        for output in [
+            Value::Null,
+            serde_json::json!({ "data": { "results": [] } }),
+        ] {
+            let backend = LiveOciEmailBackend::with_runner(
+                test_config(),
+                Arc::new(FixtureEventOutputRunner(output)),
+            );
+            let report = backend
+                .bulk_trace_messages(&BulkTraceMessagesRequest {
+                    start_time: "2026-06-30T00:00:00Z".to_string(),
+                    end_time: "2026-06-30T01:00:00Z".to_string(),
+                    message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                    source_domain: Some("sender.example".to_string()),
+                    limit: None,
+                    compartment_id: None,
+                })
+                .expect("unavailable bulk trace report");
+
+            assert_eq!(report.status, "logging_unavailable");
+            assert_eq!(report.totals.logging_unavailable, 2);
+            assert!(report
+                .messages
+                .iter()
+                .all(|message| message.status == "logging_unavailable"));
+            assert!(report
+                .messages
+                .iter()
+                .all(|message| message.event_count.is_none()));
+        }
+    }
+
+    #[test]
+    fn bulk_trace_rejects_empty_duplicate_and_over_bound_inputs_before_provider_query() {
+        let runner = Arc::new(FixtureBulkTraceRunner {
+            calls: AtomicUsize::new(0),
+            output: serde_json::json!({ "data": { "results": [] } }),
+        });
+        let backend = LiveOciEmailBackend::with_runner(test_config(), runner.clone());
+        for message_ids in [
+            Vec::new(),
+            vec!["message-one".to_string(), "message-one".to_string()],
+            (0..=HARD_BULK_TRACE_MESSAGE_IDS)
+                .map(|index| format!("message-{index}"))
+                .collect::<Vec<_>>(),
+        ] {
+            let error = backend
+                .bulk_trace_messages(&BulkTraceMessagesRequest {
+                    start_time: "2026-06-30T00:00:00Z".to_string(),
+                    end_time: "2026-06-30T01:00:00Z".to_string(),
+                    message_ids,
+                    source_domain: Some("sender.example".to_string()),
+                    limit: None,
+                    compartment_id: None,
+                })
+                .expect_err("invalid bulk trace request");
+            assert_eq!(error.code(), "invalid_input");
+        }
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -6709,6 +7220,27 @@ mod tests {
                 return Ok(self.0.clone());
             }
             panic!("unexpected OCI command: {label}")
+        }
+    }
+
+    struct FixtureBulkTraceRunner {
+        calls: AtomicUsize,
+        output: Value,
+    }
+
+    impl OciCliRunner for FixtureBulkTraceRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            let label = command_label(args);
+            assert!(label.starts_with("logging-search search-logs"));
+            let query = args
+                .windows(2)
+                .find_map(|window| (window[0] == "--search-query").then(|| window[1].as_str()))
+                .expect("bulk trace search query");
+            assert!(query.contains("data.messageId='message-one'"));
+            assert!(query.contains(" or ") || !query.contains("message-two"));
+            assert!(!query.contains("source='sender.example'"));
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.output.clone())
         }
     }
 

@@ -1,7 +1,7 @@
 use oci_email_delivery_mcp::{
-    tests_support::FixtureBackend, EventCounts, EventFilters, EventsReport, EventsRequest,
-    LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport, LedgerWindowRequest,
-    LedgerWindowTotals, LoggingEnablementPlanRequest, LoggingStatusRequest,
+    tests_support::FixtureBackend, BulkTraceMessagesRequest, EventCounts, EventFilters,
+    EventsReport, EventsRequest, LedgerRowSummary, LedgerWindowFilters, LedgerWindowReport,
+    LedgerWindowRequest, LedgerWindowTotals, LoggingEnablementPlanRequest, LoggingStatusRequest,
     MessageEngagementRequest, MetricsReport, MetricsRequest, OciEmailBackend, OciEmailError,
     OciEmailStatusReport, SendReadinessRequest, StatusRequest, SuppressionDeltaRequest,
     SuppressionTotals, SuppressionsReport, SuppressionsRequest, TraceCriteria, TraceMessageReport,
@@ -143,6 +143,37 @@ fn events_contract_does_not_return_raw_recipient_or_message_id() {
     assert!(!report.events[0].raw_payload_returned);
     assert!(!payload.contains("message@example.com"));
     assert!(!payload.contains("person@example.net"));
+}
+
+#[test]
+fn bulk_trace_contract_is_read_only_redacted_and_unavailable_explicitly() {
+    let backend = FixtureBackend;
+    let message_ids = ["message-one@example.test", "message-two@example.test"];
+    let report = backend
+        .bulk_trace_messages(&BulkTraceMessagesRequest {
+            start_time: "2026-06-30T00:00:00Z".to_string(),
+            end_time: "2026-06-30T01:00:00Z".to_string(),
+            message_ids: message_ids.iter().map(|value| value.to_string()).collect(),
+            source_domain: Some("example.test".to_string()),
+            limit: None,
+            compartment_id: None,
+        })
+        .unwrap_or_else(|err| panic!("fixture bulk trace: {err}"));
+    let payload =
+        serde_json::to_string(&report).unwrap_or_else(|err| panic!("serialize bulk trace: {err}"));
+
+    assert_eq!(report.status, "logging_unavailable");
+    assert!(!report.send_authorized);
+    assert!(!report.raw_payload_returned);
+    assert_eq!(report.totals.requested, 2);
+    assert_eq!(report.totals.logging_unavailable, 2);
+    assert!(report
+        .messages
+        .iter()
+        .all(|message| message.status == "logging_unavailable"));
+    for message_id in message_ids {
+        assert!(!payload.contains(message_id));
+    }
 }
 
 #[test]
