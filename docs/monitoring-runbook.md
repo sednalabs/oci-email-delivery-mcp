@@ -33,9 +33,12 @@ green.
   unique exact Message-IDs for one half-open UTC window; each call performs one
   provider log search and returns only request-order hashes, per-input state,
   compact action counts, and provider/post-source-filter totals. A missing
-  input is `no_match` only when the provider response is complete and the same
-  query returned at least one in-scope event. A wholly empty or
-  source-mismatched read is `logging_unavailable`, not a zero. At the 1,000-row
+  input is `no_match` only when `source_domain` is supplied, the provider
+  response is complete, and the same query returned at least one event for
+  that source. Missing or conflicting source evidence remains
+  `logging_unavailable` for that exact identity even when another identity
+  matched. An unscoped, wholly empty, or source-mismatched read is
+  `logging_unavailable`, not a zero. At the 1,000-row
   cap it is `capped`; on null, malformed, permission-failed, or other
   unusable logging evidence it is `logging_unavailable`. Do not retry an
   ambiguous provider submission based on this read, and do not interpret

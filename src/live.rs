@@ -1277,12 +1277,28 @@ impl LiveOciEmailBackend {
 
         let provider_returned = raw_events.len();
         let rows_capped = rows_may_be_capped(provider_returned, limit);
+        let ambiguous_source_hashes = request
+            .source_domain
+            .as_deref()
+            .map(|source_domain| {
+                raw_events
+                    .iter()
+                    .filter(|event| {
+                        event
+                            .source_domain
+                            .as_deref()
+                            .is_none_or(|value| !value.eq_ignore_ascii_case(source_domain))
+                    })
+                    .filter_map(|event| event.message_id_hash.clone())
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
         let events = raw_events
             .into_iter()
             .filter(|event| event_matches_source_domain(event, request.source_domain.as_deref()))
             .collect::<Vec<_>>();
         let source_domain_matched = events.len();
-        let scoped_logging_observed = source_domain_matched > 0;
+        let scoped_logging_observed = request.source_domain.is_some() && source_domain_matched > 0;
         let mut per_message_actions = BTreeMap::<String, BTreeMap<String, usize>>::new();
         let mut aggregate_actions = BTreeMap::<String, usize>::new();
         for event in &events {
@@ -1290,6 +1306,9 @@ impl LiveOciEmailBackend {
                 .message_id_hash
                 .as_ref()
                 .expect("bulk trace validates message identity before aggregation");
+            if ambiguous_source_hashes.contains(message_id_hash) {
+                continue;
+            }
             let action = event.action.as_deref().unwrap_or("unknown").to_string();
             *per_message_actions
                 .entry(message_id_hash.clone())
@@ -1298,6 +1317,7 @@ impl LiveOciEmailBackend {
                 .or_default() += 1;
             *aggregate_actions.entry(action).or_default() += 1;
         }
+        let has_unknown_action = aggregate_actions.contains_key("unknown");
 
         let mut totals = BulkTraceMessagesTotals {
             requested: request.message_ids.len(),
@@ -1315,7 +1335,10 @@ impl LiveOciEmailBackend {
                     .remove(&message_id_hash)
                     .unwrap_or_default();
                 let event_count = actions.values().sum::<usize>();
-                let status = if event_count > 0 {
+                let status = if ambiguous_source_hashes.contains(&message_id_hash) {
+                    totals.logging_unavailable += 1;
+                    "logging_unavailable"
+                } else if event_count > 0 {
                     totals.matched += 1;
                     "matched"
                 } else if rows_capped {
@@ -1345,10 +1368,7 @@ impl LiveOciEmailBackend {
                 "The provider returned the requested row limit; unobserved message ids are capped, not proven absent.",
             ));
         }
-        if events
-            .iter()
-            .any(|event| event.action.as_deref() == Some("unknown"))
-        {
+        if has_unknown_action {
             findings.push(finding(
                 "warning",
                 "bulk_trace_unknown_event_action",
@@ -1362,6 +1382,20 @@ impl LiveOciEmailBackend {
                 "The provider returned events for the exact-message query, but none matched the requested source domain.",
             ));
         }
+        if !ambiguous_source_hashes.is_empty() {
+            findings.push(finding(
+                "warning",
+                "bulk_trace_ambiguous_source_evidence",
+                "One or more exact-message identities had missing or conflicting authoritative source-domain evidence; those identities remain logging_unavailable.",
+            ));
+        }
+        if request.source_domain.is_none() && totals.logging_unavailable > 0 {
+            findings.push(finding(
+                "warning",
+                "bulk_trace_source_scope_required_for_absence",
+                "A source_domain is required before an unobserved exact-message identity can be classified as absent.",
+            ));
+        }
         if provider_returned == 0 {
             findings.push(finding(
                 "warning",
@@ -1373,8 +1407,10 @@ impl LiveOciEmailBackend {
         Ok(BulkTraceMessagesReport {
             status: if rows_capped {
                 "capped"
-            } else if !scoped_logging_observed {
+            } else if totals.logging_unavailable == totals.requested {
                 "logging_unavailable"
+            } else if totals.logging_unavailable > 0 {
+                "partial"
             } else {
                 "complete"
             }
@@ -5557,6 +5593,153 @@ mod tests {
     }
 
     #[test]
+    fn bulk_trace_requires_source_scope_before_classifying_an_unobserved_id_as_absent() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": { "logContent": {
+                            "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                            "source": "sender.example",
+                            "time": "2026-06-30T00:10:00Z",
+                            "data": {
+                                "action": "accept",
+                                "messageId": "message-one"
+                            }
+                        }}
+                    }]
+                }
+            }))),
+        );
+        let report = backend
+            .bulk_trace_messages(&BulkTraceMessagesRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                source_domain: None,
+                limit: None,
+                compartment_id: None,
+            })
+            .expect("unscoped bulk trace report");
+
+        assert_eq!(report.status, "partial");
+        assert_eq!(report.totals.matched, 1);
+        assert_eq!(report.totals.no_match, 0);
+        assert_eq!(report.totals.logging_unavailable, 1);
+        assert_eq!(report.messages[0].status, "matched");
+        assert_eq!(report.messages[1].status, "logging_unavailable");
+        assert_eq!(report.messages[1].event_count, None);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| { finding.code == "bulk_trace_source_scope_required_for_absence" }));
+    }
+
+    #[test]
+    fn bulk_trace_preserves_ambiguous_source_evidence_per_message_identity() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [
+                        {
+                            "datetime": "2026-06-30T00:10:00Z",
+                            "data": { "logContent": {
+                                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                "source": "sender.example",
+                                "time": "2026-06-30T00:10:00Z",
+                                "data": {
+                                    "action": "accept",
+                                    "messageId": "message-one"
+                                }
+                            }}
+                        },
+                        {
+                            "datetime": "2026-06-30T00:11:00Z",
+                            "data": { "logContent": {
+                                "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                                "time": "2026-06-30T00:11:00Z",
+                                "data": {
+                                    "action": "accept",
+                                    "messageId": "message-two"
+                                }
+                            }}
+                        }
+                    ]
+                }
+            }))),
+        );
+        let report = backend
+            .bulk_trace_messages(&BulkTraceMessagesRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                source_domain: Some("sender.example".to_string()),
+                limit: None,
+                compartment_id: None,
+            })
+            .expect("source-scoped bulk trace report");
+
+        assert_eq!(report.status, "partial");
+        assert_eq!(report.totals.matched, 1);
+        assert_eq!(report.totals.no_match, 0);
+        assert_eq!(report.totals.logging_unavailable, 1);
+        assert_eq!(report.messages[0].status, "matched");
+        assert_eq!(report.messages[1].status, "logging_unavailable");
+        assert_eq!(report.messages[1].event_count, None);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "bulk_trace_ambiguous_source_evidence"));
+    }
+
+    #[test]
+    fn bulk_trace_fails_closed_when_provider_returns_an_unrequested_identity() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureEventOutputRunner(serde_json::json!({
+                "data": {
+                    "results": [{
+                        "datetime": "2026-06-30T00:10:00Z",
+                        "data": { "logContent": {
+                            "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                            "source": "sender.example",
+                            "time": "2026-06-30T00:10:00Z",
+                            "data": {
+                                "action": "accept",
+                                "messageId": "not-requested"
+                            }
+                        }}
+                    }]
+                }
+            }))),
+        );
+        let report = backend
+            .bulk_trace_messages(&BulkTraceMessagesRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                source_domain: Some("sender.example".to_string()),
+                limit: None,
+                compartment_id: None,
+            })
+            .expect("structured unavailable report");
+
+        assert_eq!(report.status, "logging_unavailable");
+        assert_eq!(report.totals.logging_unavailable, 2);
+        assert!(report
+            .messages
+            .iter()
+            .all(|message| message.event_count.is_none()));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "bulk_trace_logging_unavailable"));
+    }
+
+    #[test]
     fn bulk_trace_capped_results_do_not_turn_unobserved_ids_into_no_match() {
         let output = serde_json::json!({
             "data": {
@@ -7237,7 +7420,8 @@ mod tests {
                 .find_map(|window| (window[0] == "--search-query").then(|| window[1].as_str()))
                 .expect("bulk trace search query");
             assert!(query.contains("data.messageId='message-one'"));
-            assert!(query.contains(" or ") || !query.contains("message-two"));
+            assert!(query.contains("data.messageId='message-two'"));
+            assert!(query.contains(" or "));
             assert!(!query.contains("source='sender.example'"));
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.output.clone())

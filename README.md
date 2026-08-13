@@ -148,8 +148,12 @@ contract tests with an OCI profile configured. The live smoke must not use
   defaults to and is capped at 1,000. When that limit is reached, observed
   identities remain `matched`, but every unobserved identity is `capped`
   rather than falsely reported absent. `no_match` is emitted only when the
-  same complete query returned at least one in-scope provider event; a wholly
-  empty or source-mismatched read cannot prove logging availability. Null,
+  request includes `source_domain` and the same complete query returned at
+  least one event for that source. An unscoped, wholly empty, or
+  source-mismatched read cannot prove absence. Missing or conflicting
+  authoritative source evidence is preserved per Message-ID as
+  `logging_unavailable`, even when another requested identity has clean source
+  evidence. Null,
   empty, malformed, permission-denied, or otherwise unusable Logging Search evidence returns
   `logging_unavailable` for every input without exposing raw provider errors.
   The tool never returns recipients, raw Message-IDs, headers, events, OCIDs,
