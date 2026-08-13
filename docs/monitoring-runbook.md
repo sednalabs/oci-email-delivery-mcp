@@ -28,6 +28,21 @@ green.
   gates, but it does not authorize or apply the OCI change.
 - `oci_email_events` returns real Email Delivery log events for a seed/proof
   window before cohort expansion.
+- `oci_email_bulk_trace_messages` is the summary-first exact-message path for
+  tranche reconciliation. Submit deterministic chunks of no more than 100
+  unique exact Message-IDs for one half-open UTC window; each call performs one
+  provider log search and returns only request-order hashes, per-input state,
+  compact action counts, and provider/post-source-filter totals. A missing
+  input is `no_match` only when `source_domain` is supplied, the provider
+  response is complete, and the same query returned at least one event for
+  that source. Missing or conflicting source evidence remains
+  `logging_unavailable` for that exact identity even when another identity
+  matched. An unscoped, wholly empty, or source-mismatched read is
+  `logging_unavailable`, not a zero. At the 1,000-row
+  cap it is `capped`; on null, malformed, permission-failed, or other
+  unusable logging evidence it is `logging_unavailable`. Do not retry an
+  ambiguous provider submission based on this read, and do not interpret
+  accepted or relayed log actions as inbox placement.
 - `oci_email_message_engagement` is the narrow exact-Message-ID read for
   open/click/list-unsubscribe evidence. Always supply the validated sender
   `source_domain`; an unscoped request is `unavailable` and does not query the

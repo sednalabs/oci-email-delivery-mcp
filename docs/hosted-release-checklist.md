@@ -78,7 +78,8 @@ promotion gate after the reviewed commit is selected.
 10. Verify the configured alias initializes and lists exactly:
    `oci_email_status`, `oci_email_metrics`, `oci_email_ledger_window`,
    `oci_email_events`, `oci_email_message_engagement`, `oci_email_logging_status`,
-   `oci_email_logging_enablement_plan`, `oci_email_trace_message`,
+   `oci_email_return_paths`, `oci_email_logging_enablement_plan`,
+   `oci_email_trace_message`, `oci_email_bulk_trace_messages`,
    `oci_email_suppressions`, `oci_email_suppression_delta`,
    `oci_email_watch_window`,
    `oci_email_send_readiness`, `oci_email_traceability_audit`, and
