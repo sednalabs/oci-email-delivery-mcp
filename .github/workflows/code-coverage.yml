@@ -26,24 +26,24 @@ jobs:
     steps:
       - name: Checkout repository
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Install Rust toolchain
         # dtolnay/rust-toolchain stable
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: stable
 
       - name: Cache cargo artifacts
         # swatinem/rust-cache v2
-        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3
 
       - name: Install coverage tool
         # taiki-e/install-action v2
-        uses: taiki-e/install-action@b8cecb83565409bcc297b2df6e77f030b2a468d5
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1
         with:
           tool: cargo-llvm-cov
 
@@ -81,14 +81,14 @@ jobs:
     steps:
       - name: Download Cobertura report
         # actions/download-artifact v4.3.0
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: rust-cobertura-coverage
           path: coverage
 
       - name: Upload coverage to GitHub Code Quality
         # actions/upload-code-coverage v1
-        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3
+        uses: actions/upload-code-coverage@d8e329117199404bba6fc81efe8093dc7c015e34
         with:
           file: coverage/oci-email-delivery-mcp.xml
           language: Rust
