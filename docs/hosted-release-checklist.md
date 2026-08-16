@@ -49,9 +49,12 @@ promotion gate after the reviewed commit is selected.
 
 1. Dispatch or tag-trigger `release-artifact` for the reviewed commit.
 2. Wait for the run to finish successfully.
-3. Download `oci-email-delivery-mcp-linux-x86_64`.
+3. Download the artifact matching the target host:
+   `oci-email-delivery-mcp-linux-x86_64` or
+   `oci-email-delivery-mcp-linux-aarch64`.
 4. Confirm the artifact contains the Linux archive, archive SHA-256 sidecar,
-   and `oci-email-delivery-mcp-linux-x86_64.cdx.json` CycloneDX 1.5 Cargo
+   and the matching `oci-email-delivery-mcp-linux-<arch>.cdx.json` CycloneDX
+   1.5 Cargo
    dependency SBOM for the Linux binary target. The release workflow rejects
    empty component lists and disconnected root dependency graphs before
    upload or attestation.
@@ -62,11 +65,12 @@ promotion gate after the reviewed commit is selected.
    unattested:
 
    ```bash
+   archive=oci-email-delivery-mcp-linux-aarch64.tar.gz
    gh attestation verify \
-     oci-email-delivery-mcp-linux-x86_64.tar.gz \
+     "${archive}" \
      --repo sednalabs/oci-email-delivery-mcp
    gh attestation verify \
-     oci-email-delivery-mcp-linux-x86_64.tar.gz \
+     "${archive}" \
      --repo sednalabs/oci-email-delivery-mcp \
      --predicate-type https://cyclonedx.org/bom
    ```

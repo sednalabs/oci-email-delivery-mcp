@@ -309,6 +309,6 @@ contract tests with an OCI profile configured. The live smoke must not use
 - Hosted release checklist: `docs/hosted-release-checklist.md`
 - Public release readiness: `docs/public-release-readiness.md`
 
-Operational installs should use hosted release artifacts with checksum
-verification. Restart MCP clients after replacing the binary or changing the
-configured environment.
+Operational installs should use the hosted x86_64 or aarch64 release artifact
+matching the target host, with checksum verification. Restart MCP clients after
+replacing the binary or changing the configured environment.
