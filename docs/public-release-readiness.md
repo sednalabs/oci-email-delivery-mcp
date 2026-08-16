@@ -42,8 +42,9 @@ explain its core value.
   fork pull requests skip it because their token is read-only. The required
   coverage job does not depend on that external feature and retains no Code
   Quality write permission.
-- A release artifact lane produces a Linux x86_64 binary tarball, archive
-  SHA-256 sidecar, and target-specific CycloneDX 1.5 Cargo dependency SBOM.
+- A release artifact lane produces Linux x86_64 and aarch64 binary tarballs,
+  archive SHA-256 sidecars, and target-specific CycloneDX 1.5 Cargo dependency
+  SBOMs on native GitHub-hosted runners.
   The workflow fails closed unless the SBOM contains components and a
   connected root dependency graph. Manual dispatches from `main` also produce
   provenance and SBOM attestations for the tarball; tag builds intentionally
