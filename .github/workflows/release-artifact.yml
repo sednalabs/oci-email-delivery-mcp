@@ -27,13 +27,13 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           persist-credentials: false
 
       - name: Install Rust toolchain
         # dtolnay/rust-toolchain stable
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: stable
 
@@ -142,7 +142,7 @@ jobs:
     steps:
       - name: Download release artifact
         # actions/download-artifact v4.3.0
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: oci-email-delivery-mcp-linux-${{ matrix.arch }}
           path: dist
@@ -192,13 +192,13 @@ jobs:
 
       - name: Attest release provenance
         # actions/attest v4.1.1
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: dist/oci-email-delivery-mcp-linux-${{ matrix.arch }}.tar.gz
 
       - name: Attest release SBOM
         # actions/attest v4.1.1
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: dist/oci-email-delivery-mcp-linux-${{ matrix.arch }}.tar.gz
           sbom-path: dist/oci-email-delivery-mcp-linux-${{ matrix.arch }}.cdx.json
