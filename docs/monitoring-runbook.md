@@ -492,6 +492,14 @@ Expected: accepted, relayed, hard-bounced, soft-bounced, suppressed,
 complaint, and blocklist evidence is either visible as metrics or explicitly
 covered by log proof. Missing stop-gate metrics are not treated as zero.
 
+For each returned metric, inspect `status`, `total`, and `provenance` together.
+`status="ok"` with `provenance="empty_series_normalized_zero"` and numeric
+`total=0` is a successful, complete OCI response whose selected series was
+empty. It is an observed zero, not a missing datapoint. In contrast, `total=null`
+means the metric is unknown: for example empty CLI stdout, missing or malformed
+response data, an unavailable definition, or a potentially capped response.
+Never convert an unknown total to zero, especially for stop-gate metrics.
+
 ## During-Send Watch
 
 Use short UTC windows, usually 5 to 15 minutes, and keep each observation

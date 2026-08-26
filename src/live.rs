@@ -39,6 +39,8 @@ const SUPPRESSION_DOMAIN_BUCKET_LIMIT: usize = 50;
 const SUPPRESSION_FETCH_PAGE_SIZE: u32 = 1000;
 const SMTP_STATUS_MAX_CHARS: usize = 240;
 const BULK_TRACE_QUERY_MAX_BYTES: usize = 32 * 1024;
+const MONITORING_MAX_RETURNED_DATAPOINTS: usize = 100_000;
+const MONITORING_MAX_RETURNED_SERIES: usize = 2_000;
 
 const STANDARD_METRICS: &[(&str, &str)] = &[
     ("accepted", "EmailsAccepted"),
@@ -365,9 +367,10 @@ impl OciEmailBackend for LiveOciEmailBackend {
                     oci_name: (*oci_name).to_string(),
                     status: "unavailable".to_string(),
                     query: output_query,
-                    total: 0.0,
+                    total: None,
                     point_count: 0,
                     series_count: 0,
+                    provenance: "metric_definition_unavailable".to_string(),
                     note: Some("Metric definition is not currently visible in OCI.".to_string()),
                 });
                 if *key == "accepted" {
@@ -402,36 +405,57 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 request.end_time.clone(),
             ];
             let value = self.runner.run_optional_json(&args)?;
-            let (total, point_count, series_count) = metric_total(&value);
-            assign_metric_total(&mut totals, key, total);
-            available_keys.insert((*key).to_string());
-            if value.is_null() || point_count == 0 {
-                if *key == "accepted" {
-                    findings.push(finding(
-                        "blocker",
-                        "metric_no_datapoints_accepted",
-                        "Accepted-email metric returned no usable datapoints; delivery rates and stop gates cannot be interpreted for this window.",
-                    ));
-                } else if is_stop_gate_metric_key(key) {
-                    findings.push(finding(
-                        "warning",
-                        &format!("metric_no_datapoints_{key}"),
-                        "A stop-gate metric returned no usable datapoints; do not treat this as proof of zero events.",
-                    ));
+            match metric_total(&value) {
+                MetricRead::Known {
+                    total,
+                    point_count,
+                    series_count,
+                    provenance,
+                } => {
+                    assign_metric_total(&mut totals, key, Some(total));
+                    available_keys.insert((*key).to_string());
+                    metrics.push(MetricResult {
+                        key: (*key).to_string(),
+                        oci_name: (*oci_name).to_string(),
+                        status: "ok".to_string(),
+                        query: output_query,
+                        total: Some(total),
+                        point_count,
+                        series_count,
+                        provenance: provenance.to_string(),
+                        note: (provenance == "empty_series_normalized_zero").then(|| {
+                            "OCI returned a complete empty metric series; normalized to zero."
+                                .to_string()
+                        }),
+                    });
+                }
+                MetricRead::Unknown { provenance, note } => {
+                    if *key == "accepted" {
+                        findings.push(finding(
+                            "blocker",
+                            "metric_unknown_accepted",
+                            "Accepted-email metric is unavailable or incomplete; delivery rates and stop gates cannot be interpreted for this window.",
+                        ));
+                    } else if is_stop_gate_metric_key(key) {
+                        findings.push(finding(
+                            "warning",
+                            &format!("metric_unknown_{key}"),
+                            "A stop-gate metric is unavailable or incomplete; do not treat it as proof of zero events.",
+                        ));
+                    }
+                    metrics.push(MetricResult {
+                        key: (*key).to_string(),
+                        oci_name: (*oci_name).to_string(),
+                        status: "unknown".to_string(),
+                        query: output_query,
+                        total: None,
+                        point_count: 0,
+                        series_count: 0,
+                        provenance: provenance.to_string(),
+                        note: Some(note.to_string()),
+                    });
                 }
             }
-            metrics.push(MetricResult {
-                key: (*key).to_string(),
-                oci_name: (*oci_name).to_string(),
-                status: "ok".to_string(),
-                query: output_query,
-                total,
-                point_count,
-                series_count,
-                note: value
-                    .is_null()
-                    .then(|| "OCI CLI returned empty stdout for this metric query.".to_string()),
-            });
         }
 
         let rates = metric_rates(&totals, &available_keys);
@@ -2995,7 +3019,7 @@ fn traceability_provider_evidence_available(watch_report: &WatchWindowReport) ->
 fn observed_metric_total(
     watch_report: &WatchWindowReport,
     metric_name: &str,
-    value: impl FnOnce(&crate::response::MetricTotals) -> f64,
+    value: impl FnOnce(&crate::response::MetricTotals) -> Option<f64>,
 ) -> Option<f64> {
     let report = watch_report.components.metrics.report.as_ref()?;
     report
@@ -3003,6 +3027,7 @@ fn observed_metric_total(
         .iter()
         .any(|metric| metric.key == metric_name && metric.status == "ok" && metric.point_count > 0)
         .then(|| value(&report.totals))
+        .flatten()
 }
 
 fn events_evidence_state(component: &ToolCallOutcome<EventsReport>) -> String {
@@ -3574,25 +3599,78 @@ fn metric_query_for_output(
     )
 }
 
-fn metric_total(value: &Value) -> (f64, usize, usize) {
+enum MetricRead {
+    Known {
+        total: f64,
+        point_count: usize,
+        series_count: usize,
+        provenance: &'static str,
+    },
+    Unknown {
+        provenance: &'static str,
+        note: &'static str,
+    },
+}
+
+fn metric_total(value: &Value) -> MetricRead {
+    let Some(data) = value.get("data") else {
+        return MetricRead::Unknown {
+            provenance: "metric_response_missing_data",
+            note: "OCI returned no complete metric response data; total is unknown.",
+        };
+    };
+    let Some(series) = data.as_array() else {
+        return MetricRead::Unknown {
+            provenance: "metric_response_schema_unknown",
+            note: "OCI metric response data was not an array; total is unknown.",
+        };
+    };
+    if series.len() >= MONITORING_MAX_RETURNED_SERIES {
+        return MetricRead::Unknown {
+            provenance: "metric_response_potentially_capped",
+            note: "OCI returned the metric-stream limit; total is withheld as potentially capped.",
+        };
+    }
     let mut total = 0.0;
     let mut points = 0;
-    let series = json_items(value);
-    for item in &series {
+    for item in series {
         let Some(datapoints) = item.get("aggregated-datapoints").and_then(Value::as_array) else {
-            continue;
+            return MetricRead::Unknown {
+                provenance: "metric_response_schema_unknown",
+                note: "OCI metric response contained a series without an aggregated datapoint array; total is unknown.",
+            };
         };
         for point in datapoints {
             if let Some(value) = point.get("value").and_then(Value::as_f64) {
                 total += value;
                 points += 1;
+                if points >= MONITORING_MAX_RETURNED_DATAPOINTS {
+                    return MetricRead::Unknown {
+                        provenance: "metric_response_potentially_capped",
+                        note: "OCI returned the metric-datapoint limit; total is withheld as potentially capped.",
+                    };
+                }
+            } else {
+                return MetricRead::Unknown {
+                    provenance: "metric_response_schema_unknown",
+                    note: "OCI metric response contained a datapoint without a numeric value; total is unknown.",
+                };
             }
         }
     }
-    (total, points, series.len())
+    MetricRead::Known {
+        total,
+        point_count: points,
+        series_count: series.len(),
+        provenance: if points == 0 {
+            "empty_series_normalized_zero"
+        } else {
+            "aggregated_datapoints"
+        },
+    }
 }
 
-fn assign_metric_total(totals: &mut MetricTotals, key: &str, total: f64) {
+fn assign_metric_total(totals: &mut MetricTotals, key: &str, total: Option<f64>) {
     match key {
         "accepted" => totals.accepted = total,
         "relayed" => totals.relayed = total,
@@ -3663,8 +3741,8 @@ fn is_stop_gate_metric_key(key: &str) -> bool {
 }
 
 fn ratio_if_known(
-    numerator: f64,
-    denominator: f64,
+    numerator: Option<f64>,
+    denominator: Option<f64>,
     available_keys: &BTreeSet<String>,
     numerator_key: &str,
     denominator_key: &str,
@@ -3672,7 +3750,7 @@ fn ratio_if_known(
     if !available_keys.contains(numerator_key) || !available_keys.contains(denominator_key) {
         return None;
     }
-    ratio(numerator, denominator)
+    ratio(numerator?, denominator?)
 }
 
 fn ratio(numerator: f64, denominator: f64) -> Option<f64> {
@@ -4885,6 +4963,100 @@ mod tests {
 
         let err = normalize_interval(Some("PT2M")).unwrap_err();
         assert!(matches!(err, OciEmailError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn metrics_normalize_complete_empty_series_to_explicit_zero() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureMetricsRunner {
+                output: serde_json::json!({ "data": [] }),
+            }),
+        );
+        let report = backend
+            .metrics(&MetricsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                interval: Some("1h".to_string()),
+                resource_domain: Some("example.com".to_string()),
+                resource_id: None,
+                compartment_id: None,
+            })
+            .expect("complete empty metric report");
+
+        assert_eq!(report.status, "ok");
+        assert!(report.metrics.iter().all(|metric| {
+            metric.status == "ok"
+                && metric.total == Some(0.0)
+                && metric.point_count == 0
+                && metric.provenance == "empty_series_normalized_zero"
+        }));
+        assert_eq!(report.totals.accepted, Some(0.0));
+        assert_eq!(report.totals.hard_bounced, Some(0.0));
+        assert!(report.findings.is_empty());
+    }
+
+    #[test]
+    fn metrics_keep_blank_provider_output_unknown_in_the_serialized_contract() {
+        let backend = LiveOciEmailBackend::with_runner(
+            test_config(),
+            Arc::new(FixtureMetricsRunner {
+                output: Value::Null,
+            }),
+        );
+        let report = backend
+            .metrics(&MetricsRequest {
+                start_time: "2026-06-30T00:00:00Z".to_string(),
+                end_time: "2026-06-30T01:00:00Z".to_string(),
+                interval: Some("1h".to_string()),
+                resource_domain: Some("example.com".to_string()),
+                resource_id: None,
+                compartment_id: None,
+            })
+            .expect("unknown metric report");
+        let payload = serde_json::to_string(&report).expect("serialize unknown metric report");
+
+        assert_eq!(report.status, "blocked");
+        assert!(report.metrics.iter().all(|metric| {
+            metric.status == "unknown"
+                && metric.total.is_none()
+                && metric.provenance == "metric_response_missing_data"
+        }));
+        assert!(report.totals.accepted.is_none());
+        assert!(payload.contains("\"total\":null"));
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "metric_unknown_accepted"));
+    }
+
+    #[test]
+    fn metric_total_keeps_null_malformed_and_capped_responses_unknown() {
+        for value in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({ "data": {} }),
+            serde_json::json!({ "data": [{ "aggregated-datapoints": null }] }),
+            serde_json::json!({ "data": [{ "aggregated-datapoints": [{ "value": null }] }] }),
+        ] {
+            assert!(matches!(metric_total(&value), MetricRead::Unknown { .. }));
+        }
+
+        let capped = Value::Object(serde_json::Map::from_iter([(
+            "data".to_string(),
+            Value::Array(
+                (0..MONITORING_MAX_RETURNED_SERIES)
+                    .map(|_| serde_json::json!({ "aggregated-datapoints": [] }))
+                    .collect(),
+            ),
+        )]));
+        assert!(matches!(
+            metric_total(&capped),
+            MetricRead::Unknown {
+                provenance: "metric_response_potentially_capped",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -7314,6 +7486,25 @@ mod tests {
     }
 
     struct FixtureSuppressionRunner;
+
+    struct FixtureMetricsRunner {
+        output: Value,
+    }
+
+    impl OciCliRunner for FixtureMetricsRunner {
+        fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+            match command_label(args).as_str() {
+                "monitoring metric list" => Ok(serde_json::json!({
+                    "data": STANDARD_METRICS
+                        .iter()
+                        .map(|(_, name)| serde_json::json!({ "name": name }))
+                        .collect::<Vec<_>>(),
+                })),
+                "monitoring metric-data summarize-metrics-data" => Ok(self.output.clone()),
+                other => panic!("unexpected OCI command: {other}"),
+            }
+        }
+    }
 
     impl OciCliRunner for FixtureSuppressionRunner {
         fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {

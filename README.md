@@ -248,6 +248,13 @@ contract tests with an OCI profile configured. The live smoke must not use
   recipient reconciliation keys. Every matched readiness row must carry an
   unambiguous service-specific OCI Email Delivery provider identity; missing,
   non-OCI, mixed-provider, or contradictory provider claims remain blocked.
+- `oci_email_metrics` distinguishes an observed zero from unknown metric
+  evidence. A metric result with `status="ok"`,
+  `provenance="empty_series_normalized_zero"`, and `total=0` means OCI
+  returned a syntactically complete response whose selected series had no
+  datapoints. Empty CLI stdout, missing or malformed response data, unavailable
+  metric definitions, and potentially capped responses retain `total=null` and
+  a non-observed provenance value. Consumers must not coalesce `null` to zero.
 - `oci_email_traceability_audit` is the exact-trace boundary. Its v2 output has
   `schema="oci-email-delivery.traceability-audit.v2"`; consumers must branch
   on that schema and the evidence-state fields, rather than treat summary

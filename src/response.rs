@@ -394,24 +394,30 @@ pub struct MetricResult {
     pub oci_name: String,
     pub status: String,
     pub query: String,
-    pub total: f64,
+    /// `Some(0.0)` is emitted only for a syntactically complete OCI response
+    /// whose selected series contains no datapoints. `None` means the metric
+    /// was unavailable, incomplete, malformed, or potentially capped.
+    pub total: Option<f64>,
     pub point_count: usize,
     pub series_count: usize,
+    /// Explains whether a numeric total was observed, safely normalized from a
+    /// complete empty series, or deliberately withheld.
+    pub provenance: String,
     pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct MetricTotals {
-    pub accepted: f64,
-    pub relayed: f64,
-    pub hard_bounced: f64,
-    pub soft_bounced: f64,
-    pub suppressed: f64,
-    pub complaints: f64,
-    pub blocklisted: f64,
-    pub list_unsubscribed: f64,
-    pub opened: f64,
-    pub clicked: f64,
+    pub accepted: Option<f64>,
+    pub relayed: Option<f64>,
+    pub hard_bounced: Option<f64>,
+    pub soft_bounced: Option<f64>,
+    pub suppressed: Option<f64>,
+    pub complaints: Option<f64>,
+    pub blocklisted: Option<f64>,
+    pub list_unsubscribed: Option<f64>,
+    pub opened: Option<f64>,
+    pub clicked: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
