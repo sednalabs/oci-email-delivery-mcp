@@ -32,14 +32,14 @@ jobs:
     steps:
       - name: Checkout repository
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Run OSV scanner
         # google/osv-scanner-action v2.3.8
-        uses: google/osv-scanner-action/osv-scanner-action@8dc09193bb540e09b23da07ad7e30bd33bf87018
+        uses: google/osv-scanner-action/osv-scanner-action@8e5cf47b818121e8b405931c82126c2630b0b20d
         with:
           scan-args: |-
             --output=results.json
@@ -51,7 +51,7 @@ jobs:
 
       - name: Build OSV SARIF report
         # google/osv-scanner-action v2.3.8
-        uses: google/osv-scanner-action/osv-reporter-action@8dc09193bb540e09b23da07ad7e30bd33bf87018
+        uses: google/osv-scanner-action/osv-reporter-action@8e5cf47b818121e8b405931c82126c2630b0b20d
         with:
           scan-args: |-
             --output=results.sarif
@@ -71,7 +71,7 @@ jobs:
 
       - name: Upload OSV results to code scanning
         # github/codeql-action v4
-        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938
         if: ${{ !cancelled() }}
         with:
           sarif_file: results.sarif
