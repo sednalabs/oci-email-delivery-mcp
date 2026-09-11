@@ -147,14 +147,19 @@ contract tests with an OCI profile configured. The live smoke must not use
   nullable event counts, and compact action totals. The provider row limit
   defaults to and is capped at 1,000. When that limit is reached, observed
   identities remain `matched`, but every unobserved identity is `capped`
-  rather than falsely reported absent. `no_match` is emitted only when the
-  request includes `source_domain` and the same complete query returned at
-  least one event for that source. An unscoped, wholly empty, or
-  source-mismatched read cannot prove absence. Missing or conflicting
+  rather than falsely reported absent. `no_match` means a successful,
+  uncapped query with `source_domain` observed no matching events for that
+  identity; it does not require another requested identity to match.
+  A valid zero-row response is not a logging outage. Check resource-scoped
+  `oci_email_logging_status` separately for active logging configuration.
+  Neither `no_match` nor report status `complete` proves provider non-acceptance,
+  complete log coverage, or safety to resend: configuration, ingestion delay,
+  retention, and the requested window can hide events. `complete` describes
+  processing of the bounded query only. An unscoped read cannot classify an
+  unobserved identity as `no_match`. Missing or conflicting
   authoritative source evidence is preserved per Message-ID as
   `logging_unavailable`, even when another requested identity has clean source
-  evidence. Null,
-  empty, malformed, permission-denied, or otherwise unusable Logging Search evidence returns
+  evidence. Null, missing output, malformed, permission-denied, or otherwise unusable Logging Search evidence returns
   `logging_unavailable` for every input without exposing raw provider errors.
   The tool never returns recipients, raw Message-IDs, headers, events, OCIDs,
   or provider payloads, and `send_authorized` is always false. The bounded
