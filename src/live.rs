@@ -6113,7 +6113,8 @@ mod tests {
 
     #[test]
     fn bulk_trace_null_provider_evidence_is_explicit_logging_unavailable() {
-        for output in [Value::Null] {
+        {
+            let output = Value::Null;
             let backend = LiveOciEmailBackend::with_runner(
                 test_config(),
                 Arc::new(FixtureEventOutputRunner(output)),
