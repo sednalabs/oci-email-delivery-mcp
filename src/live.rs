@@ -1322,7 +1322,6 @@ impl LiveOciEmailBackend {
             .filter(|event| event_matches_source_domain(event, request.source_domain.as_deref()))
             .collect::<Vec<_>>();
         let source_domain_matched = events.len();
-        let scoped_logging_observed = request.source_domain.is_some() && source_domain_matched > 0;
         let mut per_message_actions = BTreeMap::<String, BTreeMap<String, usize>>::new();
         let mut aggregate_actions = BTreeMap::<String, usize>::new();
         for event in &events {
@@ -1368,7 +1367,9 @@ impl LiveOciEmailBackend {
                 } else if rows_capped {
                     totals.capped += 1;
                     "capped"
-                } else if !scoped_logging_observed {
+                } else if request.source_domain.is_none()
+                    || (provider_returned > 0 && source_domain_matched == 0)
+                {
                     totals.logging_unavailable += 1;
                     "logging_unavailable"
                 } else {
@@ -1417,14 +1418,21 @@ impl LiveOciEmailBackend {
             findings.push(finding(
                 "warning",
                 "bulk_trace_source_scope_required_for_absence",
-                "A source_domain is required before an unobserved exact-message identity can be classified as absent.",
+                "A source_domain is required before an unobserved exact-message identity can be classified as no_match.",
             ));
         }
         if provider_returned == 0 {
             findings.push(finding(
                 "warning",
                 "bulk_trace_no_log_evidence",
-                "The exact-message query returned no events, so logging availability is not proven and no input is classified as absent.",
+                "The exact-message query succeeded with zero events. This does not establish whether source logging is configured or whether the log window is complete; check resource-scoped logging status separately.",
+            ));
+        }
+        if totals.no_match > 0 {
+            findings.push(finding(
+                "warning",
+                "bulk_trace_no_match_not_non_acceptance",
+                "no_match means no matching event was observed in this bounded query, not provider non-acceptance. Log configuration, ingestion delay and retention can hide events; this result never authorizes a resend or retry.",
             ));
         }
 
@@ -6104,11 +6112,8 @@ mod tests {
     }
 
     #[test]
-    fn bulk_trace_null_or_empty_provider_evidence_is_explicit_logging_unavailable() {
-        for output in [
-            Value::Null,
-            serde_json::json!({ "data": { "results": [] } }),
-        ] {
+    fn bulk_trace_null_provider_evidence_is_explicit_logging_unavailable() {
+        for output in [Value::Null] {
             let backend = LiveOciEmailBackend::with_runner(
                 test_config(),
                 Arc::new(FixtureEventOutputRunner(output)),
@@ -6134,6 +6139,62 @@ mod tests {
                 .messages
                 .iter()
                 .all(|message| message.event_count.is_none()));
+        }
+    }
+
+    #[test]
+    fn bulk_trace_empty_query_does_not_depend_on_positive_control() {
+        for positive_control in [false, true] {
+            let results = if positive_control {
+                vec![serde_json::json!({
+                    "datetime": "2026-06-30T00:10:00Z",
+                    "data": { "logContent": {
+                        "type": "com.oraclecloud.emaildelivery.emaildomain.outboundaccepted",
+                        "source": "sender.example",
+                        "time": "2026-06-30T00:10:00Z",
+                        "data": { "action": "accept", "messageId": "message-two" }
+                    }}
+                })]
+            } else {
+                vec![]
+            };
+            let runner = Arc::new(FixtureBulkTraceRunner {
+                calls: AtomicUsize::new(0),
+                output: serde_json::json!({ "data": { "results": results } }),
+            });
+            let backend = LiveOciEmailBackend::with_runner(test_config(), runner.clone());
+            let report = backend
+                .bulk_trace_messages(&BulkTraceMessagesRequest {
+                    start_time: "2026-06-30T00:00:00Z".to_string(),
+                    end_time: "2026-06-30T01:00:00Z".to_string(),
+                    message_ids: vec!["message-one".to_string(), "message-two".to_string()],
+                    source_domain: Some("sender.example".to_string()),
+                    limit: None,
+                    compartment_id: None,
+                })
+                .expect("successful query report");
+            assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(report.status, "complete");
+            assert!(!report.send_authorized);
+            assert!(!report.raw_payload_returned);
+            assert_eq!(report.totals.logging_unavailable, 0);
+            assert_eq!(report.totals.no_match, if positive_control { 1 } else { 2 });
+            assert_eq!(report.messages[0].status, "no_match");
+            assert_eq!(report.messages[0].event_count, Some(0));
+            assert!(report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "bulk_trace_no_match_not_non_acceptance"));
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.code == "bulk_trace_no_log_evidence"),
+                !positive_control
+            );
+            let payload = serde_json::to_string(&report).expect("redacted report");
+            assert!(!payload.contains("message-one"));
+            assert!(!payload.contains("message-two"));
         }
     }
 
