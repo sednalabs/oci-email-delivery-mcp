@@ -473,7 +473,7 @@ source = "git+https://github.com/sednalabs/mcp-toolkit-rs?rev=211c5687645b08e1be
 dependencies = [
  "mcp-toolkit-core",
  "mcp-toolkit-server",
- "rmcp",
+ "rmcp 1.8.0",
 ]
 
 [[package]]
@@ -481,7 +481,7 @@ name = "mcp-toolkit-core"
 version = "0.1.0"
 source = "git+https://github.com/sednalabs/mcp-toolkit-rs?rev=211c5687645b08e1beb81ad78891dd3214746fea#211c5687645b08e1beb81ad78891dd3214746fea"
 dependencies = [
- "rmcp",
+ "rmcp 1.8.0",
  "serde",
  "serde_json",
 ]
@@ -502,7 +502,7 @@ name = "mcp-toolkit-server"
 version = "0.1.0"
 source = "git+https://github.com/sednalabs/mcp-toolkit-rs?rev=211c5687645b08e1beb81ad78891dd3214746fea#211c5687645b08e1beb81ad78891dd3214746fea"
 dependencies = [
- "rmcp",
+ "rmcp 1.8.0",
  "tokio",
 ]
 
@@ -541,7 +541,7 @@ dependencies = [
  "mcp-toolkit",
  "mcp-toolkit-core",
  "mcp-toolkit-testing",
- "rmcp",
+ "rmcp 2.0.0",
  "serde",
  "serde_json",
  "sha2",
@@ -632,7 +632,28 @@ dependencies = [
  "futures",
  "pastey",
  "pin-project-lite",
- "rmcp-macros",
+ "rmcp-macros 1.8.0",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "rmcp"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d52d21e5b342699bc4de690e6104fc4e43255e4e8420ff0f2cbb963aac09da6f"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "pastey",
+ "pin-project-lite",
+ "rmcp-macros 2.2.0",
  "schemars",
  "serde",
  "serde_json",
@@ -647,6 +668,19 @@ name = "rmcp-macros"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aad0035b69380782d78ea95b508327e6deaa2235909053e596eea8f27b5e1d5"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn",
+]
+
+[[package]]
+name = "rmcp-macros"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "783d787bf21813b285f13019adc49e11af501c658890c1e519f31f937c68b7e3"
 dependencies = [
  "darling",
  "proc-macro2",
