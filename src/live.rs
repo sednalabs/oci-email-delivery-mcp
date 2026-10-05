@@ -1810,7 +1810,7 @@ fn sdk_profile_authority_supported(
     region_available: bool,
     unsupported_setting_present: bool,
 ) -> bool {
-    auth.map_or(true, |value| value.eq_ignore_ascii_case("api_key"))
+    auth.is_none_or(|value| value.eq_ignore_ascii_case("api_key"))
         && api_key_fields_present
         && region_available
         && !unsupported_setting_present
