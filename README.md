@@ -257,7 +257,10 @@ contract tests with an OCI profile configured. The live smoke must not use
   evidence. A metric result with `status="ok"`,
   `provenance="empty_series_normalized_zero"`, and `total=0` means OCI
   returned a syntactically complete response whose selected series had no
-  datapoints. Empty CLI stdout, missing or malformed response data, unavailable
+  datapoints. Empty CLI stdout is corroborated by a second, exact-query OCI SDK
+  request using the CLI's API-key profile and region before it can establish an
+  empty series; unsupported credential or endpoint overrides, probe failures,
+  and timeouts remain unknown. Missing or malformed response data, unavailable
   metric definitions, and potentially capped responses retain `total=null` and
   a non-observed provenance value. Consumers must not coalesce `null` to zero.
 - `oci_email_traceability_audit` is the exact-trace boundary. Its v2 output has

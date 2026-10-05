@@ -28,10 +28,14 @@ use crate::{
     },
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env, fs,
+    path::{Path, PathBuf},
     process::Command,
     sync::Arc,
+    time::SystemTime,
 };
 
 const NAMESPACE: &str = "oci_emaildelivery";
@@ -404,8 +408,8 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 "--end-time".to_string(),
                 request.end_time.clone(),
             ];
-            let value = self.runner.run_optional_json(&args)?;
-            match metric_total(&value) {
+            let (value, sdk_empty_proved) = self.runner.run_metric_json(&args)?;
+            match metric_read_after_sdk_proof(&value, sdk_empty_proved) {
                 MetricRead::Known {
                     total,
                     point_count,
@@ -1472,6 +1476,10 @@ pub trait OciCliRunner: Send + Sync {
     fn run_optional_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
         self.run_json(args)
     }
+
+    fn run_metric_json(&self, args: &[String]) -> Result<(Value, bool), OciEmailError> {
+        self.run_optional_json(args).map(|value| (value, false))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1487,6 +1495,32 @@ impl ProcessOciCliRunner {
 
 impl OciCliRunner for ProcessOciCliRunner {
     fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+        self.run_cli_json(args)
+    }
+
+    fn run_metric_json(&self, args: &[String]) -> Result<(Value, bool), OciEmailError> {
+        let before = metric_sdk_authority_fingerprint(&self.config);
+        let output = self.run_cli_result(args)?;
+        let (value, proved) = resolve_metric_cli_output(&output, || {
+            let Some(before) = before.as_ref() else {
+                return false;
+            };
+            sdk_probe_with_stable_authority(
+                before,
+                || metric_sdk_authority_fingerprint(&self.config),
+                || self.sdk_confirms_empty_metric(args),
+            )
+        });
+        Ok((value, proved))
+    }
+}
+
+impl ProcessOciCliRunner {
+    fn run_cli_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+        self.run_cli_result(args).map(|(value, _)| value)
+    }
+
+    fn run_cli_result(&self, args: &[String]) -> Result<(Value, bool), OciEmailError> {
         let mut full_args = args.to_vec();
         full_args.extend([
             "--profile".to_string(),
@@ -1520,13 +1554,327 @@ impl OciCliRunner for ProcessOciCliRunner {
             });
         }
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.is_empty() {
-            return Ok(Value::Null);
+        parse_cli_stdout(&stdout, args)
+    }
+
+    fn sdk_confirms_empty_metric(&self, args: &[String]) -> bool {
+        const PROBE: &str = r#"import json, sys
+from datetime import datetime
+try:
+ import oci
+ from oci.monitoring import MonitoringClient
+ from oci.monitoring.models import SummarizeMetricsDataDetails
+ p=json.load(sys.stdin)
+ cfg=oci.config.from_file(p['config_file'], p['profile'])
+ if p.get('region'): cfg['region']=p['region']
+ if not all(isinstance(cfg.get(k), str) and cfg[k] for k in ('user','fingerprint','key_file','tenancy','region')): raise RuntimeError()
+ if cfg.get('auth_type') not in (None, 'api_key'): raise RuntimeError()
+ if any(cfg.get(k) for k in ('security_token_file','delegation_token_file','endpoint','base_url','key_content')): raise RuntimeError()
+ client=MonitoringClient(cfg, retry_strategy=oci.retry.NoneRetryStrategy(), timeout=(10,45))
+ d=SummarizeMetricsDataDetails(namespace=p['namespace'], query=p['query'], start_time=datetime.fromisoformat(p['start'].replace('Z', '+00:00')), end_time=datetime.fromisoformat(p['end'].replace('Z', '+00:00')))
+ r=client.summarize_metrics_data(p['compartment'], d)
+ headers={str(k).lower(): v for k,v in (r.headers or {}).items()}
+ proof={'status': r.status, 'data_is_list': isinstance(r.data, list), 'data_is_empty': isinstance(r.data, list) and len(r.data) == 0, 'has_next_page': 'opc-next-page' in headers, 'has_next_cursor': 'opc-next-cursor' in headers}
+ print(json.dumps(proof, separators=(',', ':')))
+except BaseException:
+ pass
+"#;
+        let Some(query) = arg_value(args, "--query-text") else {
+            return false;
+        };
+        let Some(compartment) = arg_value(args, "--compartment-id") else {
+            return false;
+        };
+        let Some(start) = arg_value(args, "--start-time") else {
+            return false;
+        };
+        let Some(end) = arg_value(args, "--end-time") else {
+            return false;
+        };
+        let Some(namespace) = arg_value(args, "--namespace") else {
+            return false;
+        };
+        // Unknown OCI_CLI_* variables can alter authentication, endpoint,
+        // config source, or region semantics. --profile is explicitly passed
+        // by run_cli_json, so only that redundant override is harmless.
+        if !metric_sdk_environment_supported(env::vars().map(|(key, _)| key)) {
+            return false;
         }
-        serde_json::from_str(&stdout).map_err(|err| OciEmailError::Json {
-            context: command_label(args),
-            message: err.to_string(),
-        })
+        let Some(config_file) = metric_sdk_config_path(&self.config) else {
+            return false;
+        };
+        let Some(python) = cli_python(&self.config.cli_bin) else {
+            return false;
+        };
+        let input = serde_json::json!({
+            "config_file": config_file,
+            "profile": self.config.profile,
+            "region": self.config.region,
+            "query": query,
+            "compartment": compartment,
+            "start": start,
+            "end": end,
+            "namespace": namespace,
+        });
+        let Ok(mut child) = Command::new("timeout")
+            .arg("60")
+            .arg(python)
+            .arg("-c")
+            .arg(PROBE)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        use std::io::Write;
+        let Some(mut stdin) = child.stdin.take() else {
+            return false;
+        };
+        if stdin.write_all(input.to_string().as_bytes()).is_err() {
+            return false;
+        }
+        drop(stdin);
+        let Ok(output) = child.wait_with_output() else {
+            return false;
+        };
+        output.status.success() && sdk_response_confirms_empty(&output.stdout)
+    }
+}
+
+fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == name)
+        .and_then(|index| args.get(index + 1))
+        .map(String::as_str)
+}
+
+fn effective_cli_config_path() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".oci").join("config"))
+}
+
+fn metric_sdk_environment_supported(mut keys: impl Iterator<Item = String>) -> bool {
+    !keys.any(|key| key.starts_with("OCI_CLI_") && key != "OCI_CLI_PROFILE")
+}
+
+fn metric_sdk_config_path(config: &OciEmailConfig) -> Option<PathBuf> {
+    let cli_path = effective_cli_config_path()?;
+    if let Some(app_path) = config.config_file.as_deref() {
+        if !same_canonical_file(app_path, &cli_path) {
+            return None;
+        }
+    }
+
+    let value_present = |key: &str| {
+        config
+            .read_profile_value(key)
+            .ok()
+            .flatten()
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    let auth = config.read_profile_value("auth").ok().flatten();
+    let api_key_auth = sdk_profile_authority_supported(
+        auth.as_deref(),
+        ["user", "fingerprint", "key_file", "tenancy"]
+            .iter()
+            .all(|key| value_present(key)),
+        config
+            .region
+            .as_deref()
+            .is_some_and(|region| !region.trim().is_empty())
+            || value_present("region"),
+        [
+            "security_token_file",
+            "delegation_token_file",
+            "endpoint",
+            "base_url",
+            "key_content",
+        ]
+        .iter()
+        .any(|key| value_present(key)),
+    );
+    if !api_key_auth {
+        return None;
+    }
+    Some(cli_path)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MetricAuthorityFingerprint {
+    config: FileFingerprint,
+    key: FileFingerprint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileFingerprint {
+    digest: [u8; 32],
+    metadata: FileMetadataIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileMetadataIdentity {
+    length: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed_seconds: i64,
+    #[cfg(unix)]
+    changed_nanoseconds: i64,
+}
+
+fn metric_sdk_authority_fingerprint(config: &OciEmailConfig) -> Option<MetricAuthorityFingerprint> {
+    let config_path = metric_sdk_config_path(config)?;
+    let config_before = fingerprint_file(&config_path)?;
+    let key_value = config.read_profile_value("key_file").ok()??;
+    let key_path = resolve_api_key_path(&key_value)?;
+    let key = fingerprint_file(&key_path)?;
+    let config_after = fingerprint_file(&config_path)?;
+    if config_before != config_after
+        || config
+            .read_profile_value("key_file")
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some(key_value.as_str())
+    {
+        return None;
+    }
+    Some(MetricAuthorityFingerprint {
+        config: config_after,
+        key,
+    })
+}
+
+fn resolve_api_key_path(value: &str) -> Option<PathBuf> {
+    if value == "~" {
+        return env::var_os("HOME").map(PathBuf::from);
+    }
+    if let Some(relative) = value.strip_prefix("~/") {
+        return env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(relative));
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
+fn fingerprint_file(path: &Path) -> Option<FileFingerprint> {
+    let before = fs::metadata(path).ok()?;
+    if !before.is_file() {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let after = fs::metadata(path).ok()?;
+    let before_identity = file_metadata_identity(&before);
+    let after_identity = file_metadata_identity(&after);
+    if before_identity != after_identity || bytes.len() as u64 != after_identity.length {
+        return None;
+    }
+    Some(FileFingerprint {
+        digest: Sha256::digest(&bytes).into(),
+        metadata: after_identity,
+    })
+}
+
+fn file_metadata_identity(metadata: &fs::Metadata) -> FileMetadataIdentity {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+
+    FileMetadataIdentity {
+        length: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        changed_seconds: metadata.ctime(),
+        #[cfg(unix)]
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
+}
+
+fn same_canonical_file(left: &Path, right: &Path) -> bool {
+    canonical_path(left).is_some_and(|left| canonical_path(right).as_ref() == Some(&left))
+}
+
+fn sdk_profile_authority_supported(
+    auth: Option<&str>,
+    api_key_fields_present: bool,
+    region_available: bool,
+    unsupported_setting_present: bool,
+) -> bool {
+    auth.map_or(true, |value| value.eq_ignore_ascii_case("api_key"))
+        && api_key_fields_present
+        && region_available
+        && !unsupported_setting_present
+}
+
+fn resolve_metric_cli_output(
+    output: &(Value, bool),
+    sdk_probe: impl FnOnce() -> bool,
+) -> (Value, bool) {
+    let (value, blank) = output;
+    if *blank {
+        (value.clone(), sdk_probe())
+    } else {
+        (value.clone(), false)
+    }
+}
+
+fn sdk_probe_with_stable_authority(
+    before: &MetricAuthorityFingerprint,
+    mut current: impl FnMut() -> Option<MetricAuthorityFingerprint>,
+    probe: impl FnOnce() -> bool,
+) -> bool {
+    if current().as_ref() != Some(before) || !probe() {
+        return false;
+    }
+    current().as_ref() == Some(before)
+}
+
+fn sdk_response_confirms_empty(stdout: &[u8]) -> bool {
+    let Ok(proof) = serde_json::from_slice::<Value>(stdout) else {
+        return false;
+    };
+    proof.as_object().is_some_and(|fields| fields.len() == 5)
+        && proof.get("status").and_then(Value::as_u64) == Some(200)
+        && proof.get("data_is_list").and_then(Value::as_bool) == Some(true)
+        && proof.get("data_is_empty").and_then(Value::as_bool) == Some(true)
+        && proof.get("has_next_page").and_then(Value::as_bool) == Some(false)
+        && proof.get("has_next_cursor").and_then(Value::as_bool) == Some(false)
+}
+
+fn canonical_path(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok()
+}
+
+fn cli_python(cli_bin: &str) -> Option<PathBuf> {
+    let candidate = if cli_bin.contains(std::path::MAIN_SEPARATOR) {
+        PathBuf::from(cli_bin)
+    } else {
+        env::split_paths(&env::var_os("PATH")?)
+            .map(|dir| dir.join(cli_bin))
+            .find(|path| path.is_file())?
+    };
+    let executable = fs::canonicalize(candidate).ok()?;
+    let source = fs::read_to_string(&executable).ok()?;
+    let first = source.lines().next()?.strip_prefix("#!")?.trim();
+    let mut fields = first.split_whitespace();
+    let interpreter = fields.next()?;
+    if Path::new(interpreter).file_name()?.to_string_lossy() == "env" {
+        let requested = fields.find(|field| !field.starts_with('-'))?;
+        env::split_paths(&env::var_os("PATH")?)
+            .map(|dir| dir.join(requested))
+            .find(|path| path.is_file())
+    } else {
+        Some(PathBuf::from(interpreter))
     }
 }
 
@@ -1536,6 +1884,18 @@ fn command_label(args: &[String]) -> String {
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn parse_cli_stdout(stdout: &str, args: &[String]) -> Result<(Value, bool), OciEmailError> {
+    if stdout.is_empty() {
+        return Ok((Value::Null, true));
+    }
+    serde_json::from_str(stdout)
+        .map(|value| (value, false))
+        .map_err(|err| OciEmailError::Json {
+            context: command_label(args),
+            message: err.to_string(),
+        })
 }
 
 fn json_items(value: &Value) -> Vec<&Value> {
@@ -3678,6 +4038,19 @@ fn metric_total(value: &Value) -> MetricRead {
     }
 }
 
+fn metric_read_after_sdk_proof(value: &Value, sdk_empty_proved: bool) -> MetricRead {
+    if sdk_empty_proved {
+        MetricRead::Known {
+            total: 0.0,
+            point_count: 0,
+            series_count: 0,
+            provenance: "empty_series_normalized_zero",
+        }
+    } else {
+        metric_total(value)
+    }
+}
+
 fn assign_metric_total(totals: &mut MetricTotals, key: &str, total: Option<f64>) {
     match key {
         "accepted" => totals.accepted = total,
@@ -4921,6 +5294,213 @@ mod tests {
         path::PathBuf,
         sync::atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn metric_cli_output_distinguishes_blank_from_explicit_null() {
+        let args = vec!["monitoring".to_string(), "metric-data".to_string()];
+        let (blank_value, blank) =
+            parse_cli_stdout("", &args).expect("blank is a valid CLI outcome");
+        assert!(blank);
+        assert!(blank_value.is_null());
+
+        let (null_value, blank) = parse_cli_stdout("null", &args).expect("JSON null parses");
+        assert!(!blank);
+        assert!(null_value.is_null());
+        assert!(parse_cli_stdout("not-json", &args).is_err());
+    }
+
+    #[test]
+    fn metric_sdk_fallback_runs_only_for_blank_successful_cli_output() {
+        let mut calls = 0;
+        let explicit_null = (Value::Null, false);
+        let (value, proved) = resolve_metric_cli_output(&explicit_null, || {
+            calls += 1;
+            true
+        });
+        assert!(value.is_null());
+        assert!(!proved);
+        assert_eq!(calls, 0);
+
+        let blank = (Value::Null, true);
+        let (value, proved) = resolve_metric_cli_output(&blank, || {
+            calls += 1;
+            true
+        });
+        assert!(value.is_null());
+        assert!(proved);
+        assert_eq!(calls, 1);
+
+        let (value, proved) = resolve_metric_cli_output(&blank, || false);
+        assert!(value.is_null());
+        assert!(!proved);
+        assert!(matches!(metric_total(&value), MetricRead::Unknown { .. }));
+    }
+
+    #[test]
+    fn metric_sdk_empty_confirmation_fails_closed_for_incomplete_proof() {
+        let valid = serde_json::json!({
+            "status": 200,
+            "data_is_list": true,
+            "data_is_empty": true,
+            "has_next_page": false,
+            "has_next_cursor": false,
+        });
+        assert!(sdk_response_confirms_empty(valid.to_string().as_bytes()));
+
+        let blank_cli = (Value::Null, true);
+        for proof in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"status": 503, "data_is_list": true, "data_is_empty": true, "has_next_page": false, "has_next_cursor": false}),
+            serde_json::json!({"status": 200, "data_is_list": false, "data_is_empty": true, "has_next_page": false, "has_next_cursor": false}),
+            serde_json::json!({"status": 200, "data_is_list": true, "data_is_empty": false, "has_next_page": false, "has_next_cursor": false}),
+            serde_json::json!({"status": 200, "data_is_list": true, "data_is_empty": true, "has_next_page": true, "has_next_cursor": false}),
+            serde_json::json!({"status": 200, "data_is_list": true, "data_is_empty": true, "has_next_page": false, "has_next_cursor": true}),
+            serde_json::json!({"status": 200, "data_is_list": true, "data_is_empty": true, "has_next_page": false, "has_next_cursor": false, "raw_payload": "must-not-be-propagated"}),
+        ] {
+            let proof = proof.to_string();
+            let (value, confirmed) = resolve_metric_cli_output(&blank_cli, || {
+                sdk_response_confirms_empty(proof.as_bytes())
+            });
+            assert!(!confirmed);
+            assert!(matches!(metric_total(&value), MetricRead::Unknown { .. }));
+        }
+        for failed_probe in [b"not-json".as_slice(), b""] {
+            let (value, confirmed) =
+                resolve_metric_cli_output(&blank_cli, || sdk_response_confirms_empty(failed_probe));
+            assert!(!confirmed);
+            assert!(matches!(metric_total(&value), MetricRead::Unknown { .. }));
+        }
+    }
+
+    #[test]
+    fn metric_sdk_configuration_and_override_gates_fail_closed() {
+        assert!(metric_sdk_environment_supported(
+            ["OCI_CLI_PROFILE".to_string()].into_iter()
+        ));
+        for override_name in [
+            "OCI_CLI_AUTH",
+            "OCI_CLI_REGION",
+            "OCI_CLI_CONFIG_FILE",
+            "OCI_CLI_ENDPOINT",
+        ] {
+            assert!(!metric_sdk_environment_supported(
+                [override_name.to_string()].into_iter()
+            ));
+        }
+
+        assert!(sdk_profile_authority_supported(None, true, true, false));
+        assert!(sdk_profile_authority_supported(
+            Some("API_KEY"),
+            true,
+            true,
+            false
+        ));
+        assert!(!sdk_profile_authority_supported(
+            Some("security_token"),
+            true,
+            true,
+            false
+        ));
+        assert!(!sdk_profile_authority_supported(None, false, true, false));
+        assert!(!sdk_profile_authority_supported(None, true, false, false));
+        assert!(!sdk_profile_authority_supported(None, true, true, true));
+
+        assert!(same_canonical_file(Path::new("."), Path::new(".")));
+        assert!(!same_canonical_file(
+            Path::new("src"),
+            Path::new("README.md")
+        ));
+        assert!(!same_canonical_file(
+            Path::new("missing-config-a"),
+            Path::new("missing-config-b")
+        ));
+    }
+
+    #[test]
+    fn metric_sdk_authority_fingerprint_rejects_config_or_key_drift() {
+        let root = std::env::temp_dir().join(format!(
+            "oci-metric-proof-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir(&root).expect("create synthetic temp directory");
+        let config_path = root.join("synthetic-config");
+        let key_path = root.join("synthetic-key");
+        fs::write(&config_path, b"profile=synthetic\n").expect("write synthetic config");
+        fs::write(&key_path, b"synthetic-key-material\n").expect("write synthetic key");
+        let blank = (Value::Null, true);
+        let valid_sdk_proof = br#"{"status":200,"data_is_list":true,"data_is_empty":true,"has_next_page":false,"has_next_cursor":false}"#;
+
+        let capture = || {
+            Some(MetricAuthorityFingerprint {
+                config: fingerprint_file(&config_path).expect("fingerprint config"),
+                key: fingerprint_file(&key_path).expect("fingerprint key"),
+            })
+        };
+        let initial = capture().expect("initial authority fingerprint");
+        let (value, confirmed) = resolve_metric_cli_output(&blank, || {
+            sdk_probe_with_stable_authority(&initial, capture, || {
+                sdk_response_confirms_empty(valid_sdk_proof)
+            })
+        });
+        assert!(confirmed);
+        assert!(matches!(
+            metric_read_after_sdk_proof(&value, confirmed),
+            MetricRead::Known { total: 0.0, .. }
+        ));
+
+        for (path, replacement) in [
+            (&config_path, b"profile=changed\n".as_slice()),
+            (&key_path, b"changed-synthetic-key\n".as_slice()),
+        ] {
+            let before_cli = capture().expect("capture authority before CLI phase");
+            fs::write(path, replacement).expect("mutate synthetic authority input");
+            let mut probe_called = false;
+            let confirmed = sdk_probe_with_stable_authority(&before_cli, capture, || {
+                probe_called = true;
+                sdk_response_confirms_empty(valid_sdk_proof)
+            });
+            assert!(!confirmed);
+            assert!(!probe_called);
+            let (value, confirmed) = resolve_metric_cli_output(&blank, || confirmed);
+            assert!(!confirmed);
+            assert!(matches!(
+                metric_read_after_sdk_proof(&value, confirmed),
+                MetricRead::Unknown { .. }
+            ));
+            fs::write(&config_path, b"profile=synthetic\n").expect("restore synthetic config");
+            fs::write(&key_path, b"synthetic-key-material\n").expect("restore synthetic key");
+
+            let before_sdk = capture().expect("capture authority before SDK phase");
+            let mut checks = 0;
+            let (value, confirmed) = resolve_metric_cli_output(&blank, || {
+                sdk_probe_with_stable_authority(
+                    &before_sdk,
+                    || {
+                        checks += 1;
+                        if checks == 2 {
+                            fs::write(path, replacement)
+                                .expect("mutate synthetic input during SDK phase");
+                        }
+                        capture()
+                    },
+                    || sdk_response_confirms_empty(valid_sdk_proof),
+                )
+            });
+            assert!(!confirmed);
+            assert!(matches!(
+                metric_read_after_sdk_proof(&value, confirmed),
+                MetricRead::Unknown { .. }
+            ));
+            fs::write(&config_path, b"profile=synthetic\n").expect("restore synthetic config");
+            fs::write(&key_path, b"synthetic-key-material\n").expect("restore synthetic key");
+        }
+        fs::remove_dir_all(root).expect("remove synthetic authority files");
+    }
 
     #[test]
     fn metric_query_filters_dimensions() {
