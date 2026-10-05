@@ -1616,7 +1616,7 @@ except BaseException:
             "end": end,
             "namespace": namespace,
         });
-        let Ok(mut child) = Command::new("timeout")
+        let Ok(mut child) = Command::new("/usr/bin/timeout")
             .arg("60")
             .arg(python)
             .arg("-c")
@@ -1865,17 +1865,38 @@ fn cli_python(cli_bin: &str) -> Option<PathBuf> {
     };
     let executable = fs::canonicalize(candidate).ok()?;
     let source = fs::read_to_string(&executable).ok()?;
-    let first = source.lines().next()?.strip_prefix("#!")?.trim();
-    let mut fields = first.split_whitespace();
-    let interpreter = fields.next()?;
-    if Path::new(interpreter).file_name()?.to_string_lossy() == "env" {
-        let requested = fields.find(|field| !field.starts_with('-'))?;
-        env::split_paths(&env::var_os("PATH")?)
-            .map(|dir| dir.join(requested))
-            .find(|path| path.is_file())
-    } else {
-        Some(PathBuf::from(interpreter))
+    let candidate = parse_python_shebang(source.lines().next()?)?;
+    let canonical = fs::canonicalize(candidate).ok()?;
+    let metadata = fs::metadata(&canonical).ok()?;
+    (metadata.is_file()
+        && canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_python_executable_name))
+    .then_some(canonical)
+}
+
+fn parse_python_shebang(line: &str) -> Option<PathBuf> {
+    let mut fields = line.strip_prefix("#!")?.split_whitespace();
+    let interpreter = PathBuf::from(fields.next()?);
+    if fields.next().is_some()
+        || !interpreter.is_absolute()
+        || !interpreter
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_python_executable_name)
+    {
+        return None;
     }
+    Some(interpreter)
+}
+
+fn is_python_executable_name(name: &str) -> bool {
+    name == "python"
+        || name == "python3"
+        || name.strip_prefix("python3.").is_some_and(|minor| {
+            !minor.is_empty() && minor.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn command_label(args: &[String]) -> String {
@@ -5418,88 +5439,112 @@ mod tests {
     }
 
     #[test]
-    fn metric_sdk_authority_fingerprint_rejects_config_or_key_drift() {
-        let root = std::env::temp_dir().join(format!(
-            "oci-metric-proof-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir(&root).expect("create synthetic temp directory");
-        let config_path = root.join("synthetic-config");
-        let key_path = root.join("synthetic-key");
-        fs::write(&config_path, b"profile=synthetic\n").expect("write synthetic config");
-        fs::write(&key_path, b"synthetic-key-material\n").expect("write synthetic key");
-        let blank = (Value::Null, true);
-        let valid_sdk_proof = br#"{"status":200,"data_is_list":true,"data_is_empty":true,"has_next_page":false,"has_next_cursor":false}"#;
+    fn metric_cli_python_shebang_requires_direct_absolute_python() {
+        for shebang in [
+            "#!/usr/bin/python",
+            "#!/usr/bin/python3",
+            "#!/opt/oci/python3.12",
+        ] {
+            assert!(parse_python_shebang(shebang).is_some(), "{shebang}");
+        }
+        for shebang in [
+            "#!/usr/bin/env python3",
+            "#!/usr/bin/python3 -I",
+            "#!python3",
+            "#!/bin/sh",
+            "#!/opt/python3.extra",
+            "#!/opt/python3.12-extra",
+        ] {
+            assert!(parse_python_shebang(shebang).is_none(), "{shebang}");
+        }
 
-        let capture = || {
-            Some(MetricAuthorityFingerprint {
-                config: fingerprint_file(&config_path).expect("fingerprint config"),
-                key: fingerprint_file(&key_path).expect("fingerprint key"),
-            })
-        };
-        let initial = capture().expect("initial authority fingerprint");
-        let (value, confirmed) = resolve_metric_cli_output(&blank, || {
-            sdk_probe_with_stable_authority(&initial, capture, || {
-                sdk_response_confirms_empty(valid_sdk_proof)
-            })
-        });
-        assert!(confirmed);
+        assert!(is_python_executable_name("python3.12"));
+        assert!(!is_python_executable_name("python3.wrapper"));
+    }
+
+    #[test]
+    fn metric_sdk_authority_fingerprint_rejects_config_or_key_drift() {
+        fn file_fingerprint(digest_byte: u8, identity: u64) -> FileFingerprint {
+            FileFingerprint {
+                digest: [digest_byte; 32],
+                metadata: FileMetadataIdentity {
+                    length: 32,
+                    modified: Some(SystemTime::UNIX_EPOCH),
+                    #[cfg(unix)]
+                    device: 1,
+                    #[cfg(unix)]
+                    inode: identity,
+                    #[cfg(unix)]
+                    changed_seconds: identity as i64,
+                    #[cfg(unix)]
+                    changed_nanoseconds: 0,
+                },
+            }
+        }
+        let authority =
+            |config_digest, config_identity, key_digest, key_identity| MetricAuthorityFingerprint {
+                config: file_fingerprint(config_digest, config_identity),
+                key: file_fingerprint(key_digest, key_identity),
+            };
+        let before_cli = authority(1, 11, 2, 22);
+        let config_byte_drift = authority(3, 11, 2, 22);
+        let config_metadata_drift = authority(1, 12, 2, 22);
+        let key_byte_drift = authority(1, 11, 3, 22);
+        let key_metadata_drift = authority(1, 11, 2, 23);
+        let valid_sdk_proof = br#"{"status":200,"data_is_list":true,"data_is_empty":true,"has_next_page":false,"has_next_cursor":false}"#;
+        let current = std::cell::RefCell::new(before_cli.clone());
+        let confirmed = sdk_probe_with_stable_authority(
+            &before_cli,
+            || Some(current.borrow().clone()),
+            || sdk_response_confirms_empty(valid_sdk_proof),
+        );
+        assert!(
+            confirmed,
+            "unchanged authority across all phases proves zero"
+        );
         assert!(matches!(
-            metric_read_after_sdk_proof(&value, confirmed),
+            metric_read_after_sdk_proof(&Value::Null, confirmed),
             MetricRead::Known { total: 0.0, .. }
         ));
 
-        for (path, replacement) in [
-            (&config_path, b"profile=changed\n".as_slice()),
-            (&key_path, b"changed-synthetic-key\n".as_slice()),
+        for changed in [
+            &config_byte_drift,
+            &config_metadata_drift,
+            &key_byte_drift,
+            &key_metadata_drift,
         ] {
-            let before_cli = capture().expect("capture authority before CLI phase");
-            fs::write(path, replacement).expect("mutate synthetic authority input");
+            current.replace(changed.clone());
             let mut probe_called = false;
-            let confirmed = sdk_probe_with_stable_authority(&before_cli, capture, || {
-                probe_called = true;
-                sdk_response_confirms_empty(valid_sdk_proof)
-            });
+            let confirmed = sdk_probe_with_stable_authority(
+                &before_cli,
+                || Some(current.borrow().clone()),
+                || {
+                    probe_called = true;
+                    sdk_response_confirms_empty(valid_sdk_proof)
+                },
+            );
             assert!(!confirmed);
-            assert!(!probe_called);
-            let (value, confirmed) = resolve_metric_cli_output(&blank, || confirmed);
-            assert!(!confirmed);
+            assert!(!probe_called, "CLI-to-SDK drift must stop before probing");
             assert!(matches!(
-                metric_read_after_sdk_proof(&value, confirmed),
+                metric_read_after_sdk_proof(&Value::Null, confirmed),
                 MetricRead::Unknown { .. }
             ));
-            fs::write(&config_path, b"profile=synthetic\n").expect("restore synthetic config");
-            fs::write(&key_path, b"synthetic-key-material\n").expect("restore synthetic key");
 
-            let before_sdk = capture().expect("capture authority before SDK phase");
-            let mut checks = 0;
-            let (value, confirmed) = resolve_metric_cli_output(&blank, || {
-                sdk_probe_with_stable_authority(
-                    &before_sdk,
-                    || {
-                        checks += 1;
-                        if checks == 2 {
-                            fs::write(path, replacement)
-                                .expect("mutate synthetic input during SDK phase");
-                        }
-                        capture()
-                    },
-                    || sdk_response_confirms_empty(valid_sdk_proof),
-                )
-            });
-            assert!(!confirmed);
+            current.replace(before_cli.clone());
+            let confirmed = sdk_probe_with_stable_authority(
+                &before_cli,
+                || Some(current.borrow().clone()),
+                || {
+                    current.replace(changed.clone());
+                    sdk_response_confirms_empty(valid_sdk_proof)
+                },
+            );
+            assert!(!confirmed, "SDK-phase drift must withhold zero");
             assert!(matches!(
-                metric_read_after_sdk_proof(&value, confirmed),
+                metric_read_after_sdk_proof(&Value::Null, confirmed),
                 MetricRead::Unknown { .. }
             ));
-            fs::write(&config_path, b"profile=synthetic\n").expect("restore synthetic config");
-            fs::write(&key_path, b"synthetic-key-material\n").expect("restore synthetic key");
         }
-        fs::remove_dir_all(root).expect("remove synthetic authority files");
     }
 
     #[test]
