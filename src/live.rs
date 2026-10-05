@@ -28,10 +28,14 @@ use crate::{
     },
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env, fs,
+    path::{Path, PathBuf},
     process::Command,
     sync::Arc,
+    time::SystemTime,
 };
 
 const NAMESPACE: &str = "oci_emaildelivery";
@@ -404,8 +408,8 @@ impl OciEmailBackend for LiveOciEmailBackend {
                 "--end-time".to_string(),
                 request.end_time.clone(),
             ];
-            let value = self.runner.run_optional_json(&args)?;
-            match metric_total(&value) {
+            let (value, raw_empty_proved) = self.runner.run_metric_json(&args)?;
+            match metric_read_after_raw_proof(&value, raw_empty_proved) {
                 MetricRead::Known {
                     total,
                     point_count,
@@ -1472,6 +1476,10 @@ pub trait OciCliRunner: Send + Sync {
     fn run_optional_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
         self.run_json(args)
     }
+
+    fn run_metric_json(&self, args: &[String]) -> Result<(Value, bool), OciEmailError> {
+        self.run_optional_json(args).map(|value| (value, false))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1487,6 +1495,33 @@ impl ProcessOciCliRunner {
 
 impl OciCliRunner for ProcessOciCliRunner {
     fn run_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+        self.run_cli_json(args)
+    }
+
+    fn run_metric_json(&self, args: &[String]) -> Result<(Value, bool), OciEmailError> {
+        let before = metric_cli_authority_fingerprint(&self.config);
+        let metric_args = metric_cli_execution_args(args);
+        let output = self.run_cli_result(&metric_args)?;
+        let (value, proved) = resolve_metric_cli_output(&output, || {
+            let Some(before) = before.as_ref() else {
+                return false;
+            };
+            raw_request_with_stable_authority(
+                before,
+                || metric_cli_authority_fingerprint(&self.config),
+                || self.cli_raw_request_confirms_empty_metric(args, before),
+            )
+        });
+        Ok((value, proved))
+    }
+}
+
+impl ProcessOciCliRunner {
+    fn run_cli_json(&self, args: &[String]) -> Result<Value, OciEmailError> {
+        self.run_cli_result(args).map(|(value, _)| value)
+    }
+
+    fn run_cli_result(&self, args: &[String]) -> Result<(Value, bool), OciEmailError> {
         let mut full_args = args.to_vec();
         full_args.extend([
             "--profile".to_string(),
@@ -1520,14 +1555,364 @@ impl OciCliRunner for ProcessOciCliRunner {
             });
         }
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.is_empty() {
-            return Ok(Value::Null);
-        }
-        serde_json::from_str(&stdout).map_err(|err| OciEmailError::Json {
-            context: command_label(args),
-            message: err.to_string(),
-        })
+        parse_cli_stdout(&stdout, args)
     }
+
+    fn cli_raw_request_confirms_empty_metric(
+        &self,
+        args: &[String],
+        before: &MetricAuthorityFingerprint,
+    ) -> bool {
+        // Unknown OCI_CLI_* variables can alter authentication, endpoint,
+        // config source, or region semantics. run_cli_result passes --profile
+        // explicitly, so only that redundant override is harmless.
+        if !metric_cli_environment_supported(env::vars().map(|(key, _)| key)) {
+            return false;
+        }
+        let Some(config_path) = metric_cli_config_path(&self.config) else {
+            return false;
+        };
+        let Some((target_uri, body)) =
+            metric_raw_request_for_region(args, self.config.region.as_deref())
+        else {
+            return false;
+        };
+        if fingerprint_for_cli_config(&self.config, &config_path).as_ref() != Some(before) {
+            return false;
+        }
+        let raw_args = metric_cli_execution_args(&[
+            "raw-request".to_string(),
+            "--http-method".to_string(),
+            "POST".to_string(),
+            "--target-uri".to_string(),
+            target_uri,
+            "--request-body".to_string(),
+            body,
+            "--request-headers".to_string(),
+            r#"{"content-type":"application/json"}"#.to_string(),
+        ]);
+        let Ok((response, blank)) = self.run_cli_result(&raw_args) else {
+            return false;
+        };
+        !blank
+            && fingerprint_for_cli_config(&self.config, &config_path).as_ref() == Some(before)
+            && cli_raw_metric_response_confirms_empty(&response)
+    }
+}
+
+fn metric_cli_execution_args(args: &[String]) -> Vec<String> {
+    let mut metric_args = args.to_vec();
+    metric_args.extend([
+        "--cli-rc-file".to_string(),
+        "/dev/null".to_string(),
+        "--query".to_string(),
+        "@".to_string(),
+        "--auth".to_string(),
+        "api_key".to_string(),
+    ]);
+    metric_args
+}
+
+fn fingerprint_for_cli_config(
+    config: &OciEmailConfig,
+    config_path: &Path,
+) -> Option<MetricAuthorityFingerprint> {
+    let current_path = metric_cli_config_path(config)?;
+    if !same_canonical_file(config_path, &current_path) {
+        return None;
+    }
+    metric_cli_authority_fingerprint(config)
+}
+
+fn metric_raw_request(args: &[String], region: &str) -> Option<(String, String)> {
+    let query = arg_value(args, "--query-text")?;
+    let compartment = arg_value(args, "--compartment-id")?;
+    let start = arg_value(args, "--start-time")?;
+    let end = arg_value(args, "--end-time")?;
+    let namespace = arg_value(args, "--namespace")?;
+    let target_uri = monitoring_metrics_uri(region, compartment)?;
+    let body = serde_json::json!({
+        "namespace": namespace,
+        "query": query,
+        "startTime": start,
+        "endTime": end,
+    })
+    .to_string();
+    Some((target_uri, body))
+}
+
+fn metric_raw_request_for_region(
+    args: &[String],
+    region: Option<&str>,
+) -> Option<(String, String)> {
+    metric_raw_request(args, region?)
+}
+
+fn monitoring_metrics_uri(region: &str, compartment_id: &str) -> Option<String> {
+    if !is_oc1_region_name(region) {
+        return None;
+    }
+    Some(format!(
+        "https://telemetry.{region}.oraclecloud.com/20180401/metrics/actions/summarizeMetricsData?compartmentId={}",
+        percent_encode_query_value(compartment_id)
+    ))
+}
+
+fn is_oc1_region_name(region: &str) -> bool {
+    let labels = region.split('-').collect::<Vec<_>>();
+    let Some((prefix, rest)) = labels.split_first() else {
+        return false;
+    };
+    let Some((suffix, middle)) = rest.split_last() else {
+        return false;
+    };
+    prefix.len() == 2
+        && prefix.bytes().all(|byte| byte.is_ascii_lowercase())
+        && !middle.is_empty()
+        && middle.iter().all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && label.bytes().any(|byte| byte.is_ascii_lowercase())
+        })
+        && !suffix.is_empty()
+        && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        && !suffix.starts_with('0')
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+fn cli_raw_metric_response_confirms_empty(value: &Value) -> bool {
+    let Some(envelope) = value.as_object() else {
+        return false;
+    };
+    envelope.len() == 3
+        && envelope.get("status").and_then(Value::as_str) == Some("200 OK")
+        && envelope
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        && envelope
+            .get("headers")
+            .and_then(Value::as_object)
+            .is_some_and(|headers| {
+                !headers.keys().any(|name| {
+                    name.eq_ignore_ascii_case("opc-next-page")
+                        || name.eq_ignore_ascii_case("opc-next-cursor")
+                })
+            })
+}
+
+fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == name)
+        .and_then(|index| args.get(index + 1))
+        .map(String::as_str)
+}
+
+fn effective_cli_config_path() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".oci").join("config"))
+}
+
+fn metric_cli_environment_supported(mut keys: impl Iterator<Item = String>) -> bool {
+    !keys.any(|key| key.starts_with("OCI_CLI_") && key != "OCI_CLI_PROFILE")
+}
+
+fn metric_cli_config_path(config: &OciEmailConfig) -> Option<PathBuf> {
+    let cli_path = effective_cli_config_path()?;
+    if let Some(app_path) = config.config_file.as_deref() {
+        if !same_canonical_file(app_path, &cli_path) {
+            return None;
+        }
+    }
+
+    let value_present = |key: &str| {
+        config
+            .read_profile_value(key)
+            .ok()
+            .flatten()
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    let auth = config.read_profile_value("auth").ok().flatten();
+    let api_key_auth = cli_profile_authority_supported(
+        auth.as_deref(),
+        ["user", "fingerprint", "key_file", "tenancy"]
+            .iter()
+            .all(|key| value_present(key)),
+        config
+            .region
+            .as_deref()
+            .is_some_and(|region| !region.trim().is_empty())
+            || value_present("region"),
+        [
+            "security_token_file",
+            "delegation_token_file",
+            "endpoint",
+            "base_url",
+            "key_content",
+        ]
+        .iter()
+        .any(|key| value_present(key)),
+    );
+    if !api_key_auth {
+        return None;
+    }
+    Some(cli_path)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MetricAuthorityFingerprint {
+    config: FileFingerprint,
+    key: FileFingerprint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileFingerprint {
+    digest: [u8; 32],
+    metadata: FileMetadataIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileMetadataIdentity {
+    length: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed_seconds: i64,
+    #[cfg(unix)]
+    changed_nanoseconds: i64,
+}
+
+fn metric_cli_authority_fingerprint(config: &OciEmailConfig) -> Option<MetricAuthorityFingerprint> {
+    let config_path = metric_cli_config_path(config)?;
+    let config_before = fingerprint_file(&config_path)?;
+    let key_value = config.read_profile_value("key_file").ok()??;
+    let key_path = resolve_api_key_path(&key_value)?;
+    let key = fingerprint_file(&key_path)?;
+    let config_after = fingerprint_file(&config_path)?;
+    if config_before != config_after
+        || config
+            .read_profile_value("key_file")
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some(key_value.as_str())
+    {
+        return None;
+    }
+    Some(MetricAuthorityFingerprint {
+        config: config_after,
+        key,
+    })
+}
+
+fn resolve_api_key_path(value: &str) -> Option<PathBuf> {
+    if value == "~" {
+        return env::var_os("HOME").map(PathBuf::from);
+    }
+    if let Some(relative) = value.strip_prefix("~/") {
+        return env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(relative));
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
+fn fingerprint_file(path: &Path) -> Option<FileFingerprint> {
+    let before = fs::metadata(path).ok()?;
+    if !before.is_file() {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let after = fs::metadata(path).ok()?;
+    let before_identity = file_metadata_identity(&before);
+    let after_identity = file_metadata_identity(&after);
+    if before_identity != after_identity || bytes.len() as u64 != after_identity.length {
+        return None;
+    }
+    Some(FileFingerprint {
+        digest: Sha256::digest(&bytes).into(),
+        metadata: after_identity,
+    })
+}
+
+fn file_metadata_identity(metadata: &fs::Metadata) -> FileMetadataIdentity {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+
+    FileMetadataIdentity {
+        length: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        changed_seconds: metadata.ctime(),
+        #[cfg(unix)]
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
+}
+
+fn same_canonical_file(left: &Path, right: &Path) -> bool {
+    canonical_path(left).is_some_and(|left| canonical_path(right).as_ref() == Some(&left))
+}
+
+fn cli_profile_authority_supported(
+    auth: Option<&str>,
+    api_key_fields_present: bool,
+    region_available: bool,
+    unsupported_setting_present: bool,
+) -> bool {
+    auth.is_none_or(|value| value.eq_ignore_ascii_case("api_key"))
+        && api_key_fields_present
+        && region_available
+        && !unsupported_setting_present
+}
+
+fn resolve_metric_cli_output(
+    output: &(Value, bool),
+    raw_probe: impl FnOnce() -> bool,
+) -> (Value, bool) {
+    let (value, blank) = output;
+    if *blank {
+        (value.clone(), raw_probe())
+    } else {
+        (value.clone(), false)
+    }
+}
+
+fn raw_request_with_stable_authority(
+    before: &MetricAuthorityFingerprint,
+    mut current: impl FnMut() -> Option<MetricAuthorityFingerprint>,
+    probe: impl FnOnce() -> bool,
+) -> bool {
+    if current().as_ref() != Some(before) || !probe() {
+        return false;
+    }
+    current().as_ref() == Some(before)
+}
+
+fn canonical_path(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok()
 }
 
 fn command_label(args: &[String]) -> String {
@@ -1536,6 +1921,18 @@ fn command_label(args: &[String]) -> String {
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn parse_cli_stdout(stdout: &str, args: &[String]) -> Result<(Value, bool), OciEmailError> {
+    if stdout.is_empty() {
+        return Ok((Value::Null, true));
+    }
+    serde_json::from_str(stdout)
+        .map(|value| (value, false))
+        .map_err(|err| OciEmailError::Json {
+            context: command_label(args),
+            message: err.to_string(),
+        })
 }
 
 fn json_items(value: &Value) -> Vec<&Value> {
@@ -3678,6 +4075,19 @@ fn metric_total(value: &Value) -> MetricRead {
     }
 }
 
+fn metric_read_after_raw_proof(value: &Value, raw_empty_proved: bool) -> MetricRead {
+    if raw_empty_proved {
+        MetricRead::Known {
+            total: 0.0,
+            point_count: 0,
+            series_count: 0,
+            provenance: "empty_series_normalized_zero",
+        }
+    } else {
+        metric_total(value)
+    }
+}
+
 fn assign_metric_total(totals: &mut MetricTotals, key: &str, total: Option<f64>) {
     match key {
         "accepted" => totals.accepted = total,
@@ -4921,6 +5331,313 @@ mod tests {
         path::PathBuf,
         sync::atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn metric_cli_output_distinguishes_blank_from_explicit_null() {
+        let args = vec!["monitoring".to_string(), "metric-data".to_string()];
+        let (blank_value, blank) =
+            parse_cli_stdout("", &args).expect("blank is a valid CLI outcome");
+        assert!(blank);
+        assert!(blank_value.is_null());
+
+        let (null_value, blank) = parse_cli_stdout("null", &args).expect("JSON null parses");
+        assert!(!blank);
+        assert!(null_value.is_null());
+        assert!(parse_cli_stdout("not-json", &args).is_err());
+    }
+
+    #[test]
+    fn metric_raw_request_fallback_runs_only_for_blank_successful_cli_output() {
+        let mut calls = 0;
+        let cli_response = serde_json::json!({
+            "status": "200 OK",
+            "headers": {},
+            "data": [],
+        });
+        let explicit_null = (Value::Null, false);
+        let (value, proved) = resolve_metric_cli_output(&explicit_null, || {
+            calls += 1;
+            cli_raw_metric_response_confirms_empty(&cli_response)
+        });
+        assert!(value.is_null());
+        assert!(!proved);
+        assert_eq!(calls, 0);
+
+        let blank = (Value::Null, true);
+        let (value, proved) = resolve_metric_cli_output(&blank, || {
+            calls += 1;
+            cli_raw_metric_response_confirms_empty(&cli_response)
+        });
+        assert!(value.is_null());
+        assert!(proved);
+        assert_eq!(calls, 1);
+
+        let (value, proved) = resolve_metric_cli_output(&blank, || false);
+        assert!(value.is_null());
+        assert!(!proved);
+        assert!(matches!(metric_total(&value), MetricRead::Unknown { .. }));
+    }
+
+    #[test]
+    fn metric_raw_request_binds_fixed_target_and_exact_query_body() {
+        let args = vec![
+            "monitoring".to_string(),
+            "metric-data".to_string(),
+            "summarize-metrics-data".to_string(),
+            "--compartment-id".to_string(),
+            "synthetic/compartment?x".to_string(),
+            "--namespace".to_string(),
+            "oci_emaildelivery".to_string(),
+            "--query-text".to_string(),
+            "EmailsAccepted[1h].sum()".to_string(),
+            "--start-time".to_string(),
+            "2026-09-01T00:00:00Z".to_string(),
+            "--end-time".to_string(),
+            "2026-09-01T01:00:00Z".to_string(),
+        ];
+        let (target, body) = metric_raw_request(&args, "us-ashburn-1").expect("raw target");
+        assert_eq!(
+            target,
+            "https://telemetry.us-ashburn-1.oraclecloud.com/20180401/metrics/actions/summarizeMetricsData?compartmentId=synthetic%2Fcompartment%3Fx"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).expect("body is JSON"),
+            serde_json::json!({
+                "namespace": "oci_emaildelivery",
+                "query": "EmailsAccepted[1h].sum()",
+                "startTime": "2026-09-01T00:00:00Z",
+                "endTime": "2026-09-01T01:00:00Z",
+            })
+        );
+        for invalid_region in [
+            "https://attacker.example",
+            "us-ashburn-1.attacker.example",
+            "US-ASHBURN-1",
+            "us-ashburn",
+            "us--ashburn-1",
+            "abc-ashburn-1",
+            "us-123-1",
+            "us-ashburn-0",
+            "us-ashburn-01",
+        ] {
+            assert!(monitoring_metrics_uri(invalid_region, "synthetic").is_none());
+        }
+        assert!(metric_raw_request_for_region(&args, None).is_none());
+        let blank_cli = (Value::Null, true);
+        let (value, confirmed) = resolve_metric_cli_output(&blank_cli, || {
+            metric_raw_request_for_region(&args, None).is_some()
+        });
+        assert!(!confirmed);
+        assert!(matches!(metric_total(&value), MetricRead::Unknown { .. }));
+    }
+
+    #[test]
+    fn metric_execution_argv_disables_rc_query_and_pins_auth() {
+        let normal = vec![
+            "monitoring".to_string(),
+            "metric-data".to_string(),
+            "summarize-metrics-data".to_string(),
+            "--query-text".to_string(),
+            "EmailsAccepted[1h].sum()".to_string(),
+        ];
+        let expected_tail = [
+            "--cli-rc-file",
+            "/dev/null",
+            "--query",
+            "@",
+            "--auth",
+            "api_key",
+        ];
+        let metric_argv = metric_cli_execution_args(&normal);
+        assert_eq!(
+            &metric_argv[normal.len()..],
+            expected_tail.map(str::to_string).as_slice()
+        );
+        assert_eq!(
+            metric_argv
+                .iter()
+                .filter(|arg| arg.as_str() == "--query")
+                .count(),
+            1
+        );
+        assert_eq!(metric_argv.last().map(String::as_str), Some("api_key"));
+
+        let raw_request = vec![
+            "raw-request".to_string(),
+            "--http-method".to_string(),
+            "POST".to_string(),
+        ];
+        let raw_argv = metric_cli_execution_args(&raw_request);
+        assert_eq!(
+            &raw_argv[raw_request.len()..],
+            expected_tail.map(str::to_string).as_slice()
+        );
+    }
+
+    #[test]
+    fn metric_raw_request_envelope_fails_closed_for_incomplete_proof() {
+        let valid = serde_json::json!({
+            "status": "200 OK",
+            "headers": {},
+            "data": [],
+        });
+        assert!(cli_raw_metric_response_confirms_empty(&valid));
+
+        let blank_cli = (Value::Null, true);
+        for proof in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"status": "503 Service Unavailable", "headers": {}, "data": []}),
+            serde_json::json!({"status": "200", "headers": {}, "data": []}),
+            serde_json::json!({"status": "200 OK", "headers": {}, "data": [1]}),
+            serde_json::json!({"status": "200 OK", "headers": null, "data": []}),
+            serde_json::json!({"status": "200 OK", "headers": {"OpC-NeXt-PaGe": "token"}, "data": []}),
+            serde_json::json!({"status": "200 OK", "headers": {"opc-next-cursor": "token"}, "data": []}),
+            serde_json::json!({"status": "200 OK", "headers": {}, "data": [], "extra": "not accepted"}),
+        ] {
+            let (value, confirmed) = resolve_metric_cli_output(&blank_cli, || {
+                cli_raw_metric_response_confirms_empty(&proof)
+            });
+            assert!(!confirmed);
+            assert!(matches!(metric_total(&value), MetricRead::Unknown { .. }));
+        }
+    }
+
+    #[test]
+    fn metric_cli_configuration_and_override_gates_fail_closed() {
+        assert!(metric_cli_environment_supported(
+            ["OCI_CLI_PROFILE".to_string()].into_iter()
+        ));
+        for override_name in [
+            "OCI_CLI_AUTH",
+            "OCI_CLI_REGION",
+            "OCI_CLI_CONFIG_FILE",
+            "OCI_CLI_ENDPOINT",
+        ] {
+            assert!(!metric_cli_environment_supported(
+                [override_name.to_string()].into_iter()
+            ));
+        }
+
+        assert!(cli_profile_authority_supported(None, true, true, false));
+        assert!(cli_profile_authority_supported(
+            Some("API_KEY"),
+            true,
+            true,
+            false
+        ));
+        assert!(!cli_profile_authority_supported(
+            Some("security_token"),
+            true,
+            true,
+            false
+        ));
+        assert!(!cli_profile_authority_supported(None, false, true, false));
+        assert!(!cli_profile_authority_supported(None, true, false, false));
+        assert!(!cli_profile_authority_supported(None, true, true, true));
+
+        assert!(same_canonical_file(Path::new("."), Path::new(".")));
+        assert!(!same_canonical_file(
+            Path::new("src"),
+            Path::new("README.md")
+        ));
+        assert!(!same_canonical_file(
+            Path::new("missing-config-a"),
+            Path::new("missing-config-b")
+        ));
+    }
+
+    #[test]
+    fn metric_cli_authority_fingerprint_rejects_config_or_key_drift() {
+        fn file_fingerprint(digest_byte: u8, identity: u64) -> FileFingerprint {
+            FileFingerprint {
+                digest: [digest_byte; 32],
+                metadata: FileMetadataIdentity {
+                    length: 32,
+                    modified: Some(SystemTime::UNIX_EPOCH),
+                    #[cfg(unix)]
+                    device: 1,
+                    #[cfg(unix)]
+                    inode: identity,
+                    #[cfg(unix)]
+                    changed_seconds: identity as i64,
+                    #[cfg(unix)]
+                    changed_nanoseconds: 0,
+                },
+            }
+        }
+        let authority =
+            |config_digest, config_identity, key_digest, key_identity| MetricAuthorityFingerprint {
+                config: file_fingerprint(config_digest, config_identity),
+                key: file_fingerprint(key_digest, key_identity),
+            };
+        let before_cli = authority(1, 11, 2, 22);
+        let config_byte_drift = authority(3, 11, 2, 22);
+        let config_metadata_drift = authority(1, 12, 2, 22);
+        let key_byte_drift = authority(1, 11, 3, 22);
+        let key_metadata_drift = authority(1, 11, 2, 23);
+        let valid_cli_proof = serde_json::json!({
+            "status": "200 OK",
+            "headers": {},
+            "data": [],
+        });
+        let current = std::cell::RefCell::new(before_cli.clone());
+        let confirmed = raw_request_with_stable_authority(
+            &before_cli,
+            || Some(current.borrow().clone()),
+            || cli_raw_metric_response_confirms_empty(&valid_cli_proof),
+        );
+        assert!(
+            confirmed,
+            "unchanged authority across all phases proves zero"
+        );
+        assert!(matches!(
+            metric_read_after_raw_proof(&Value::Null, confirmed),
+            MetricRead::Known { total: 0.0, .. }
+        ));
+
+        for changed in [
+            &config_byte_drift,
+            &config_metadata_drift,
+            &key_byte_drift,
+            &key_metadata_drift,
+        ] {
+            current.replace(changed.clone());
+            let mut probe_called = false;
+            let confirmed = raw_request_with_stable_authority(
+                &before_cli,
+                || Some(current.borrow().clone()),
+                || {
+                    probe_called = true;
+                    cli_raw_metric_response_confirms_empty(&valid_cli_proof)
+                },
+            );
+            assert!(!confirmed);
+            assert!(
+                !probe_called,
+                "CLI-to-raw-request drift must stop before probing"
+            );
+            assert!(matches!(
+                metric_read_after_raw_proof(&Value::Null, confirmed),
+                MetricRead::Unknown { .. }
+            ));
+
+            current.replace(before_cli.clone());
+            let confirmed = raw_request_with_stable_authority(
+                &before_cli,
+                || Some(current.borrow().clone()),
+                || {
+                    current.replace(changed.clone());
+                    cli_raw_metric_response_confirms_empty(&valid_cli_proof)
+                },
+            );
+            assert!(!confirmed, "raw-request-phase drift must withhold zero");
+            assert!(matches!(
+                metric_read_after_raw_proof(&Value::Null, confirmed),
+                MetricRead::Unknown { .. }
+            ));
+        }
+    }
 
     #[test]
     fn metric_query_filters_dimensions() {
